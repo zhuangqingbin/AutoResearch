@@ -658,7 +658,8 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
 
 
 def _buyability_line(facts: dict, src: list[dict]) -> str | None:
-    """不可买归因(Task 21,2026-09-24 §2.7 + 2026-09-25 controller 追加裁定)③ 附加行。
+    """不可买归因(Task 21,2026-09-24 §2.7 + 2026-09-25 controller 追加裁定,及同日复核
+    轮二 I2/I4/I5)③ 附加行。
 
     单点渲染:`_buy_lines` 的三个出口(present=False / blocked / 正常)各自在
     `return lines` 前调用本函数一次,不许各写一份各自漂 —— `ba.get("wall")` 为空
@@ -668,6 +669,10 @@ def _buyability_line(facts: dict, src: list[dict]) -> str | None:
     时诚实吐出 `wall=None`,而不是编一个「看起来合理」的墙)——两种成因在这里天然
     同一处理,不必分辨。blocked 日尤其要紧:上面那行「BLOCKED(...hard_gate.no_redflag
     ×N...)」把六个否决因揉成一个数,这一行才是把「卡面入场=禁止」从中拆出来的地方。
+
+    复核轮二(I4(c)):`tiering` 紧跟在 wall/gloss 后面渲染——它是全行其余数字的解读前提
+    (关着时 `no_redflag_card_prohibited==0`/`wall=="none"` 都读不出"入场门有没有跑过"),
+    放在最前面而不是行尾,读者不必先读完整行才知道要不要打这个折扣。
     """
     ba = facts.get("buyability") or {}
     if not ba.get("wall"):
@@ -675,24 +680,35 @@ def _buyability_line(facts: dict, src: list[dict]) -> str | None:
     m, c, g = ba.get("menu") or {}, ba.get("cards") or {}, ba.get("gates") or {}
     pct = lambda v: "—" if v is None else f"{v:.0%}"   # noqa: E731
     # fix round 1 finding ②:`sector_seats`/`composite_seats` 现在缺源时是 `None`(不是
-    # 假 0),渲染必须跟着用「—」而不是让 f-string 直接吐出字面量 "None"。
+    # 假 0),渲染必须跟着用「—」而不是让 f-string 直接吐出字面量 "None"。I4(a)复核轮二:
+    # `earlystop`/`full` 现在缺 schema 支持时也是 `None`,同一支 `cnt()` 一并接住。
     cnt = lambda v: "—" if v is None else str(v)   # noqa: E731
+    # I4(c):tiering 是三态(True/False/None),None(旧 schema 没有这个键)不得读成"关"。
+    tier = lambda v: "—" if v is None else ("开" if v else "关")   # noqa: E731
     wall = ba["wall"]
     # P22 的两个新值在中文行里是孤立的英文标识符,加一句短注让读者不必跳去查 wall 词表;
     # 判断力不能全指望后面那串「允许/条件/禁止/未知/盲」计数 —— 两支世界能落在完全相同的
     # 立场分布上(silent/refused 是 entry_source 维度,和立场分布是正交的两件事),所以
     # 光靠计数认不出 silent 还是 refused,glosses 不是可省的装饰。
     gloss = {"cards_silent": "(没有卡写入场行)", "cards_refused": "(卡写了,不允许)"}.get(wall, "")
-    text = (f"不可买归因:**{wall}**{gloss} ｜ 菜单 落刀 L2 {pct(m.get('l2_knife'))}/L0 {pct(m.get('l0_knife'))}"
+    # I4(b):`卡` 与 `门` 两段的人口不同 —— `cards.n` 是非📌候选,`gates.n` 是全体候选
+    # (pinned 一样要过硬门)。两个人口不能悄悄共用一行却不说,各自在段首标出分母,读者
+    # 一眼就能看出差几个(差额 = 当天 pinned 候选数)。I2:`entry_line` 挨着盲/未知等其它
+    # 卡计数一起印,是 gate L1a 直接读的那个数。
+    text = (f"不可买归因:**{wall}**{gloss} · tiering {tier(ba.get('tiering'))}"
+            f" ｜ 菜单 落刀 L2 {pct(m.get('l2_knife'))}/L0 {pct(m.get('l0_knife'))}"
             f" · 健康 {pct(m.get('l2_healthy'))}/{pct(m.get('l0_healthy'))}"
             f" · 席位 行业 {cnt(m.get('sector_seats'))}/证据 {cnt(m.get('composite_seats'))}"
-            f" ｜ 卡 允许 {c.get('allowed', 0)}/条件 {c.get('conditional', 0)}/禁止 {c.get('prohibited', 0)}"
-            f"/未知 {c.get('unknown', 0)}/盲 {c.get('blind', 0)}"
-            f" ｜ 早停 {c.get('earlystop', 0)}/满卡 {c.get('full', 0)}"
-            f" ｜ 门 data_a 日级 {g.get('data_a_day', 0)}·票级 {g.get('data_a_ticker', 0)}"
+            f" ｜ 卡(非📌候选{c.get('n', 0)}) 允许 {c.get('allowed', 0)}/条件 {c.get('conditional', 0)}"
+            f"/禁止 {c.get('prohibited', 0)}/未知 {c.get('unknown', 0)}/盲 {c.get('blind', 0)}"
+            f"/入场行 {c.get('entry_line', 0)}"
+            f" ｜ 早停 {cnt(c.get('earlystop'))}/满卡 {cnt(c.get('full'))}"
+            f" ｜ 门(候选{g.get('n', 0)}含📌) data_a 日级 {g.get('data_a_day', 0)}"
+            f"·票级 {g.get('data_a_ticker', 0)}"
             f" · contract {g.get('contract', 0)}"
             f" · redflag {g.get('no_redflag', 0)}(卡禁 {g.get('no_redflag_card_prohibited', 0)})")
     _src(src, "buyability.wall", wall, "_buyability.json", "wall", text)
+    _src(src, "buyability.tiering", ba.get("tiering"), "_buyability.json", "tiering", text)
     _src(src, "buyability.l2_knife", m.get("l2_knife"), "_buyability.json", "menu.l2_knife", text)
     _src(src, "buyability.allowed", c.get("allowed"), "_buyability.json", "cards.allowed", text)
     return "  " + text

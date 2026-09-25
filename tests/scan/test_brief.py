@@ -891,6 +891,49 @@ def test_worst_case_ledger_text_still_fits_budget_and_buy_line_survives(tmp_path
     assert "账本 席位 实测" in md, "composite 证据席的账本实测被裁剪路径吞掉了"
 
 
+def test_worst_case_ledger_text_and_buyability_line_together_still_fit_budget(tmp_path, monkeypatch):
+    """字节最坏情形,复核轮二(2026-09-25 I2/I4/I5)追加:③ 段现在还多一条可变长度
+    文本——不可买归因行,本轮给它加了 `tiering`、两处人口标注(`卡(非📌候选N)`/
+    `门(候选N含📌)`)和 `entry_line` 计数,行本身变长了。把它也推到最长形态(`wall=
+    "cards_refused"` 的最长 gloss、`tiering=True`、两位数计数),叠加既有账本实测双行 +
+    `_flood_pinned` 灌爆④,证明裁剪梯度(只砍④/⑥,`_buyability_line` 所在的③从不在
+    `_FIT_LADDER` 范围内)仍能把成品压回预算内。"""
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports")
+    rows = ([{"run_id": f"b{i}", "analysis_date": "2026-08-06", "mode": "active", "role": "BUY",
+              "e6_buy": "True", "outcome_status": "MATURE", "actionability": "ACTIONABLE",
+              "gap_c1_o2": "-0.0233"} for i in range(20)]
+            + [{"run_id": f"s{i}", "analysis_date": "2026-08-06", "mode": "active",
+                "role": "composite_seat", "e6_buy": "False", "outcome_status": "MATURE",
+                "actionability": "ACTIONABLE", "gap_c1_o2": "-0.0187"} for i in range(20)])
+    _ledger_csv(tmp_path / "reports", rows)
+
+    scan = _scan_dir(tmp_path, decision=_composite_decision())
+    _flood_pinned(scan, 80)
+    _write_buyability(
+        scan, wall="cards_refused", tiering=True,
+        menu={"l2_knife": 0.99, "l0_knife": 0.01, "l2_healthy": 0.01, "l0_healthy": 0.99,
+             "sector_seats": 88, "composite_seats": 77},
+        cards={"n": 99, "allowed": 11, "conditional": 22, "prohibited": 33, "unknown": 33,
+              "entry_line": 11, "blind": 55, "parse_failed": 44, "earlystop": 66, "full": 33},
+        gates={"n": 199, "data_a_day": 66, "data_a_ticker": 77, "contract": 88,
+              "no_redflag": 99, "no_redflag_card_prohibited": 44})
+    facts = brief.collect_facts(scan, run_folder=_RUN)
+    raw_lines, _ = brief._sections(facts, pinned_cap=99, delta_cap=6)
+    raw = len(("\n".join(raw_lines) + "\n").encode("utf-8"))
+    assert raw > brief.MAX_BYTES, f"探针失效:未裁剪只有 {raw}B,压不到预算线"
+
+    out = brief.build(scan, run_folder=_RUN)
+    assert out["n_bytes"] <= brief.MAX_BYTES, (
+        f"账本实测两行 + 不可买归因行(复核轮二最长形态)一起把 brief 顶出预算:"
+        f"{out['n_bytes']}B > {brief.MAX_BYTES}B")
+    md = out["markdown"]
+    assert "不可买归因:**cards_refused**(卡写了,不允许) · tiering 开" in md, \
+        "归因行(含本轮新增字段)被裁剪路径吞掉了"
+    assert "门(候选199含📌)" in md and "卡(非📌候选99)" in md
+
+
 # ───────────────────────────── ⑥ 跨 run 昨日 delta(Task 3) ─────────────────────────────
 
 def test_delta_line_reads_previous_published_run_under_run_partition(tmp_path, monkeypatch, scan):
@@ -1052,3 +1095,41 @@ def test_buyability_line_shows_dash_for_missing_seat_counts(scan):
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     assert "席位 行业 —/证据 —" in md
     assert "None" not in md
+
+
+# ───────── 复核轮二(2026-09-25)I2/I4/I5 在 brief 渲染层的落点 ─────────
+
+def test_buyability_line_shows_dash_for_missing_earlystop_full_counts(scan):
+    """I4(a):`cards.earlystop`/`cards.full` 现在缺 schema 支持时是 `None`,brief 渲染必须
+    显式印「—」,不能让 f-string 吐出字面量 "None"(同 finding ②对 seat 计数的处置)。"""
+    _write_buyability(scan, wall="cards_silent",
+                      cards={"n": 9, "allowed": 0, "conditional": 2, "prohibited": 4, "unknown": 3,
+                            "entry_line": 0, "blind": 0, "parse_failed": 0,
+                            "earlystop": None, "full": None})
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "早停 —/满卡 —" in md
+    assert "None" not in md
+
+
+def test_buyability_line_renders_tiering_and_the_two_population_labels(scan):
+    """I4(b)/I4(c):`gates.n`(全体候选,含 pinned)与 `cards.n`(非📌候选)并排标注两个不同
+    人口,不让读者拿 `data_a_day` 之类的门计数去对错分母;`tiering` 紧跟 wall/gloss 渲染,
+    三态(开/关/—)不折叠成布尔。`entry_line`(I2)挨着其它卡计数一起印。"""
+    _write_buyability(scan, wall="cards_refused", tiering=True,
+                      cards={"n": 9, "allowed": 0, "conditional": 2, "prohibited": 4, "unknown": 3,
+                            "entry_line": 5, "blind": 0, "parse_failed": 0, "earlystop": 6, "full": 3},
+                      gates={"n": 11, "data_a_day": 0, "data_a_ticker": 0, "contract": 0,
+                             "no_redflag": 0, "no_redflag_card_prohibited": 0})
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "tiering 开" in md
+    assert "卡(非📌候选9)" in md
+    assert "入场行 5" in md
+    assert "门(候选11含📌)" in md
+
+
+def test_buyability_line_shows_dash_for_tiering_when_the_decision_document_predates_the_key(scan):
+    """I4(c):决策文档没有 `tiering` 这个键(schema 1 / 更早的 schema 2)时,产物读 `None`
+    (`buyability.py` 已锁死),brief 必须显式印「—」,不得默认渲染成"关"。"""
+    _write_buyability(scan, wall="cards_silent")   # 默认 doc 没有 "tiering" 键
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "tiering —" in md

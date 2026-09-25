@@ -1,6 +1,6 @@
 """不可买归因(2026-09-24 §2.7 + 2026-09-25 controller 派工附录 P22/P33/P35 + 当轮
-no_redflag 拆分裁定):四堵墙 menu / cards_silent / cards_refused / gates,第一堵撞上的
-就是 wall。
+no_redflag 拆分裁定 + 2026-09-25 复核轮二 I2/I4/I5):四堵墙 menu / cards_silent /
+cards_refused / gates,第一堵撞上的就是 wall。
 
 fixture 注记(与 task-21-brief 给定的 `_frame`/`_scan`的一处出入,必须说明):brief 原始
 Step 1 代码里 `_scan` 把 L0 的 `healthy_share` 恒写死 `0.11`、L2 恒写死 `0.08`,与
@@ -12,6 +12,11 @@ Step 1 代码里 `_scan` 把 L0 的 `healthy_share` 恒写死 `0.11`、L2 恒写
 不是产物逻辑:`_scan` 把 `l2_healthy`/`l0_healthy` 开放成独立参数,默认两者相等(健康支路
 不触发),`test_wall_menu_when_l2_healthy_share_undercuts_l0` 单独用不等值验证健康支路本身
 没有被误删。
+
+复核轮二(2026-09-25)追加 fixture 注记:`_scan` 新增三个专供 I4(b)/I4(c)/I5 用的参数——
+`pinned_data_a_failures`(追加 N 只📌持仓候选,各自因票级 data_a 被 `_hard_gate` 否决)、
+`tiering`(写/不写决策文档顶层同名键)、`sector_seats`(非 None 时落一份 `_sector_seats.json`
+哨兵文件)。默认值全部不改变旧用例的行为(见各参数自己的 docstring)。
 """
 from __future__ import annotations
 
@@ -47,7 +52,9 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
          l2_healthy: float = 0.11, l0_healthy: float = 0.11,
          cards: tuple[dict, ...] = (_card("ALLOWED"),), in_pool: tuple[bool, ...] = (),
          gates_ok: bool = True, tier: str | None = None, blind: int = 0,
-         extra_excluded: tuple[dict, ...] = (), write_decision: bool = True) -> Path:
+         extra_excluded: tuple[dict, ...] = (), write_decision: bool = True,
+         pinned_data_a_failures: int = 0, tiering: bool | None = None,
+         sector_seats: list[dict] | None = None) -> Path:
     """`cards`:每个候选一份 `card_context`(用 `_card()` 造)。`in_pool`:每个候选一个
     bool,与 `cards` 等长,缺省全 True(`relative_buy.py` 的 `finalists` 池下恒 True;
     `composite` 池下=是否证据席 —— fix round 1 finding ③ 测试用,与 `cards` 分开传避免把
@@ -55,7 +62,18 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
     `hard_gate.data_a` 否决(与原 brief 语义一致)。`extra_excluded` 用来叠加与
     `cards`/`gates_ok` 无关的其它硬门否决行(no_redflag 拆分测试用)。
     `write_decision=False`:不落 `_relative_buy_decision.json`(fix round 1 finding ①
-    「决策文档缺席」测试专用,其余参数在这条路径下不生效)。"""
+    「决策文档缺席」测试专用,其余参数在这条路径下不生效)。
+
+    `pinned_data_a_failures`(I4(b)专用,默认 0=不变旧行为):追加 N 只📌持仓候选,各自
+    因票级 data_a 被 `_hard_gate` 否决——镜像真实产物「pinned 票一样要过硬门」的事实,
+    让 `gates.n`(全体候选)与 `cards.n`(非📌候选)读出不同的数。
+    `tiering`(I4(c)专用,默认 `None`):非 None 时把值原样写进决策文档顶层同名键;
+    保持默认 `None` 时**不写这个键**,模拟没有这个概念的老 schema(读出来应为 `None`,
+    不是 `False`)。
+    `sector_seats`(I5 专用,默认 `None`=不落该文件):非 None 时落一份 `_sector_seats.json`
+    (`{"seats": sector_seats}`),模拟行业席位特性"开着"那天 universe.py 无条件写下的
+    哨兵文件。
+    """
     scan = tmp_path / "2026-09-17"
     scan.mkdir()
     _frame(1000, l0_knife, l0_healthy).to_csv(scan / "L1_scored_full.csv", index=False)
@@ -63,21 +81,33 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
     l2["sector_seat"] = False
     l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
     pd.DataFrame({"code": ["600001"], "guard": ["composite_seat"]}).to_csv(scan / "finalists.csv", index=False)
+    if sector_seats is not None:
+        (scan / "_sector_seats.json").write_text(
+            json.dumps({"schema_version": 1, "date": "2026-09-17", "seats": sector_seats}),
+            encoding="utf-8")
     if not write_decision:
         return scan
     pool_flags = in_pool if in_pool else tuple(True for _ in cards)
     cands = [{"code": f"6000{i:02d}", "eligible": gates_ok, "pinned": False, "in_pool": p,
               "hard_gate": {"tradable": True, "data_a": gates_ok, "contract": True, "no_redflag": True},
               "card_context": ctx} for i, (ctx, p) in enumerate(zip(cards, pool_flags, strict=True))]
+    pinned_cands = [{"code": f"9000{i:02d}", "eligible": False, "pinned": True, "in_pool": True,
+                     "hard_gate": {"tradable": True, "data_a": False, "contract": True, "no_redflag": True},
+                     "card_context": _card("UNKNOWN")} for i in range(pinned_data_a_failures)]
     excluded = list(extra_excluded)
     no_redflag_n = sum(1 for e in excluded if e.get("reason") == "hard_gate.no_redflag")
     if not gates_ok:
         excluded = excluded + [{"code": c["code"], "reason": "hard_gate.data_a",
                                 "detail": f"stage l4_{c['code']} 失败(票级 data_a)"} for c in cands]
+    excluded = excluded + [{"code": c["code"], "reason": "hard_gate.data_a",
+                            "detail": f"stage l4_{c['code']} 失败(票级 data_a)"} for c in pinned_cands]
+    data_a_n = (len(cands) if not gates_ok else 0) + len(pinned_cands)
     doc = {"blocked": not gates_ok, "buys": ([{"code": "600000", "tier": tier}] if gates_ok and tier else []),
-           "candidates": cands, "excluded": excluded,
-           "veto_accounting": {"by_gate": {"data_a": 0 if gates_ok else len(cands), "contract": 0,
+           "candidates": cands + pinned_cands, "excluded": excluded,
+           "veto_accounting": {"by_gate": {"data_a": data_a_n, "contract": 0,
                                            "no_redflag": no_redflag_n, "tradable": 0}}}
+    if tiering is not None:
+        doc["tiering"] = tiering
     (scan / "_relative_buy_decision.json").write_text(json.dumps(doc), encoding="utf-8")
     if blind:
         (scan / "_blind_cards.json").write_text(json.dumps({f"7000{i:02d}": {} for i in range(blind)}),
@@ -118,7 +148,7 @@ def test_wall_cards_silent_when_no_parsed_card_carries_the_entry_line(tmp_path):
     doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards))
     assert doc["wall"] == "cards_silent"
     assert doc["cards"] == {"n": 3, "allowed": 0, "conditional": 1, "prohibited": 1, "unknown": 1,
-                            "blind": 0, "parse_failed": 0, "earlystop": 2, "full": 1}
+                            "entry_line": 0, "blind": 0, "parse_failed": 0, "earlystop": 2, "full": 1}
 
 
 def test_wall_cards_refused_when_a_parsed_card_carries_the_entry_line(tmp_path):
@@ -129,7 +159,7 @@ def test_wall_cards_refused_when_a_parsed_card_carries_the_entry_line(tmp_path):
     doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards))
     assert doc["wall"] == "cards_refused"
     assert doc["cards"] == {"n": 2, "allowed": 0, "conditional": 0, "prohibited": 1, "unknown": 1,
-                            "blind": 0, "parse_failed": 0, "earlystop": 1, "full": 1}
+                            "entry_line": 1, "blind": 0, "parse_failed": 0, "earlystop": 1, "full": 1}
 
 
 def test_cards_refused_ignores_entry_line_on_a_parse_failed_card(tmp_path):
@@ -152,6 +182,49 @@ def test_parser_broken_reads_as_broken_not_silently_ok(tmp_path):
     doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards))
     assert doc["wall"] == "cards_silent"
     assert doc["cards"]["parse_failed"] == 4 == doc["cards"]["n"]
+
+
+# ───────────────── entry_line 计数(I2,2026-09-25 复核轮二):gate L1a 的分母 ─────────────────
+
+def test_cards_entry_line_counts_only_parsed_cards_carrying_the_machine_readable_line(tmp_path):
+    """I2:gate L1a 读『非盲卡里 entry_source=="line" 占比』,但产物此前只有一个内部布尔
+    `has_line`,没有任何字段把这个计数写出来 —— 门读的是一个没人生产的数。`cards.entry_line`
+    补上这个计数,口径与 `has_line`/`wall` 判定同源(P33):只数**解析成功**(OK/PARTIAL)
+    的卡,ERROR 卡即便(反常地)带着 `entry_source=="line"` 也不算——parser 故障不能被
+    错记成『写过入场行』。"""
+    cards = (_card("ALLOWED", source="line", status="OK", kind="full"),
+             _card("CONDITIONAL", source="line", status="PARTIAL", kind="full"),
+             _card("UNKNOWN", source="line", status="ERROR", kind="unknown"),
+             _card("PROHIBITED", source="prose", status="OK", kind="full"))
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards))
+    assert doc["cards"]["n"] == 4
+    assert doc["cards"]["entry_line"] == 2
+
+
+# ───────────── cards.earlystop / cards.full 的 None vs 0(I4(a),2026-09-25 复核轮二) ─────────────
+
+def test_cards_earlystop_and_full_are_none_when_no_candidate_carries_card_kind(tmp_path):
+    """I4(a):`card_kind` 只有 schema 2 才有(`chain_view._card_kind_and_early_stop`
+    docstring:「schema 2 才有 card_context.card_kind;schema 1 ... 一律 None」)——schema 1
+    的 `card_context` 里压根没有这个键。老日子 `earlystop`/`full` 若仍读 0/0,就与
+    『看过、真是零』共用同一个假零,正是这两个计数(P35)当初要防的病。整份(非📌)候选
+    没有一张带 `card_kind` → 两者皆 `None`,不是 0。"""
+    cards = ({"entry_stance": "CONDITIONAL", "entry_source": "prose", "parse_status": "OK"},
+             {"entry_stance": "PROHIBITED", "entry_source": "prose", "parse_status": "OK"})
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards))
+    assert doc["cards"]["earlystop"] is None
+    assert doc["cards"]["full"] is None
+
+
+def test_cards_earlystop_and_full_count_normally_when_schema_carries_card_kind(tmp_path):
+    """对照组:哪怕只有一张卡带 `card_kind`,当天的 schema 就够新、是真的"看过"了,其余
+    (理论上不该发生,防御式覆盖)缺键的候选各自算作既不早停也不满卡,不整体退化成
+    None——判据只要求"有一张带这个键",不要求"全部都带"。"""
+    cards = (_card("ALLOWED", kind="full"),
+             {"entry_stance": "UNKNOWN", "entry_source": None, "parse_status": "ERROR"})
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards))
+    assert doc["cards"]["earlystop"] == 0
+    assert doc["cards"]["full"] == 1
 
 
 # ───────────────────────────── gates 墙 ─────────────────────────────
@@ -200,6 +273,40 @@ def test_gates_no_redflag_splits_card_prohibited_from_other_causes(tmp_path):
     assert doc["gates"]["no_redflag_card_prohibited"] == 1
 
 
+def test_gates_n_counts_all_candidates_including_pinned_while_cards_excludes_them(tmp_path):
+    """I4(b),2026-09-25 复核轮二:`cards` 数非📌候选(`relative_buy.py` 的 A 级候选按设计
+    恒排除 pinned),`gates` 的 by_gate/excluded 计数却是**全体**候选(pinned 票一样要过
+    `_hard_gate`,失败一样记进 `excluded`)。2026-09-17 真实产物 `cards.n=9` 旁边印着
+    `data_a_day=11`,两个不同人口摆成一行——不强行拉平(拉平会让 cards 掺进永远当不成
+    A 级的 pinned 票),改为标注:`gates.n` 显式记 gates 自己数出来的分母,与 `cards.n`
+    并排就能看出差几个(这里差 2,恰是两只📌持仓各自票级 data_a 否决)。"""
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, pinned_data_a_failures=2))
+    assert doc["cards"]["n"] == 1
+    assert doc["gates"]["n"] == 3
+    assert doc["gates"]["data_a_ticker"] == 2
+
+
+# ───────────────── tiering 顶层旗(I4(c),2026-09-25 复核轮二) ─────────────────
+
+def test_tiering_flag_is_read_from_the_decision_document_when_true(tmp_path):
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, tiering=True))
+    assert doc["tiering"] is True
+
+
+def test_tiering_flag_is_read_from_the_decision_document_when_false(tmp_path):
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, tiering=False))
+    assert doc["tiering"] is False
+
+
+def test_tiering_flag_is_none_for_legacy_documents_that_predate_the_key(tmp_path):
+    """I4(c):`wall=="none"` 与 `gates.no_redflag_card_prohibited==0` 在 tiering 开/关下是
+    两个不同世界(开:入场门真的跑过、没撞;关:入场门压根没跑)——决策文档没有这个键
+    (schema 1 / 更早的 schema 2)时,不得默认猜成 `False`(那会把"没有这个概念"读成"关",
+    两者对"入场门有没有跑过"含义完全不同)。"""
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25))   # 默认不传 tiering → 文档没有这个键
+    assert doc["tiering"] is None
+
+
 # ───────────────────────────── none(出了 A 级) ─────────────────────────────
 
 def test_wall_none_when_a_tier_buy_exists(tmp_path):
@@ -222,11 +329,13 @@ def test_write_buyability_lands_the_file(tmp_path):
 def test_wall_is_none_when_decision_document_is_missing(tmp_path):
     """mutation-proof 靶子:菜单健康(若走旧逻辑 `cards["allowed"]==0` 会直接算成
     `cards_silent`)+ 决策文档整份不存在 —— 必须读到 `wall is None`,不是一个「看起来
-    合理」的 cards_silent。`cards`/`gates`/`buy` 同理不得编成零值结构。"""
+    合理」的 cards_silent。`cards`/`gates`/`buy` 同理不得编成零值结构。`tiering`(I4(c),
+    2026-09-25 复核轮二)同理:没有决策文档就没有"那一次运行",不得编成 `False`。"""
     scan = _scan(tmp_path, l2_knife=0.25, write_decision=False)
     doc = build_buyability(scan)
     assert doc["wall"] is None
     assert doc["cards"] is None and doc["gates"] is None and doc["buy"] is None
+    assert doc["tiering"] is None
     assert doc["menu"]["l2_knife"] == 0.25, "menu 是独立于决策文档的真实测量,不该被一并清空"
 
 
@@ -249,12 +358,56 @@ def test_wall_is_none_when_decision_document_is_an_empty_object(tmp_path):
 # ───────── fix round 1 finding ②:菜单席位缺源是 None,不是假 0 ─────────
 
 def test_menu_sector_seats_is_none_not_zero_when_l2_lacks_the_column(tmp_path):
+    """2026-09-25 复核轮二(I5)仍然成立:列缺席 + 没有 `_sector_seats.json` 哨兵文件
+    (`_scan()` 默认不落它)—— 两个信号都缺席,真的是 None。"""
     scan = _scan(tmp_path, l2_knife=0.25)
-    l2 = pd.read_csv(scan / "L2_gbdt_top200.csv")
+    l2 = pd.read_csv(scan / "L2_gbdt_top200.csv", dtype={"code": str})
     l2 = l2.drop(columns=["sector_seat"])
     l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
     doc = build_buyability(scan)
     assert doc["menu"]["sector_seats"] is None
+
+
+def test_menu_sector_seats_is_zero_not_none_when_the_sentinel_says_enabled_but_empty(tmp_path):
+    """I5,2026-09-25 复核轮二:特性真的开着,当日 `pick_sector_seats` 挑不出一个合格行业
+    ——`_inject_sector_seats_l1` 对空 `seats` 走"原样返回"分支,L2 CSV 同样不会有
+    `sector_seat` 列(和"关着"读起来完全一样)。但 universe.py 在"开着"分支内无条件落了
+    `_sector_seats.json`(`seats: []`),这是『看过、真是零』,不能读成 None —— 这正是
+    I5 要修的那个二义性。"""
+    scan = _scan(tmp_path, l2_knife=0.25)
+    l2 = pd.read_csv(scan / "L2_gbdt_top200.csv", dtype={"code": str})
+    l2 = l2.drop(columns=["sector_seat"])
+    l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
+    (scan / "_sector_seats.json").write_text(
+        json.dumps({"schema_version": 1, "date": "2026-09-17", "seats": []}), encoding="utf-8")
+    doc = build_buyability(scan)
+    assert doc["menu"]["sector_seats"] == 0
+
+
+def test_menu_sector_seats_reads_the_sentinel_seats_length_when_the_column_is_absent(tmp_path):
+    """哨兵在场且非空:即便(防御式覆盖)L2 列因故缺席,也读 `len(seats)`,不是 0/None。"""
+    scan = _scan(tmp_path, l2_knife=0.25)
+    l2 = pd.read_csv(scan / "L2_gbdt_top200.csv", dtype={"code": str})
+    l2 = l2.drop(columns=["sector_seat"])
+    l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
+    (scan / "_sector_seats.json").write_text(
+        json.dumps({"schema_version": 1, "date": "2026-09-17",
+                    "seats": [{"code": "600001"}, {"code": "600002"}]}), encoding="utf-8")
+    doc = build_buyability(scan)
+    assert doc["menu"]["sector_seats"] == 2
+
+
+def test_menu_sector_seats_prefers_the_l2_column_when_present(tmp_path):
+    """列在场时直接信列(在场必然来自非空 seats,真实产物里两者恒相等);不必要求调用方
+    额外落一份哨兵文件才能读出真值——这是最常见的"开着、真的挑中了"的日子,不能因为加了
+    哨兵回退就退化。"""
+    scan = _scan(tmp_path, l2_knife=0.25)
+    l2 = pd.read_csv(scan / "L2_gbdt_top200.csv", dtype={"code": str})
+    l2.loc[0, "sector_seat"] = True
+    l2.loc[1, "sector_seat"] = True
+    l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
+    doc = build_buyability(scan)
+    assert doc["menu"]["sector_seats"] == 2
 
 
 def test_menu_composite_seats_is_none_not_zero_when_finalists_lacks_guard_column(tmp_path):
