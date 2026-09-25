@@ -1177,6 +1177,11 @@ def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: 
     temp_line = render_temperature_line(analysis_date)
     from autoresearch.scan.calendar import calendar_section
     calendar_block = calendar_section(scan_dir) or ""
+    # minor-7(final whole-branch review):唯一允许 I/O 的 prepare 阶段读一次旋钮,原样带给
+    # 纯函数 render_summary(该函数明确"不读盘"),让发布出去的标题只在旋钮真的开着时才带
+    # "调样=被动调仓收盘日"这个从句——旋钮关时逐字保持波前的两句式标题(parity)。
+    from autoresearch.scan.user_config import knob
+    index_rebalance_enabled = bool(knob("calendar", "index_rebalance", None, False))
     active = is_active()
     portfolio_block = portfolio_placeholder() if active else _portfolio_note(genuine_rows)
     overlay_block = ((overlay_placeholder() if _overlay_band(scan_dir) else "") if active
@@ -1241,7 +1246,8 @@ def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: 
         l1_full=l1_full, l2_top=l2_top, ch_map=ch_map, n_l1=n_l1, n_l2=n_l2,
         recall_rows=recall, keep_rows=keep, finals_rows=finals,
         regime_line=regime_line, regime_drift=regime_drift, temp_line=temp_line,
-        calendar_block=calendar_block, portfolio_block=portfolio_block,
+        calendar_block=calendar_block, index_rebalance_enabled=index_rebalance_enabled,
+        portfolio_block=portfolio_block,
         overlay_block=overlay_block, run_mode_banner=run_mode_banner,
         same_chain_block=_same_chain_block(genuine_rows),
         ensemble_dissent_lines=_ensemble_dissent_lines(emap, rows) or [],
@@ -1333,8 +1339,16 @@ def render_summary(model: ReportModel) -> str:
         # `### 📅 …` 内标题早已是三项(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日),
         # 但内标题被上面 `cal_body` 剥掉、本节标题是这里另起的一份硬编码拷贝,没跟着改。
         # 正文行本身(cal_lines)一直都渲染到位——这只是标题漏字,不是数据没接进来。
-        out += ["## 📅 未来 14 天(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日;事实日期非方向)",
-               *cal_lines, ""]
+        # minor-7(final whole-branch review):那次修复把三项标题**无条件**焊死——旋钮关时
+        # (`calendar.index_rebalance=false`,单杆回滚)日历第三腿从未产过一行,`cal_lines`
+        # 却可能仍非空(披露/解禁两腿与该旋钮无关),标题继续断言"调样=被动调仓收盘日"就是这个
+        # 分支**唯一**的旋钮关偏离(除版本字符串外),parity 承诺("旋钮关 = 逐字不变")因此不成立。
+        # `model.index_rebalance_enabled` 在 prepare 阶段读一次旋钮、原样带过来——本函数是纯
+        # 函数,不读盘,只按这个位挑两句式还是三句式标题。
+        heading = ("## 📅 未来 14 天(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日;事实日期非方向)"
+                  if model.index_rebalance_enabled else
+                  "## 📅 未来 14 天(披露=催化锚,解禁=风险窗;事实日期非方向)")
+        out += [heading, *cal_lines, ""]
 
     # 10 运行事实(managed 紧凑一行;完整块 → appendix E)
     start, end = RUN_OBSERVATION_MARKERS

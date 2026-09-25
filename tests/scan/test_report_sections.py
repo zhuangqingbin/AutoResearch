@@ -32,6 +32,7 @@ from autoresearch.scan.report_model import (
     METHOD_ANCHORS,
     SUMMARY_TARGET_BYTES,
     SUMMARY_WARN_BYTES,
+    ReportModel,
 )
 
 _D = "2026-07-03"
@@ -461,3 +462,28 @@ def test_pinned_holdings_are_a_separate_table_not_merged(pair):
     assert all("持仓票" not in ln for ln in cand), "📌 保送票混进了候选表"
     assert len(pinned) == 1 and "持仓票" in pinned[0]
     assert "保送理由" in summary, "保送表的独有列(保送理由)丢了 = 两张表被并成一张"
+
+
+# ─────────────────── minor-7(final whole-branch review):📅 未来 14 天标题条件化 ───────────────────
+
+def _calendar_model(index_rebalance_enabled: bool) -> ReportModel:
+    return ReportModel(
+        analysis_date=_D, hhmm="1200", folder=_F,
+        calendar_block="### 📅 未来 14 天日历\n- **finalists 预约披露**:000001 20260710\n",
+        index_rebalance_enabled=index_rebalance_enabled,
+    )
+
+
+def test_calendar_heading_omits_rebalance_clause_when_the_knob_is_off():
+    """旋钮关(单杆回滚,`calendar.index_rebalance=false`)时,发布出去的标题必须与波前逐字
+    相同——旧代码把这句话硬编码成永远带"调样=被动调仓收盘日",哪怕当天的日历块里连调样这条
+    腿都没跑过,读者会以为这个能力仍在,产品的 parity 承诺("旋钮关 = 逐字不变")就不成立了。"""
+    summary = rs.render_summary(_calendar_model(index_rebalance_enabled=False))
+    assert "## 📅 未来 14 天(披露=催化锚,解禁=风险窗;事实日期非方向)" in summary
+    assert "调样" not in summary
+
+
+def test_calendar_heading_includes_rebalance_clause_when_the_knob_is_on():
+    summary = rs.render_summary(_calendar_model(index_rebalance_enabled=True))
+    assert ("## 📅 未来 14 天(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日;事实日期非方向)"
+            in summary)

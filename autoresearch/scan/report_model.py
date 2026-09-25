@@ -175,6 +175,11 @@ class ReportModel:
     regime_drift: Any = None
     temp_line: str = ""
     calendar_block: str = ""
+    #: minor-7(final whole-branch review):`calendar.index_rebalance` 旋钮的镜像位——
+    #: `render_summary` 是纯函数(不读盘),不能自己去 `knob()`,所以在 prepare 阶段(唯一允许
+    #: I/O 的地方)读一次、原样带过来,渲染层只用它挑标题措辞,不判断"为什么"。缺省 `False`
+    #: = 旧标题(旋钮关的 parity),与代码内建默认一致。
+    index_rebalance_enabled: bool = False
     portfolio_block: str = ""       #: managed 占位或 legacy 文本
     overlay_block: str = ""         #: managed 占位或 legacy 文本
     run_mode_banner: str = ""
