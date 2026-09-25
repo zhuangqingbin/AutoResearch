@@ -95,7 +95,7 @@ $CTX/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble 
 | 下季报 | EPS 兑现度 | 多/空 | 加仓权解锁闸门 |
 | A股 1月底/4月底 | 业绩预告(强制) | ? | 监控 |
 | <解禁日> | 限售解禁(供给) | 空 | 减仓预警 |
-> 数据来源:context 的「财报日历」「Corporate calendar—A股 解禁」+ **A股业绩预告/快报(tushare `forecast`/`express`:净利同比区间,强制披露、早于正式财报=前瞻 EPS 催化,排进日历并标方向)** + 推理时 WebSearch 补政策窗口/调样(标注『实时网查』)。
+> 数据来源:context 的「财报日历」「Corporate calendar—A股 解禁」+ **A股业绩预告/快报(tushare `forecast`/`express`:净利同比区间,强制披露、早于正式财报=前瞻 EPS 催化,排进日历并标方向)** + 推理时 WebSearch 补政策窗口(标注『实时网查』);**指数成分与调样事件由确定性行供给(`analyze/index_membership`,只读湖),不网查**。
 
 **⑥ 持仓监控（写进 `premortem.md` 末尾,一张 KPI 表,主线 S5）** — 买入后每周/季盯什么：
 

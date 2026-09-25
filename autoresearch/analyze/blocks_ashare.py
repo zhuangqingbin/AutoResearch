@@ -271,8 +271,9 @@ def ashare_shareholder_count(sym: str) -> str:
 
 def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
     """A-share forward catalysts: UPCOMING share-lockup expiries 解禁 (supply
-    overhang on/after curr_date) via akshare (OPTIONAL); 业绩预告/政策窗口/调样
-    left to WebSearch at reasoning time."""
+    overhang on/after curr_date) via akshare (OPTIONAL); 业绩预告/政策窗口
+    left to WebSearch at reasoning time; 指数成分/调样事件 deterministic
+    (index_membership)."""
     code = sym.split(".")[0]
     out = []
     try:
@@ -310,11 +311,16 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
             out.append("**限售解禁**：akshare 未返回队列（可能无数据）。")
     except ImportError:
         return (f"_akshare 未安装 → 解禁队列不可用；WebSearch『{code} 限售解禁 时间表』兜底。_\n\n"
-                "> 业绩预告（A股 1月底/4月底强制）、政策窗口、指数调样 → 推理时 WebSearch 补，标注『实时网查』。")
+                "> 业绩预告（A股 1月底/4月底强制）、政策窗口 → 推理时 WebSearch 补，标注『实时网查』。")
     except Exception as e:
         out.append(f"_解禁队列取数失败: {e}（WebSearch『{code} 限售解禁 时间表』兜底）_")
-    out.append("> 业绩预告窗口（A股 1月底/4月底强制）、政策窗口（政治局会议/两会/降准降息）、"
-               "指数调样 → 推理时用 **WebSearch** 补成完整催化日历，标注『实时网查』。")
+    try:
+        from autoresearch.analyze.index_membership import index_membership_lines
+        out.append(index_membership_lines(code, curr_date))
+    except Exception as e:  # noqa: BLE001 — 只读湖失败不挡日历块
+        out.append(f"_指数成分/调样事件读湖失败: {e}_")
+    out.append("> 业绩预告窗口（A股 1月底/4月底强制）、政策窗口（政治局会议/两会/降准降息）→ 推理时用 **WebSearch** 补，"
+               "标注『实时网查』。指数调样已由上方确定性行供给，**不再网查**。")
     return "\n\n".join(out)
 
 
