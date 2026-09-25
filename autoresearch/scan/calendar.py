@@ -158,18 +158,31 @@ def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
                      big_ratio: float = 5.0) -> str:
     """summary 的未来两周日历块:finalists 披露日 + 大解禁(占比≥big_ratio)+ 指数调样市场级计数。
 
-    调样计数读**全量** `index_events.csv`,不像披露/解禁两腿那样先过 `want`/finalists 过滤——一次
-    调样常牵动本轮既不在 finalists 也不在 L2 名单里的票,过滤会把市场级事实一并过滤掉。`unknown_eff`
-    相位的行即使 `eff_close_date` 非空也不计入:那一列日期是 `phase_for` 撞上节假日时保留下来的
-    解析产物,不是已核实的生效日(同 `harvest_calendar` 对第三腿的处理,2026-09-25 fix-round-1 #1)——
-    这一行断言的是「这一天是真的」,把未判定的日期算进计数就是把它当事实发布。缺文件 → ""。
+    三段各自独立,不共用一次"缺文件就交白卷"的早退(fix round 1,2026-09-25):disclosure/unlock
+    两段读 `calendar.csv`,调样计数改读**全量** `index_events.csv`——这两个文件谁缺席、谁只有
+    表头,都只影响它自己那一段,绝不连带拦掉另一段。这是修一个真实缺陷:`calendar.csv` 的调样行
+    只在 `want`(L2∪finalists)命中时才由 `harvest_calendar` 写出,而一次真实调样常常谁都不在这
+    份名单里——那正是市场级计数存在的理由,却曾被"`calendar.csv` 读出 `None` 就整函数
+    `return ''`"这条早退抢先吞掉,`index_events.csv` 从未被看一眼。
+
+    调样计数不过 `want`/finalists 过滤,理由同上;`unknown_eff` 相位的行即使 `eff_close_date`
+    非空也不计入:那一列日期是 `phase_for` 撞上节假日时保留下来的解析产物,不是已核实的生效日
+    (同 `harvest_calendar` 对第三腿的处理,2026-09-25 fix-round-1 #1)——这一行断言的是
+    「这一天是真的」,把未判定的日期算进计数就是把它当事实发布。
+
+    `scan_dir.name` 解析不出日期(如缺席探针用的假目录)→ 连窗口都算不出,交白卷;三段过滤后
+    都真的没有内容 → 交白卷。缺 `finalists.csv` → `fin` 空集,"finalist 涉及 N 只" 照样算得出
+    (N 可能就是 0——一次市场级调样很可能一个本轮 finalist 都不涉及)。
     """
-    df = _load(scan_dir)
-    if df is None:
-        return ""
     scan_dir = Path(scan_dir)
-    day0 = datetime.strptime(scan_dir.name[:10], "%Y-%m-%d")
+    try:
+        day0 = datetime.strptime(scan_dir.name[:10], "%Y-%m-%d")
+    except Exception:  # noqa: BLE001 — 目录名不是日期 → 窗口算不出,只能交白卷
+        return ""
     cut = (day0 + timedelta(days=horizon_days)).strftime("%Y%m%d")
+    df = _load(scan_dir)
+    if df is None:                          # 缺失或只有表头:disclosure/unlock 两段视作空,
+        df = pd.DataFrame(columns=_CAL_COLS)  # 不连带拦掉下面读 index_events.csv 的调样计数
     fin: set[str] = set()
     fp = scan_dir / "finalists.csv"
     if fp.exists():

@@ -239,3 +239,77 @@ def test_brief_injects_rebalance_eve_line(tmp_path):
     d = _mk_index(tmp_path)
     assert "⛔ **指数调样生效前夜**" in compose_funnel_brief("000004", d)
     assert "指数调样" not in compose_funnel_brief("000002", d)
+
+
+# ─────────────────── fix round 1(2026-09-25):两个源必须互相独立 ───────────────────
+def test_calendar_section_reports_rebalance_when_calendar_csv_has_no_rows_for_the_code(tmp_path):
+    """fix round 1:`calendar.csv` 的调样行只在 want(L2∪finalists)命中时才由 `harvest_calendar`
+    写出;`index_events.csv` 故意不过滤 want。此前 `calendar_section` 先从 `_load(calendar.csv)`
+    拿到 `None`(缺失或只剩表头都算)就整函数提前 `return ""`,`index_events.csv` 从未被看一眼——
+    一次真实的市场级 passive_close_eve 事实,只因当天没有一只票撞进 L2/finalists 菜单,就被这条
+    早退吞掉了。用一个 code 不在菜单里的事件行复现,并核对 finalist 计数确实是 0。同时验证
+    「calendar.csv 存在但空」与「calendar.csv 整个不存在」现在必须等价(修复前两者都等价于同一条
+    早退,恰好殊途同归到同一个错误答案;修复后不再走那条早退,必须靠新逻辑本身重新殊途同归到
+    同一个正确答案)。"""
+    ev_rows = pd.DataFrame([
+        {"code": "000099", "index_code": "000300", "index_name": "沪深300", "side": "add",
+         "ann_date": "20260529", "eff_close_date": "20260612", "phase": "passive_close_eve",
+         "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS)
+
+    d = tmp_path / "2026-06-11"
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(columns=["code", "kind", "event_date", "detail", "ratio"]).to_csv(
+        d / "calendar.csv", index=False)                          # 存在,但空(非缺失)
+    pd.DataFrame([{"code": "000001", "name": "N000001", "sector": "半导体"}]).to_csv(
+        d / "finalists.csv", index=False)
+    ie.write_index_events(d, ev_rows)
+    s_empty = calendar_section(d)
+    assert "- **指数调样 20260612 收盘生效**:" in s_empty
+    assert "沪深300 ×1" in s_empty and "finalist 涉及 0 只" in s_empty     # 000099 不是 finalist
+    assert "预约披露" not in s_empty and "大解禁" not in s_empty           # 没凭空造出另两段
+    # (注:标题的图例文案本身含"披露"/"解禁"两个字,如"解禁=风险窗"——只断言各段自己的行标记
+    # "预约披露"/"大解禁",不断言裸字,否则会对着图例文案假摔)
+
+    d2 = tmp_path / "2026-06-12"
+    d2.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"code": "000001", "name": "N000001", "sector": "半导体"}]).to_csv(
+        d2 / "finalists.csv", index=False)
+    ie.write_index_events(d2, ev_rows.assign(eff_close_date="20260613"))  # 日期换一下,验真读的是这张表
+    assert not (d2 / "calendar.csv").exists()                     # 整个不存在(非只是空)
+    s_missing = calendar_section(d2)
+    assert "- **指数调样 20260613 收盘生效**:" in s_missing
+    assert "沪深300 ×1" in s_missing and "finalist 涉及 0 只" in s_missing
+    assert s_missing.replace("20260613", "20260612") == s_empty   # 缺失 vs 空,除日期外必须等价
+
+
+def test_calendar_section_returns_empty_when_both_sources_are_genuinely_empty(tmp_path):
+    """两个源都在(合法日期目录)却都没有内容 → 交白卷。这条测的是日期解析成功之后
+    disc/unlk/has_ev 三者都空的收尾判断,与既有的 `calendar_section(tmp_path / "nope") == ""`
+    不是同一条路径——那条测的是目录名解析不出日期时的提前交白卷。"""
+    d = tmp_path / "2026-06-11"
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(columns=["code", "kind", "event_date", "detail", "ratio"]).to_csv(
+        d / "calendar.csv", index=False)
+    pd.DataFrame([{"code": "000001", "name": "N000001", "sector": "半导体"}]).to_csv(
+        d / "finalists.csv", index=False)
+    assert calendar_section(d) == ""
+    d2 = tmp_path / "2026-06-12"                                  # calendar.csv 干脆不存在,同样交白卷
+    d2.mkdir(parents=True, exist_ok=True)
+    assert calendar_section(d2) == ""
+
+
+def test_calendar_section_tolerates_a_missing_finalists_csv_for_rebalance_counts(tmp_path):
+    """finalist 计数读 `finalists.csv`;这份文件本就一直允许缺失(`fp.exists()` 早已挡在那里,
+    这个测试之前没有场景把它和「有真实调样行」撞在一起验过)。缺文件 → `fin` 空集 →
+    "finalist 涉及 0 只",不抛异常——市场级调样很可能真的一个本轮 finalist 都不涉及。"""
+    d = tmp_path / "2026-06-11"
+    d.mkdir(parents=True, exist_ok=True)
+    assert not (d / "finalists.csv").exists() and not (d / "calendar.csv").exists()
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "000099", "index_code": "000300", "index_name": "沪深300", "side": "add",
+         "ann_date": "20260529", "eff_close_date": "20260612", "phase": "passive_close_eve",
+         "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS))
+    s = calendar_section(d)
+    assert "- **指数调样 20260612 收盘生效**:" in s and "finalist 涉及 0 只" in s
