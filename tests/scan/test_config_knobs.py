@@ -310,3 +310,30 @@ def test_knob_calendar_index_rebalance_defaults_off():
     assert knob("calendar", "index_rebalance", None, False, cfg={}) is False
     assert knob("calendar", "index_rebalance", None, False, cfg={"calendar": {"index_rebalance": True}}) is True
     assert knob("calendar", "index_rebalance", False, False, cfg={"calendar": {"index_rebalance": True}}) is False
+
+
+# ───────────────────────── 白名单:E6 第五门(2026-09-25 指数调样事件 §2.4) ─────────────────────────
+
+
+def test_relative_buy_rebalance_gate_whitelisted_and_bool(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"relative_buy": {"rebalance_gate": True}}), encoding="utf-8")
+    assert load_user_config(p) == {"relative_buy": {"rebalance_gate": True}}
+    p.write_text(json.dumps({"relative_buy": {"rebalance_gate": "on"}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="rebalance_gate"):
+        load_user_config(p)
+
+
+def test_configured_rebalance_gate_reads_config_and_degrades_loudly(monkeypatch, capsys):
+    import autoresearch.scan.user_config as uc
+    from autoresearch.scan.relative_buy import configured_rebalance_gate
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"relative_buy": {"rebalance_gate": True}})
+    assert configured_rebalance_gate() is True
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {})
+    assert configured_rebalance_gate() is False                              # 缺键 = 关 = parity
+
+    def boom(path=None):
+        raise ValueError("bad config")
+    monkeypatch.setattr(uc, "load_user_config", boom)
+    assert configured_rebalance_gate() is False
+    assert "rebalance_gate" in capsys.readouterr().err                       # 配置层故障留痕

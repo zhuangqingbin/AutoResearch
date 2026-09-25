@@ -317,7 +317,7 @@ def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
     卡面 `entry_stance=PROHIBITED` 进 `no_redflag` 硬门否决,`buys[0]` 按 `entry_stance
     =ALLOWED` 分 A/R 两级;关(默认)= v3.0 逐字。
     """
-    assert RULE_VERSION == "e6.v4.0"
+    assert RULE_VERSION == "e6.v4.1"
     scan = _build_scan(tmp_path, _RANK_CANDS)
     assert build_decision(scan)["rule_version"] == RULE_VERSION
     written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
@@ -1542,7 +1542,7 @@ def test_schema_2_golden_projection_is_unchanged_by_new_fields(tmp_path):
     doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
 
     assert doc["schema_version"] == SCHEMA_VERSION == 2
-    assert doc["rule_version"] == RULE_VERSION == "e6.v4.0"
+    assert doc["rule_version"] == RULE_VERSION == "e6.v4.1"
     assert doc["blocked"] is False
     assert doc["blocked_reasons"] == []
     assert doc["buys"] == [{"basis": "relative", "code": "002345", "rank": 1}]
@@ -2252,7 +2252,7 @@ def test_tiering_all_prohibited_is_blocked_not_forced(tmp_path):
 
 def test_rule_version_is_v4():
     from autoresearch.scan.relative_buy import RULE_VERSION
-    assert RULE_VERSION == "e6.v4.0"
+    assert RULE_VERSION == "e6.v4.1"
 
 
 def test_tiering_conditional_card_is_not_vetoed_and_lands_in_r_tier(tmp_path):
@@ -2268,3 +2268,92 @@ def test_tiering_conditional_card_is_not_vetoed_and_lands_in_r_tier(tmp_path):
     assert by["002345"]["hard_gate"]["no_redflag"] is True     # CONDITIONAL 不是 PROHIBITED,不否决
     assert doc["buys"][0]["code"] == "002345" and doc["buys"][0]["tier"] == "R"
     assert doc["tier_counts"] == {"A": 0, "R": 4}
+
+
+# ───────────────────────── v4.1:第五门 rebalance_close(2026-09-25 指数调样事件 §2.4) ─────────────────────────
+from autoresearch.scan.relative_buy import REBALANCE_GATE, _hard_gates  # noqa: E402
+
+
+def _events(code: str, phase: str, *, index_name: str = "中证500", side: str = "add",
+            eff: str = "20261211") -> dict:
+    return {code: [{"code": code, "index_code": "000905", "index_name": index_name, "side": side,
+                    "ann_date": "20261127", "eff_close_date": eff, "phase": phase,
+                    "source": "csindex", "flow_adv_days": None}]}
+
+
+def test_hard_gates_tuple_grows_only_when_the_knob_is_on():
+    assert _hard_gates(False) == ("tradable", "data_a", "contract", "no_redflag")
+    assert _hard_gates(True) == ("tradable", "data_a", "contract", "no_redflag", REBALANCE_GATE)
+    assert RULE_VERSION == "e6.v4.1"
+
+
+def test_rebalance_gate_off_is_v40_verbatim_even_with_passive_close_eve_row(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    base = build_decision(scan)
+    doc = build_decision(scan, index_events=_events("002345", "passive_close_eve"))   # rebalance_gate 默认 False
+    assert doc == base
+    assert "index_events" not in doc
+    assert "rebalance_close" not in doc["candidates"][0]["hard_gate"]
+    assert doc["field_usage"]["hard_gate"]["fields"] == ["tradable", "data_a", "contract", "no_redflag"]
+
+
+def test_rebalance_gate_vetoes_the_passive_close_eve_row_and_says_where(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = build_decision(scan, index_events=_events("002345", "passive_close_eve"), rebalance_gate=True)
+    by = _by_code(doc)
+    assert by["002345"]["hard_gate"][REBALANCE_GATE] is False and by["002345"]["eligible"] is False
+    assert by["000034"]["hard_gate"][REBALANCE_GATE] is True
+    assert doc["buys"][0]["code"] == "000034"                                # 原冠军被门否决,亚军上
+    assert doc["index_events"] == {"source": "ok", "gate_evaluated": True, "n_rows": 1,
+                                   "n_candidates_in_events": 1, "hits": ["002345"]}
+    veto = [r for r in doc["excluded"] if r["reason"] == f"hard_gate.{REBALANCE_GATE}"]
+    assert len(veto) == 1 and "中证500 add E=20261211" in veto[0]["detail"]
+    assert doc["field_usage"]["hard_gate"]["fields"][-1] == REBALANCE_GATE
+    assert "index_events" in doc["field_usage"]
+    assert doc["veto_accounting"]["by_gate"][REBALANCE_GATE] == 1
+    assert by["002345"]["hard_gate"]["no_redflag"] is True                  # 独立计数:不并入 no_redflag
+
+
+def test_rebalance_gate_ignores_other_phases_and_also_vetoes_drops(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    ev = {**_events("002345", "announced_runup"), **_events("000034", "passive_close_eve", side="drop")}
+    doc = build_decision(scan, index_events=ev, rebalance_gate=True)
+    by = _by_code(doc)
+    assert by["002345"]["hard_gate"][REBALANCE_GATE] is True                # 跑道段:事实,不否决
+    assert by["000034"]["hard_gate"][REBALANCE_GATE] is False               # E2 裁定:调出票同样一刀
+    assert doc["index_events"]["hits"] == ["000034"] and doc["index_events"]["n_candidates_in_events"] == 2
+
+
+def test_rebalance_gate_source_absent_passes_everyone_and_says_so(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = build_decision(scan, index_events=None, rebalance_gate=True)
+    assert all(row["hard_gate"][REBALANCE_GATE] is True for row in doc["candidates"])
+    assert doc["index_events"] == {"source": "absent", "gate_evaluated": False, "n_rows": 0,
+                                   "n_candidates_in_events": 0, "hits": []}
+
+
+def test_rebalance_gate_source_ok_but_empty_is_evaluated_not_absent(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = build_decision(scan, index_events={}, rebalance_gate=True)
+    assert doc["index_events"]["source"] == "ok" and doc["index_events"]["gate_evaluated"] is True
+    assert doc["buys"][0]["code"] == "002345"                                # 无事件 → 与门关同一冠军
+
+
+def test_rebalance_gate_can_block_the_whole_day_honestly(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    ev = {}
+    for c in _RANK_ORDER:
+        ev.update(_events(c, "passive_close_eve"))
+    doc = build_decision(scan, index_events=ev, rebalance_gate=True)
+    assert doc["blocked"] is True and doc["buys"] == []
+    assert {r["reason"] for r in doc["blocked_reasons"]} == {f"hard_gate.{REBALANCE_GATE}"}
+    assert doc["index_events"]["hits"] == sorted(_RANK_ORDER)
+
+
+def test_rebalance_gate_and_tiering_compose(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    snap = _snapshot(**{"601699": _card("**入场**: 允许")})
+    doc = build_decision(scan, card_snapshot=snap, tiering=True,
+                         index_events=_events("601699", "passive_close_eve"), rebalance_gate=True)
+    assert _by_code(doc)["601699"]["eligible"] is False                     # A 级卡也挡:门在分级之前
+    assert doc["buys"][0]["tier"] == "R"

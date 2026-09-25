@@ -124,7 +124,7 @@ _SUB_WHITELIST = {
     "performance": {
         "streaming_l4",
     },
-    "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering"},
+    "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering", "rebalance_gate"},
     "retention": {"bind_transcripts"},
     "calendar": {"index_rebalance"},
 }
@@ -203,6 +203,11 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # A/R 两级;false(默认)= v3.0 逐字(parity)。回滚杆是这一个键 + pool 两个一起改
     # (见 scan_config.jsonc 该块注:单独关 tiering 会让 pool 扩容跑在没有否决门的情况下)。
     ("relative_buy", "tiering"): (_t_bool, "boolean"),
+    # E6 第五门总开关(2026-09-25 指数调样事件 §2.4,v4.1):true → 扫描日 = 调样生效前夜的调样票
+    # (调入/调出、六指数任一)`rebalance_close` 硬门否决,决策文件多 `index_events` 块;false(默认)
+    # = v4.0 逐字(除 rule_version 字符串)。回滚杆就是这一个键;它不依赖 calendar.index_rebalance
+    # (文件缺席 → 门放行并记 source=absent),但两键在生产里应同开同关。
+    ("relative_buy", "rebalance_gate"): (_t_bool, "boolean"),
     # transcript 绑定总开关(2026-09-12 scene-reconstruction Task 4)。默认 true;
     # false 或无 active run 时 `transcript_binder.safe_bind_run` 仍写带 reason 的
     # 禁用报告,不清除已有证据。

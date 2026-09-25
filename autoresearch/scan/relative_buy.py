@@ -150,7 +150,9 @@ from autoresearch.trace.identity import redact_residual_secrets
 #: 新字段;不新增硬门,不改变任何一天的 `buys`/`blocked`/`rank`/`relative_decision_score`
 #: (golden 投影测试锁定,见 `tests/scan/test_relative_buy.py`)。
 SCHEMA_VERSION = 2
-RULE_VERSION = "e6.v4.0"
+RULE_VERSION = "e6.v4.1"
+# v4.1 = v4.0 + `rebalance_gate` 开关(2026-09-25 指数调样事件 §2.4):开 → 第五门 `rebalance_close`
+# (扫描日 = 调样生效前夜的调样票否决,调入调出皆算)+ 顶层 `index_events` 块;关 → v4.0 逐字(除本字符串)。
 # v4.0 = v3.0 + `tiering` 开关(2026-09-24 可买性对齐 §2.6):开 → ①卡面入场=禁止进 no_redflag 硬门;
 # ②BUY 分 A 级(卡面允许入场)/R 级(其余 eligible,裁定①「成功日 ≥1 只」的强制相对)。
 # 关(默认)→ v3.0 逐字(golden `test_tiering_off_is_v3_verbatim_even_with_prohibited_card`)。
@@ -231,6 +233,18 @@ RISK_EARLY_STOP_REASONS = frozenset({
 _ST_MARKS = ("ST", "退")
 
 _HARD_GATES = ("tradable", "data_a", "contract", "no_redflag")
+#: 第五门(2026-09-25 指数调样事件 §2.4;design F1):扫描日 = 调样生效前夜的调样票不得成为 BUY ——
+#: 买 E 收盘 = 和被动资金在同一个收盘价买入,17 次调样隔夜尺 −0.31pp(中证500 −0.72pp、胜率 22%)。
+#: **只在旋钮 `relative_buy.rebalance_gate` 开时存在**(镜像 `tiering`),关 = 四门逐字;
+#: 独立计数、不并入 no_redflag(「缺席≠否」:命中数要单独可读,见 09-25 五连撞记忆)。
+REBALANCE_GATE = "rebalance_close"
+
+
+def _hard_gates(rebalance_gate: bool) -> tuple[str, ...]:
+    """当次运行的硬门元组:旋钮关 = `_HARD_GATES` 逐字;开 = 追加第五门。所有「按门遍历」的地方读它,不读常量。"""
+    return _HARD_GATES + (REBALANCE_GATE,) if rebalance_gate else _HARD_GATES
+
+
 _FACES = ("target_align", "recall_strength", "evidence", "risk_safety")
 _TRUTHY = {"true", "1", "yes", "是"}
 _FALSY = {"false", "0", "no", "否"}
@@ -274,7 +288,7 @@ _LIVE_EXEC_LINE_CONTRACT = {
 #: `FIELD_USAGE` 不再是唯一真相,改成 `_field_usage(tiering)` 的一次调用;下面的
 #: `FIELD_USAGE = _field_usage(False)` 只是保留给"v3 那份"的既有引用(golden 常量
 #: import 等),生产运行按各自的 `tiering` 现选,不恒等于这个常量。
-def _field_usage(tiering: bool) -> dict:
+def _field_usage(tiering: bool, rebalance_gate: bool = False) -> dict:
     display_only_fields = ["card_context.ev_target", "card_context.rr", "card_context.position_raw",
                            "card_context.trigger_raw", "card_context.exec_lines",
                            "card_context.entry_stance", "card_context.no_new_position",
@@ -284,7 +298,7 @@ def _field_usage(tiering: bool) -> dict:
         display_only_fields = [f for f in display_only_fields if f != "card_context.entry_stance"]
     usage = {
         "hard_gate": {
-            "fields": list(_HARD_GATES),
+            "fields": list(_hard_gates(rebalance_gate)),
             "role": "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)",
         },
         "ranking": {
@@ -313,6 +327,12 @@ def _field_usage(tiering: bool) -> dict:
                     "(no_redflag 的一部分:entry_stance==PROHIBITED 即否决,见 _hard_gate ④);"
                     "② BUY 分级(entry_stance==ALLOWED → A 级/card_backed,其余 eligible → "
                     "R 级/relative_forced,见 build_decision 选择段)。"),
+        }
+    if rebalance_gate:
+        usage["index_events"] = {
+            "fields": ["index_events[code].phase"],
+            "role": ("hard_gate(第五门 rebalance_close:该票任一行 phase==passive_close_eve 即否决,调入调出"
+                     "皆算;源缺席 → 放行并在顶层 index_events.source=absent / gate_evaluated=false 留痕)"),
         }
     return usage
 
@@ -714,7 +734,20 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
     else:
         gates["no_redflag"] = True
 
-    return {gate: gates.get(gate, False) for gate in _HARD_GATES}, details
+    # ⑤ 指数调样生效前夜(2026-09-25 §2.4;只在旋钮开时存在,见 _hard_gates)
+    if ctx.get("rebalance_gate"):
+        events = ctx.get("index_events")
+        if events is None:
+            gates[REBALANCE_GATE] = True          # 源缺席 → 放行(缺席≠否);顶层块记 source=absent
+        else:
+            hit = next((r for r in events.get(code, []) if r.get("phase") == "passive_close_eve"), None)
+            if hit is None:
+                gates[REBALANCE_GATE] = True
+            else:
+                fail(REBALANCE_GATE, f"指数调样生效前夜:{hit.get('index_name')} {hit.get('side')} "
+                                     f"E={hit.get('eff_close_date')}(买 E 收盘 = 与被动资金同价买入)")
+
+    return {gate: gates.get(gate, False) for gate in ctx.get("hard_gates", _HARD_GATES)}, details
 
 
 # ── card_context:卡面原文一次性读齐 + 归档(spec §7.2「实际选择依据」段落的 source
@@ -1012,14 +1045,18 @@ def _selection_block(*, pool: str, eligible: list[dict], buy_pool: list[dict],
 
 def _veto_accounting_block(*, candidates: list[dict], eligible: list[dict],
                            buy_pool: list[dict], excluded: list[dict],
-                           candidates_n: int) -> dict:
+                           candidates_n: int, hard_gates: tuple[str, ...] = _HARD_GATES) -> dict:
     """否决股票数按 code 去重;每门命中数另列(可能重复计一只票);四个流水人口分别
     命名——全文任何地方都不得用"合格"指两个不同的数(bullet 5/9)。
+
+    `hard_gates`(v4.1):当次运行实际生效的硬门元组(`ctx["hard_gates"]`,= `_hard_gates
+    (rebalance_gate)` 的结果),不是恒定的 `_HARD_GATES`——第五门只在旋钮开时存在,`by_gate`
+    必须按当天真实跑过的门数遍历,不能对关着的旋钮也报一个 `rebalance_close` 键。
     """
     pinned_excluded = sorted(row["code"] for row in excluded if row["reason"] == "pinned_holding")
     vetoed_codes = sorted({row["code"] for row in candidates if not row["eligible"]})
     by_gate = {gate: sum(1 for row in candidates if row["hard_gate"].get(gate) is False)
-              for gate in _HARD_GATES}
+              for gate in hard_gates}
     return {
         "population": {
             "candidates": candidates_n,
@@ -1102,7 +1139,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
                    pool: str = POOL_FINALISTS,
                    card_snapshot: dict[str, dict] | None = None,
-                   tiering: bool = False) -> dict:
+                   tiering: bool = False,
+                   index_events: dict[str, list[dict]] | None = None,
+                   rebalance_gate: bool = False) -> dict:
     """`context/scan/<date>` → 统一相对决策文档(确定性、零 LLM、零联网、只读)。
 
     护照**现算**(`passport.build_passport`),不读盘上那份 `_candidate_passport.json`:
@@ -1133,6 +1172,14 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     /`UNKNOWN` 都落 R 级,不否决、不进 A 级——三值不是两值的化简。实测(P25):A 级在全部
     8 个历史扫描日恒为 0(没有卡带过这条入场线),这是当前证据下的预期结果,不是要调参
     数去凑出来的 bug。
+
+    `index_events` / `rebalance_gate`(v4.1,2026-09-25 指数调样事件 §2.4):`rebalance_gate=False`(缺省)
+    = v4.0 逐字,`index_events` 被忽略。`True` 时 `_hard_gate` 多第五门 `rebalance_close`:该票在
+    `index_events[code]` 里任一行 `phase == "passive_close_eve"` 即否决(调入调出皆算,E2 裁定);
+    `index_events is None`(= 盘上无 index_events.csv:源不可达或日历腿关)→ 全员放行,顶层
+    `index_events.source="absent"`、`gate_evaluated=False` 留痕;`{}` = 源可达无事件,`source="ok"`。
+    `index_events` 与 `card_snapshot` 同属「固定盘上输入」:由 `write_decision`/`verify_decision`
+    在 I/O 边界读盘构造,本函数不自己读文件。
     """
     if mode not in {MODE_SHADOW, MODE_ACTIVE}:
         raise ValueError(
@@ -1172,6 +1219,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     card_ctx = {entry["code"]: _card_context_for(entry["code"], card_snapshot) for entry in entries}
     ctx["card_context"] = card_ctx
     ctx["tiering"] = tiering
+    ctx["rebalance_gate"] = rebalance_gate
+    ctx["index_events"] = index_events
+    ctx["hard_gates"] = _hard_gates(rebalance_gate)
 
     faces = _faces_table(entries, ctx)
     excluded: list[dict] = []
@@ -1294,7 +1344,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         candidates_n=len(candidates))
     veto_accounting = _veto_accounting_block(
         candidates=candidates, eligible=eligible, buy_pool=buy_pool,
-        excluded=excluded, candidates_n=len(candidates))
+        excluded=excluded, candidates_n=len(candidates), hard_gates=ctx["hard_gates"])
     conflicts = _selection_conflicts(by_code, winner_code)
     why = _render_why(pool=pool, selection=selection, by_code=by_code, conflicts=conflicts,
                       tier_counts=tier_counts, tier=(buys[0].get("tier") if buys else None))
@@ -1316,6 +1366,15 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         # v4.0:入场门 + A/R 分级总开关 + 当日分桶计数(`None` = 关,未分级)。
         "tiering": tiering,
         "tier_counts": tier_counts,
+        # v4.1:第五门的评估留痕(只在旋钮开时出现;缺这个块 = 仪器未上线,不是「当日无事件」)。
+        **({"index_events": {
+            "source": "absent" if index_events is None else "ok",
+            "gate_evaluated": index_events is not None,
+            "n_rows": 0 if index_events is None else sum(len(v) for v in index_events.values()),
+            "n_candidates_in_events": sum(1 for row in candidates if row["code"] in (index_events or {})),
+            "hits": sorted(row["code"] for row in candidates
+                           if row["hard_gate"].get(REBALANCE_GATE) is False),
+        }} if rebalance_gate else {}),
         "date": date,
         "ruler": MAIN_RULER,
         "benchmark": {
@@ -1385,7 +1444,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         # v4.0(controller Ruling P21 (a)):`field_usage` 是 `tiering` 的函数,不是恒定
         # 常量——tiering=True 的 run 必须报 entry_stance 那天真实做过的两件事(否决 +
         # 分级),不能继续宣称它是 display_only(见 `_field_usage` 旁注)。
-        "field_usage": _field_usage(tiering),
+        "field_usage": _field_usage(tiering, rebalance_gate),
         "conflicts": conflicts,
         "why": why,
     }
@@ -1463,6 +1522,20 @@ def configured_relative_buy() -> tuple[str, bool, str | None, str, bool]:
             str(activate) if activate else None,
             pool,
             bool(block.get("tiering", False)))
+
+
+def configured_rebalance_gate() -> bool:
+    """`scan_config.relative_buy.rebalance_gate`(v4.1 第五门总开关)。独立于五元组读取:少改调用点,
+    且两个写者(`post_run` 的 write / verify)必须拿同一个值。缺文件 / 缺键 / 配置层故障 → False = v4.0
+    逐字(parity),故障路径打一行 stderr(降级必须可见)。"""
+    try:
+        from autoresearch.scan.user_config import load_user_config
+
+        block = load_user_config().get("relative_buy") or {}
+    except Exception as exc:  # noqa: BLE001 — 配置层故障不挡决策发布,但降级必须可见
+        print(f"[relative_buy] scan_config 读取失败({exc!r})→ rebalance_gate 用内建默认 False", file=sys.stderr)
+        return False
+    return bool(block.get("rebalance_gate", False))
 
 
 def configured_mode() -> str:
