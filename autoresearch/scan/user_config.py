@@ -126,7 +126,7 @@ _SUB_WHITELIST = {
     },
     "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering", "rebalance_gate"},
     "retention": {"bind_transcripts"},
-    "calendar": {"index_rebalance"},
+    "calendar": {"index_rebalance", "index_rebalance_flow"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -185,6 +185,11 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # calendar.csv 多出 kind=index_rebalance 行(L4 简报/summary/档案 §6/sector pack 自动继承);
     # false(默认)= 逐字 parity(不取网、不落文件、无新行)。回滚杆就是这一个键。
     ("calendar", "index_rebalance"): (_t_bool, "boolean"),
+    # flow_adv_days 描述字段总开关(2026-09-25 §2.2 批 B3):ETF 规模描述字段;true → prelude 多两次
+    # tushare 调用(fund_share/fund_nav);false(默认)= 字段留空(parity)。消费点
+    # `index_events.harvest_index_events`(`with_flow=knob(...)`)。只填一个 calendar.csv 的括注
+    # 数字,不进任何门/排序/评级——回滚杆就是这一个键。
+    ("calendar", "index_rebalance_flow"): (_t_bool, "boolean"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),

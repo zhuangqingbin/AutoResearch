@@ -312,6 +312,17 @@ def test_knob_calendar_index_rebalance_defaults_off():
     assert knob("calendar", "index_rebalance", False, False, cfg={"calendar": {"index_rebalance": True}}) is False
 
 
+# ───────────────────────── 白名单:flow_adv_days 描述字段(2026-09-25 §2.2 批 B3) ─────────────────────────
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None, {"enabled": True}])
+def test_calendar_index_rebalance_flow_must_be_bool(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"calendar": {"index_rebalance_flow": bad}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="index_rebalance_flow"):
+        load_user_config(p)
+
+
 # ───────────────────────── 白名单:E6 第五门(2026-09-25 指数调样事件 §2.4) ─────────────────────────
 
 

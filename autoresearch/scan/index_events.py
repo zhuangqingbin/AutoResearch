@@ -37,6 +37,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.scan.user_config import knob
 
 INDEX_EVENTS_FILENAME = "index_events.csv"
 INDEX_WHITELIST: dict[str, str] = {
@@ -202,13 +203,17 @@ def _load_detail(ann_id: str, today: str, fetch_detail) -> pd.DataFrame | None:
 
 
 def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=None, fetch_detail=None,
-                       trading_days: list[str] | None = None) -> pd.DataFrame | None:
+                       trading_days: list[str] | None = None, with_flow: bool = False) -> pd.DataFrame | None:
     """None = 源不可达(已记降级;调用方不落文件);空帧 = 源可达、六指数无窗口内事件。
 
     review 2026-09-25 #1:相位只能来自**真交易日历**。调用方没有显式传 `trading_days`(生产路径)
     且真实日历不可达、`trading_days_window` 只给出 `weekday_approx` 近似时,本函数不产表——把这一趟
     降级成「源不可达」同一世界,让硬门看到缺表就放行所有人,而不是拿一张可能把相位判反的表去挡人。
     显式传入 `trading_days` 的路径(全部测试)不受此约束——那是调用方明确信任的日历。
+
+    `with_flow=True`(2026-09-25 §2.2 批 B3):额外算 `flow_adv_days` 描述字段(ETF 被动规模 ×
+    权重代理 / ADV20)。只做描述、只填这一列——算不出(三源任一不可达)不影响事件表本身,
+    列留空(None),不阻断、不重试;算出来也不进任何门/排序/评级。
     """
     from autoresearch.data import cache
     from autoresearch.data.contracts import record_degradation
@@ -270,7 +275,16 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
             rows.append({"code": str(r.code).zfill(6), "index_code": idx, "index_name": INDEX_WHITELIST[idx],
                          "side": r.side, "ann_date": ann_date, "eff_close_date": eff, "phase": phase,
                          "source": source, "flow_adv_days": None})
-    return pd.DataFrame(rows, columns=EVENT_COLS)
+    df = pd.DataFrame(rows, columns=EVENT_COLS)
+    if with_flow and len(df):
+        from autoresearch.scan.index_flow import flow_adv_days
+        try:
+            flow = flow_adv_days(df, day)
+            if flow is not None:
+                df["flow_adv_days"] = flow.values
+        except Exception as e:  # noqa: BLE001 — 描述字段算不出不挡事件表
+            print(f"[index_events] flow_adv_days 计算失败({e!r})→ 留空", file=sys.stderr)
+    return df
 
 
 # ── 落盘 / 读回 ─────────────────────────────────────────────────────────────
@@ -299,7 +313,13 @@ def events_by_code(df: pd.DataFrame | None) -> dict[str, list[dict]] | None:
 
 
 def harvest_index_events(scan_date: str, scan_dir: Path | str, **kw) -> pd.DataFrame | None:
-    """build → 落 `index_events.csv`(源不可达时**不落文件**,让缺席保持可读)。"""
+    """build → 落 `index_events.csv`(源不可达时**不落文件**,让缺席保持可读)。
+
+    `with_flow` 未显式传入(生产路径)→ 读旋钮 `calendar.index_rebalance_flow`(默认 False =
+    parity,字段留空;开=多两次 tushare 调用 fund_share/fund_nav)。测试显式传入
+    `with_flow=` 的路径不受此约束——那是调用方明确要的值。
+    """
+    kw.setdefault("with_flow", bool(knob("calendar", "index_rebalance_flow", None, False)))
     df = build_index_events(scan_date, **kw)
     if df is not None:
         write_index_events(scan_dir, df)
