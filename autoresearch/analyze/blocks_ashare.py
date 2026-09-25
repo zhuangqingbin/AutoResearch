@@ -273,9 +273,15 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
     """A-share forward catalysts: UPCOMING share-lockup expiries 解禁 (supply
     overhang on/after curr_date) via akshare (OPTIONAL); 业绩预告/政策窗口
     left to WebSearch at reasoning time; 指数成分/调样事件 deterministic
-    (index_membership)."""
+    (index_membership, unconditionally — it has no akshare dependency, so
+    akshare's absence must not gate it; fix round 1 #1, 2026-09-26)."""
     code = sym.split(".")[0]
     out = []
+    try:
+        from autoresearch.analyze.index_membership import index_membership_lines
+        out.append(index_membership_lines(code, curr_date))
+    except Exception as e:  # noqa: BLE001 — 只读湖失败不挡日历块;与 akshare 装没装无关
+        out.append(f"_指数成分/调样事件读湖失败: {e}_")
     try:
         # D1.1:stock_restricted_release_queue_em 已登记 policy key="as_of"(entity=symbol)——
         # ImportError(akshare 未安装)与其它取数失败原先分两个 try 块渲染不同文案,合并进
@@ -310,15 +316,12 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
         else:
             out.append("**限售解禁**：akshare 未返回队列（可能无数据）。")
     except ImportError:
-        return (f"_akshare 未安装 → 解禁队列不可用；WebSearch『{code} 限售解禁 时间表』兜底。_\n\n"
-                "> 业绩预告（A股 1月底/4月底强制）、政策窗口 → 推理时 WebSearch 补，标注『实时网查』。")
+        # fix round 1 #1(2026-09-26):不再提前 return——那会把上面已经 append 的指数成分/调样
+        # 事件行连同这句"akshare 未安装"一起吞掉。两件事互不相干:这条只说解禁队列取不到,
+        # 统一的 WebSearch 说明与指数行仍在下面走同一条尾巴。
+        out.append(f"_akshare 未安装 → 解禁队列不可用；WebSearch『{code} 限售解禁 时间表』兜底。_")
     except Exception as e:
         out.append(f"_解禁队列取数失败: {e}（WebSearch『{code} 限售解禁 时间表』兜底）_")
-    try:
-        from autoresearch.analyze.index_membership import index_membership_lines
-        out.append(index_membership_lines(code, curr_date))
-    except Exception as e:  # noqa: BLE001 — 只读湖失败不挡日历块
-        out.append(f"_指数成分/调样事件读湖失败: {e}_")
     out.append("> 业绩预告窗口（A股 1月底/4月底强制）、政策窗口（政治局会议/两会/降准降息）→ 推理时用 **WebSearch** 补，"
                "标注『实时网查』。指数调样已由上方确定性行供给，**不再网查**。")
     return "\n\n".join(out)

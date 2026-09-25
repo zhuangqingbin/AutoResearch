@@ -323,6 +323,19 @@ def test_stock_restricted_release_queue_em_goes_through_lake(monkeypatch):
 
 
 @pytest.mark.unit
+def test_ashare_corporate_calendar_keeps_membership_lines_when_akshare_import_fails(monkeypatch):
+    """fix round 1 #1(2026-09-26,coordinator review):akshare ImportError 分支曾提前 return,
+    把新加的指数成分/调样事件行连同"我们不知道"的坦白一起吞掉——该模块跟 akshare 装没装无关,
+    没理由被这条分支挡住(wave 的"说清楚不知道什么"铁律,在这条可达路径上失守)。"""
+    def boom(endpoint, params, today=None, fetch=None):
+        raise ImportError("akshare not installed")
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch", boom)
+    out = blocks_ashare.ashare_corporate_calendar("300308.SZ", "2026-08-30")
+    assert "akshare 未安装" in (out or "")
+    assert "**指数成分**" in (out or "") and "**调样事件" in (out or "")
+
+
+@pytest.mark.unit
 def test_stock_lhb_stock_statistic_em_goes_through_lake(monkeypatch):
     calls: list[tuple[str, dict]] = []
     stat = pd.DataFrame({"代码": ["300308"], "上榜次数": [3], "最近上榜日": ["2026-08-20"],
