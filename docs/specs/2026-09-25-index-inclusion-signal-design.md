@@ -63,10 +63,10 @@
 | `ann_date` | 公告日 | |
 | `eff_close_date` | **被动调仓的那个收盘日**（半年调样 = 第二个周五；公告文本写「X 日起生效」则取 X 的前一交易日，写「X 日收市后」则取 X） | 解析不出（如「自退市日起」）→ 空，`phase=unknown_eff` |
 | `phase` | 按扫描日 D 算：`announced_runup`(A≤D≤E−2) / **`passive_close_eve`**(D=E−1) / `effective`(D=E) / `post`(E<D≤E+3) / `unknown_eff` | |
-| `source` | `csindex`(公告) / `rule`(仅日期,无名单) | |
+| `source` | `csindex`(公告原文可解析) / `rule`(仅周期规则推日期,无名单) / `none`(两者都不成立——解析不出且不套规则,如临时调整公告;此时行仍保留,`phase=unknown_eff`) | |
 | `flow_adv_days` | Σ(该指数 ETF 规模 × 新权重)/ADV20，跨指数净额；批 B3 之前恒空 | 空 = 未计算，不是 0 |
 
-生产者：prelude `calendar` 步内新增一腿（不加 `STEP_NAMES`），codes = L2-200 ∪ finalists ∪ **当日 E6 候选**（finalist ⊂ L2-200，已覆盖）。**源不可达 → 文件缺席 + `degraded.json` 一行**；源可达无事件 → 只有表头的空文件。两者在 `run_health.index_events.source ∈ {ok, absent, disabled}` 分开记（三态，见 §2.7；`disabled` = 旋钮关且无文件，与「旋钮开但源不可达」的 `absent` 是两个不同的因）。`index_events.csv` 本身收**六指数全部**公告行（不过 codes 过滤）；`calendar.csv` 第三腿才按上面这份 codes（L2∪finalists∪当日候选）过滤——同一份中证公告数据在两个产物里的人口不同，前者是全量事实、后者是产品选择。
+生产者：prelude `calendar` 步内新增一腿（不加 `STEP_NAMES`），codes = L2-200 ∪ finalists ∪ **当日 E6 候选**（finalist ⊂ L2-200，已覆盖）。**源不可达 → 文件缺席 + `degraded.json` 一行**；源可达无事件 → 只有表头的空文件。两者在 `run_health.index_events.source ∈ {ok, absent, disabled, error}` 分开记（四态，见 §2.7；`disabled` = 旋钮关且无文件，与「旋钮开但源不可达」的 `absent`、「文件在场但读不出来」的 `error` 是三个不同的因）。`index_events.csv` 本身收**六指数全部**公告行（不过 codes 过滤）；`calendar.csv` 第三腿才按上面这份 codes（L2∪finalists∪当日候选）过滤——同一份中证公告数据在两个产物里的人口不同，前者是全量事实、后者是产品选择。
 
 **生效日解析细则（实施后补，原设计未预见的三条边界，均已有 fixture/测试锁定）**：
 
@@ -76,7 +76,7 @@
 
 ### 2.3 日历第三腿（批 B1；旋钮 `calendar.index_rebalance`（平铺布尔，镜像 `l2.knife_cap`），代码内建默认 `False` = parity；**生产配置已开 `True`**）
 
-`harvest_calendar` 读 `index_events.csv` 落 `kind="index_rebalance"`，`event_date=eff_close_date`，`detail=f"{index_name} {调入|调出}"`，`ratio=flow_adv_days`（可空）。
+`harvest_calendar` 读 `index_events.csv` 落 `kind="index_rebalance"`，`event_date=eff_close_date`，`detail=f"{index_name} {调入|调出}|{phase}"`（实施后补：`|{phase}` 后缀不是展示字面量的一部分——`calendar_flags` 读回时用 `str(detail).partition("|")` 把它切掉,只用来在渲染时分「生效前夜」与「其它相位」两种文案,`calendar.csv` 本身对读者呈现的仍是切掉后缀的那一半），`ratio=flow_adv_days`（可空）。
 
 `calendar_flags` 文案按相位分两种，**只有 E−1 带方向词，且方向是「禁止」**：
 
@@ -93,8 +93,8 @@
   - 该票有 `phase == "passive_close_eve"` 的行（add 或 drop，任一指数；E2 裁定）→ `fail("rebalance_close", f"指数调样生效前夜:{index_name} {调入|调出} E={eff_close_date}")`（明细译成中文调入/调出，不是原始 `side` 字面量 `add`/`drop`——同 `calendar.py` 日历行、`self_review` 卡片契约 lint 三处统一译法，task-12 附带修复 B）；
   - 否则 `True`，`gate_evaluated=true`。
 - `write_decision/verify_decision` 在 I/O 边界读 `index_events.csv` 传入 `build_decision(index_events=...)`，保持纯函数与字节级 parity 纪律。
-- 决策文件新增块（仅旋钮开时）`index_events: {source: ok|absent|error, n_rows, n_candidates_in_events, hits: [...], gate_evaluated: bool}`；`blocked_reasons` 出现 `hard_gate.rebalance_close` 分桶。**不并入 `no_redflag`**（F11）。旋钮关时该块缺席 = 「仪器未上线」，读历史决策文件先看有没有这个块再下结论（09-25 第 5 条教训）。
-- **`source` 是三态，不是两态（实施后补，fix round 1，2026-09-26）**：`absent` = 旋钮开但 `index_events.csv` 不在场；`error` = 文件在场但读不出来（如 `write_index_events` 是非原子写——直接 `to_csv`，不像 `write_decision` 自己用的临时文件 + `replace`——中断的一次会留下一个读不出来的半成品，如零字节文件）。两者门后果完全相同（全员放行），但因不同，不得合并成一个值：如果不设 `error`，读取异常会不设防地穿透 `_index_events_input`，进而穿透整个 `write_decision`/`verify_decision`，导致当天**完全不产出决策文件**（比任何一道门单独否决都坏，`_relative_buy_decision.json` 是 `buyability`/`relative_ledger` 都要读的产物）；而如果把这种情形悄悄记成 `absent`，就是把「我们读不出来」和「压根没有这回事」这两个不同的世界编码进同一个值——本项目的「缺席 ≠ 否」纪律明确禁止这么做。`_index_events_input`（`relative_buy.py`）在 I/O 边界 try/except 读盘异常时置位 `error`；`build_decision` 本身不读盘，也不判断「为什么」是 `None`，只原样记账。
+- 决策文件新增块（仅旋钮开时）`index_events: {source: ok|absent|disabled|error, n_rows, n_candidates_in_events, n_unresolved_eff, hits: [...], gate_evaluated: bool}`；`blocked_reasons` 出现 `hard_gate.rebalance_close` 分桶。**不并入 `no_redflag`**（F11）。旋钮关时该块缺席 = 「仪器未上线」，读历史决策文件先看有没有这个块再下结论（09-25 第 5 条教训）。
+- **`source` 是四态，不是两态（实施后补，fix round 1 引入 `error`，final whole-branch review minor-1 引入 `disabled`）**：`absent` = 旋钮开但 `calendar.index_rebalance` 那条腿也开着，源当天真的不可达；`disabled` = `calendar.index_rebalance` 这条腿本身关着——单杆回滚（只关日历腿、留着 E6 门）会留下的常态，不是任何意义上的降级；`error` = 文件在场但读不出来（如 `write_index_events` 是非原子写——直接 `to_csv`，不像 `write_decision` 自己用的临时文件 + `replace`——中断的一次会留下一个读不出来的半成品，如零字节文件）。三者门后果完全相同（全员放行），但因不同，不得合并成一个值：如果不设 `error`，读取异常会不设防地穿透 `_index_events_input`，进而穿透整个 `write_decision`/`verify_decision`，导致当天**完全不产出决策文件**（比任何一道门单独否决都坏，`_relative_buy_decision.json` 是 `buyability`/`relative_ledger` 都要读的产物）；而如果把 `absent`/`disabled`/`error` 中的任意两个合并成同一个值，就是把不同的因编码进同一个值——本项目的「缺席 ≠ 否」纪律明确禁止这么做（`absent`/`disabled` 的区分同理适用于 `run_health.index_events` 与 brief ③，见 §2.7 与 minor-1）。`_index_events_input`（`relative_buy.py`）在 I/O 边界 try/except 读盘异常时置位 `error`，用 `knob("calendar", "index_rebalance", ...)` 区分 `absent`/`disabled`；`build_decision` 本身不读盘，也不判断「为什么」是 `None`，只原样记账。`n_unresolved_eff`（I3）：候选中带 `phase="unknown_eff"` 行的只数——门沉默的五种因里唯一不可读的一种，门放行且不进 `hits`，此前与「没有调样事件」在决策文件与 brief 上都长得一模一样。
 - 与「成功日 ≥1 BUY」裁定的关系：E−1 夜若全部合格票都是调样票 → 当日 BLOCKED 是**正确输出**（同 08-19 R-E2 语义：无合格票则 BLOCKED）。一年最多 4 天。
 
 ### 2.5 L4 卡规则（批 B2，两引擎同修）
@@ -105,9 +105,15 @@
 
 `autoresearch/analyze/blocks_ashare.py:313,317` 的「指数调样 → WebSearch 补」换成确定性行：读湖最新 `index_weight` 给出「当前属于:沪深300/中证A500…」，读 `csindex_rebalance_detail` 湖给出近 60 日涉及本票的调样事件（有 → 事实行；无 → 「近 60 日无调样事件（源可达）」；源不可达 → 「调样事件:源不可达」）。政策窗口仍留 WebSearch。美股不动（`us-intel.md:46` 已有面）。
 
+**确定性行是主源，WebSearch 是它的兜底，不是它的替代（实施后补，final whole-branch review，I4 option c）**：`index_weight`（成分快照）当前在 production 里**没有任何自动生产者**——B3 批（ETF 规模描述字段，`autoresearch/scan/index_flow.py`）之前，唯一会写它的是手工普查 CLI（`autoresearch/research/index_rebalance_census.py`），日常 scan-market 跑动不会碰它。这与「指数调样 → WebSearch 补」被换成确定性行、且该行无条件调用（不看 akshare 装没装）的设计意图相冲突：合并后这条成分行会**永久**读成「湖内无（未取数）」，而本节与 `.claude/skills/stock-research/lite-playbook.md`/`engine-playbook.md` 都在断言「调样不再网查」——一份文档声称有能力，产线上却没有任何东西在产这份数据。
+
+被否的两个选项：(a) 把 `flow_adv_days` 那条旋钮打开——审查证明那个旋钮只在**已经有事件**的日子才触发，买到的是一个 ADV 数字，不解决"成分快照没人产"这件事；(b) 加一条月度刷新——那是变更冻结期内的新生产节拍，不该在一次修复波里加。
+
+采纳：`index_membership_lines`（`autoresearch/analyze/index_membership.py`）额外返回 `lake_has_nothing: bool`——只问成分腿（`index_weight` 快照是否曾被取数），不看事件腿（后者由 scan-market 每日日历步顺带产，会随时间自愈，「近 60 日无调样事件（源可达）」本身已是一句有信息量的确定性答案，不该触发网查）。`blocks_ashare.ashare_corporate_calendar` 据此在成分行之后补一句 WebSearch 兜底（`'{code} 是否属于沪深300/中证500/中证1000/中证A500/科创50/创业板指 最新成分'`，标注『实时网查』、不计入确定性 context），**仅在** `lake_has_nothing=True` 时补；湖里有数据时确定性行是更好的答案，搜索仍应保持退役状态。原尾注「指数调样已由确定性行供给，不再网查」的无条件断言已删——那句话现在只对一半情形为真。这条兜底会在 B3 批的数据生产者真正上线后失去用武之地，但不在此之前删除它。
+
 ### 2.7 观察义务与归因
 
-- `run_health.json` 加 `index_events: {source ok|absent|disabled, n_rows, n_finalists_involved, n_passive_close_eve}`（旋钮开或文件在场才出现，见 `index_events_health`，`autoresearch/scan/health.py`；`disabled` = 旋钮关且无文件，`absent` = 旋钮开但源不可达，两者是不同的因）。**门命中数不在这里**：`run_health` 在 E6 门跑之前就写盘，读不到门到底否决了谁——命中数只在决策文件 `index_events.hits`（旋钮开时的三态 `source: ok|absent|error`，见 §2.4）与 brief ③（有命中时加一行「⛔ 调样前夜否决 N 只」）。
+- `run_health.json` 加 `index_events: {source ok|absent|disabled|error, n_rows, n_finalists_involved, n_passive_close_eve, n_unresolved_eff}`（旋钮开或文件在场才出现，见 `index_events_health`，`autoresearch/scan/health.py`；`disabled` = 旋钮关且无文件，`absent` = 旋钮开但源不可达，`error` = 文件在场但读不出来（实施后补，final whole-branch review I2：读表异常此前会不设防地穿透整个 `run_health`，四个生产调用点都是 `contextlib.suppress(Exception)`，一炸就是整份体检都不刷新），三者是不同的因；`n_unresolved_eff`（I3）= `phase="unknown_eff"` 的行数，门沉默五因里唯一不可读的一种）。**门命中数不在这里**：`run_health` 在 E6 门跑之前就写盘，读不到门到底否决了谁——命中数只在决策文件 `index_events.hits`（旋钮开时的四态 `source: ok|absent|disabled|error`，见 §2.4）与 brief ③（有命中时加一行「⛔ 调样前夜否决 N 只」；`n_unresolved_eff>0` 时另加一行「❓ N 只候选生效日待定」）。
 - `_buyability.json`：命中时 `wall="gates"` 的子原因可读出 `rebalance_close`（不新增 wall 态）。
 - 半年读数（`docs/research/`）：每个 E−1 日，被拦票的实现 `gap_c1_o2` 与同日未变动成分股对照——**预期为负**；若连续两次调样为正，回滚杆一行关门并把读数交用户裁。
 - 对账：月末 `index_weight` 快照 vs 公告名单 → `csindex` 解析器的正确率读数（`n_matched/n_announced`），进 prelude 摘要一行。
@@ -130,12 +136,12 @@ Python 侧共用；agent 定义两侧同改（§2.5）；`.codex` 侧 hook 若�
 
 | # | 读数 | 通过判据 | 怎么读 |
 |---|---|---|---|
-| O1 | 解析器 fixture：2026-09-09 临时调整 xlsx（166 行） | 行数 = 166，六指数行全部入事件表，非六指数行入湖不进表 | `tests/data/test_csindex.py` |
-| O2 | 生效日推导 | 「X 日起生效」→ X 前一交易日；「X 日收市后」→ X；「自退市日起」→ 空 + `unknown_eff` | 同上，三条 fixture 文本 |
-| O3 | 键不撞 | 两个公告 id / 两个指数同月 → 湖中两份文件 | `tests/data/test_cache_keys.py` |
-| O4 | parity | 旋钮关（`calendar.index_rebalance=false` ∧ `relative_buy.rebalance_gate=false`）→ 8 个历史 run 的 `calendar.csv` 逐字节不变，`_relative_buy_decision.json` **除 `rule_version` 外**逐字节不变（`RULE_VERSION` 无条件升到 `"e6.v4.1"`，逐字镜像 v4.0 对 `tiering` 的先例，见 §2.4） | 回放脚本 |
-| O5 | 门活体 | 构造 `index_events` 使某历史 run 的 rank1 候选处于 `passive_close_eve` → 该票 `hard_gate.rebalance_close=false`，`blocked_reasons` 出现该桶，`gate_evaluated=true` | `tests/scan/test_relative_buy_rebalance_gate.py` |
-| O6 | 缺席 ≠ 否 | 源不可达 → 文件缺席 + `degraded.json` 行 + 决策文件 `source=absent, gate_evaluated=false`；源可达无事件 → 空表 + `source=ok, n_rows=0, gate_evaluated=true` | 同上两用例 |
+| O1 | 解析器 fixture：小样本合成 xlsx（实施后补：`tests/data/test_csindex_source.py` 提交的是一份 9 行的合成夹具，同 2026-09-09 临时调整公告的真实版式，不是那份公告本身的 166 行——166 行只在 Task 2 的一次性「真源冒烟」手工核对过，从未进测试） | `test_parse_adjustment_xlsx_long_table`：行数 = 4+4+1=9，六指数(上证380/沪深300/中证500)行全部入长表；非六指数行的过滤发生在下游 `build_index_events` 的白名单判定，不在这个解析器测试里 | `tests/data/test_csindex_source.py` |
+| O2 | 生效日推导 | 「X 日起生效」→ X 前一交易日；「X 日收市后」→ X；「自退市日起」→ 空 + `unknown_eff` | 同上，`test_parse_effective_date` 的参数化 fixture |
+| O3 | 键不撞 | 两个公告 id / 两个指数同月 → 湖中两份文件 | `tests/data/test_index_event_endpoints.py` |
+| O4 | parity | 旋钮关（`calendar.index_rebalance=false` ∧ `relative_buy.rebalance_gate=false`）→ `_relative_buy_decision.json` **除 `rule_version` 外**逐字节不变（`RULE_VERSION` 无条件升到 `"e6.v4.1"`，逐字镜像 v4.0 对 `tiering` 的先例，见 §2.4）。实施后补，纠正两处过度承诺：① 只测了决策文件半边，`calendar.csv` 的旋钮关 parity 不是靠回放历史 run 验证的——它靠构造性论证成立（第三腿整段在 `if index_rebalance:` 之后，旋钮关时那段代码从不执行，是既有单测 `test_harvest_calendar_third_leg_is_off_by_default` 锁的不变量），没有做过、也不需要做跨历史 run 的字节级回放；② 决策文件那半边可回放的历史 run 是 **7 个**不是 8 个（63/70 已发布 run 没有 staging 镜像或没有决策文件，不可回放） | 回放脚本（decision 半边）+ 单测（calendar 半边的构造性论证） |
+| O5 | 门活体 | 构造 `index_events` 使某候选处于 `passive_close_eve` → 该票 `hard_gate.rebalance_close=false`，`blocked_reasons` 出现该桶，`gate_evaluated=true` | `tests/scan/test_relative_buy.py`（实施后补：不是独立文件——`test_rebalance_gate_vetoes_the_passive_close_eve_row_and_says_where` 等用例并入了既有的 `test_relative_buy.py`） |
+| O6 | 缺席 ≠ 否 | 源不可达 → 文件缺席 + `degraded.json` 行 + 决策文件 `source=absent, gate_evaluated=false`；源可达无事件 → 空表 + `source=ok, n_rows=0, gate_evaluated=true`；日历腿本身关着 → `source=disabled`（final whole-branch review 追加的第四态，见 minor-1） | 同上文件，`test_rebalance_gate_source_*` 系列用例 |
 | O7 | 变异 | 删掉 `_hard_gate` 第 ⑤ 段 → O5 红；删掉日历第三腿 → 日历测试红；删掉 agent def 那一行 → 锚测试红 | 手工变异一次，记录在 PR 说明 |
 | O8 | 普查可复现 | `python -m autoresearch.research.index_rebalance_census` 复现附录 A 的 E−1 行（±0.02pp） | 研究 CLI |
 
@@ -156,9 +162,20 @@ Python 侧共用；agent 定义两侧同改（§2.5）；`.codex` 侧 hook 若�
 | B0 | 端点/契约登记、`csindex` adapter、`index_events` 产物登记与生产者、普查 CLI 产品化 | 批 4 冻结窗内可在 worktree 开发，**合并等批 4 结束** | 全惰性（无消费者），无需杆 |
 | B1 | 日历第三腿 + flags/section 文案 | 批 4 后；**2026-11-27 前合并** | `calendar.index_rebalance=false`（一行，逐字 parity；**生产已开 `true`**，与 B2 应同开同关） |
 | B2 | E6 硬门 + 决策文件块 + agent def 两引擎 + self_review warn + run_health/brief | 同上 | `relative_buy.rebalance_gate=false`（一行；**生产已开 `true`**，与 B1 应同开同关） |
-| B3 | ETF 规模 → `flow_adv_days`；stock-research 确定性行 | 12 月周期之后 | presence-gated，缺则文案无数字 |
+| B3 | ETF 规模 → `flow_adv_days`；stock-research 确定性行 + WebSearch 兜底（实施后补，I4） | 12 月周期之后 | `calendar.index_rebalance_flow=false`（一行，独立于 `calendar.index_rebalance`，代码内建默认 `False`；实施后补：spec 原文未提这个旋钮名，B3 落地时才补——presence-gated，缺则文案无数字） |
 
 顺序理由：B1 与 B2 分杆——「看得见」和「否决」是两件事，观察 L2 需要 B1 单独在场。
+
+**B3 尚未上线的那一半（实施后补，final whole-branch review，I4）**：`index_weight`（成分快照,
+`analyze/index_membership._membership` 的数据源）在 production 里目前**没有任何自动生产者**——
+`calendar.index_rebalance_flow` 打开只会补一个 ETF 规模数字（`flow_adv_days`），不会让
+`index_weight` 被取数,两者是不同的三源（`fund_basic`/`fund_share`/`fund_nav` vs
+`index_weight`）。合并后到 B3 的成分数据生产者真正接上之前，stock-research full 档的成分行会
+持续读成「湖内无（未取数）」；`ashare_corporate_calendar`（`analyze/blocks_ashare.py`）在这段
+时间内补了一句 WebSearch 兜底（§2.6），条件是确定性行自己报告「湖内（成分）真的什么都没有」——
+这不是本节表里的哪一根杆能开关的东西，是数据层缺一个尚未排期的生产者，读者不该把 B3 这一行的
+「presence-gated」读成「B3 一上线这条兜底就自动消失」：兜底会一直挂着，直到有代码真的去写
+`index_weight`。
 
 ## 5. 测试计划（按批）
 
