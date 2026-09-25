@@ -280,3 +280,33 @@ def test_production_config_l2_shape_knobs():
     assert l2["knife_cap"] is True
     assert l2["floors"]["健康"] == 25 and l2["floors"]["反转"] == 6 and l2["floors"]["低位转强"] == 6
     assert sum(l2["floors"].values()) == 103
+
+
+# ───────────────────────── 白名单:日历第三腿(2026-09-25 指数调样事件 §2.3) ─────────────────────────
+
+
+def test_calendar_block_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"calendar": {"index_rebalance": True}}), encoding="utf-8")
+    assert load_user_config(p) == {"calendar": {"index_rebalance": True}}
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None, {"enabled": True}])
+def test_calendar_index_rebalance_must_be_bool(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"calendar": {"index_rebalance": bad}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="index_rebalance"):
+        load_user_config(p)
+
+
+def test_calendar_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"calendar": {"index_rebalanc": True}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="calendar"):
+        load_user_config(p)
+
+
+def test_knob_calendar_index_rebalance_defaults_off():
+    assert knob("calendar", "index_rebalance", None, False, cfg={}) is False
+    assert knob("calendar", "index_rebalance", None, False, cfg={"calendar": {"index_rebalance": True}}) is True
+    assert knob("calendar", "index_rebalance", False, False, cfg={"calendar": {"index_rebalance": True}}) is False

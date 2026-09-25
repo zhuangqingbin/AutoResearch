@@ -423,7 +423,8 @@ def run_prelude(
         df = harvest_calendar(date, codes)
         n_u = int((df["kind"] == "unlock").sum()) if len(df) else 0
         n_d = int((df["kind"] == "disclosure").sum()) if len(df) else 0
-        return f"解禁 {n_u} + 披露 {n_d}"
+        n_i = int((df["kind"] == "index_rebalance").sum()) if len(df) else 0
+        return f"解禁 {n_u} + 披露 {n_d}" + (f" + 调样 {n_i}" if n_i else "")
 
     def _catalyst():
         import pandas as pd

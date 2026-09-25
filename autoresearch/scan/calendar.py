@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.scan.user_config import knob
 
 _CAL_COLS = ["code", "kind", "event_date", "detail", "ratio"]
 
@@ -34,9 +35,17 @@ def _last_quarter_end(date: str) -> str:
 
 
 def harvest_calendar(date: str, codes, root: Path | None = None,
-                     horizon_days: int = 35) -> pd.DataFrame:
-    """拉解禁(≤14 天分块防 6000 行分页截断)+ 预约披露,过滤 codes → calendar.csv。网络。"""
+                     horizon_days: int = 35, index_rebalance: bool | None = None) -> pd.DataFrame:
+    """拉解禁(≤14 天分块防 6000 行分页截断)+ 预约披露 + (旋钮开)指数调样,过滤 codes → calendar.csv。网络。
+
+    第三腿(2026-09-25 §2.3):`index_rebalance=None` → 读旋钮 `calendar.index_rebalance`(默认 False =
+    parity)。开时先由 `index_events.harvest_index_events` 落全量 `index_events.csv`(源不可达 → 不落),
+    再把 **want 内且有生效日** 的行写成 `kind="index_rebalance"`:`event_date=` 被动调仓收盘日,
+    `detail=f"{指数} {调入|调出}|{phase}"`(phase 让 `calendar_flags` 分两种文案),`ratio=flow_adv_days`。
+    `unknown_eff` 行不进日历(没有日期就不是日历事实)。
+    """
     from autoresearch.data.tushare_source import _code6, _pro, _ts_call
+    index_rebalance = knob("calendar", "index_rebalance", index_rebalance, False)
     root = root or ws.scan_root()
     outdir = root / date
     outdir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +91,20 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
             if ev and ev >= cut:
                 rows.append({"code": r.code, "kind": "disclosure", "event_date": ev,
                              "detail": f"预约披露(期 {period})", "ratio": None})
+
+    if index_rebalance:
+        from autoresearch.scan import index_events as _ie
+
+        ev = _ie.harvest_index_events(date, outdir)
+        if ev is not None:
+            for r in ev.itertuples(index=False):
+                eff = r.eff_close_date
+                if r.code not in want or not isinstance(eff, str) or not eff:
+                    continue
+                flow = None if r.flow_adv_days is None or pd.isna(r.flow_adv_days) else float(r.flow_adv_days)
+                rows.append({"code": r.code, "kind": "index_rebalance", "event_date": str(eff)[:8],
+                             "detail": f"{r.index_name} {'调入' if r.side == 'add' else '调出'}|{r.phase}",
+                             "ratio": flow})
 
     df = pd.DataFrame(rows, columns=_CAL_COLS).sort_values(["event_date", "code"]).reset_index(drop=True)
     df.to_csv(outdir / "calendar.csv", index=False)
@@ -157,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="解禁+预约披露日历 harvest(L2∪finalists;网络)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--horizon", type=int, default=35, help="解禁前瞻天数,默认 35")
+    ap.add_argument("--index-rebalance", action="store_true", default=None, help="强制开第三腿(缺省读旋钮)")
     args = ap.parse_args(argv)
     d = ws.scan_root() / args.date
     codes: set[str] = set()
@@ -169,10 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     if not codes:
         print("[calendar] 无 L2/finalists staging,先跑 universe")
         return 1
-    df = harvest_calendar(args.date, codes, horizon_days=args.horizon)
+    df = harvest_calendar(args.date, codes, horizon_days=args.horizon, index_rebalance=args.index_rebalance)
     n_u = int((df["kind"] == "unlock").sum()) if len(df) else 0
     n_d = int((df["kind"] == "disclosure").sum()) if len(df) else 0
-    print(f"[calendar] {len(codes)} 票 → 解禁 {n_u} 条 + 披露 {n_d} 条 → {d / 'calendar.csv'}")
+    n_i = int((df["kind"] == "index_rebalance").sum()) if len(df) else 0
+    print(f"[calendar] {len(codes)} 票 → 解禁 {n_u} 条 + 披露 {n_d} 条 + 调样 {n_i} 条 → {d / 'calendar.csv'}")
     return 0
 
 

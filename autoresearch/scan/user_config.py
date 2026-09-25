@@ -102,6 +102,9 @@ _TOP_WHITELIST = {
     # 白名单同样只负责「开关存在且类型对」,解析+默认值兜底留在消费侧(同
     # `relative_buy.configured_relative_buy()` 的既有分工)。
     "retention",
+    # 2026-09-25 指数调样事件 §2.3:日历第三腿总开关(平铺布尔,镜像 l2.knife_cap)。默认 false = parity;
+    # 消费点 scan/calendar.harvest_calendar(index_rebalance=knob)。
+    "calendar",
 }
 _SUB_WHITELIST = {
     "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
@@ -123,6 +126,7 @@ _SUB_WHITELIST = {
     },
     "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering"},
     "retention": {"bind_transcripts"},
+    "calendar": {"index_rebalance"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -177,6 +181,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # 行业席位块(2026-09-24 §2.3):{enabled: bool, per_sector: int, max_sectors: int}——
     # 键义见 scan/sector_seats.pick_sector_seats;false/缺省(默认)= 不出席 = parity。
     ("l2", "sector_seats"): (_t_dict, "object:{enabled,per_sector,max_sectors}"),
+    # 日历第三腿(2026-09-25 §2.3):true → prelude calendar 步顺带取中证调样公告落 index_events.csv,
+    # calendar.csv 多出 kind=index_rebalance 行(L4 简报/summary/档案 §6/sector pack 自动继承);
+    # false(默认)= 逐字 parity(不取网、不落文件、无新行)。回滚杆就是这一个键。
+    ("calendar", "index_rebalance"): (_t_bool, "boolean"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),

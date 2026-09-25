@@ -70,3 +70,72 @@ def test_assemble_embeds_calendar(tmp_path):
     assert "000001 20260716" in md                     # 披露锚真进了 summary,不是只剩个标题
     assert "000003" not in md                          # 14 日窗外的仍被挡在外面
     assert "### 📅" not in md                          # 内标题已剥,不与节标题重复
+
+
+# ───────────────────────── 第三腿:指数调样(2026-09-25 §2.3) ─────────────────────────
+from autoresearch.scan import index_events as ie  # noqa: E402
+
+
+class _DeadPro:
+    """解禁/披露两腿离线:方法一律抛 → harvest_calendar 那两段按既有 try/except 静默跳过。"""
+
+    def share_float(self, **kw):
+        raise RuntimeError("offline")
+
+    def disclosure_date(self, **kw):
+        raise RuntimeError("offline")
+
+
+_EV = pd.DataFrame([
+    {"code": "000001", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260529",
+     "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+    {"code": "999999", "index_code": "000905", "index_name": "中证500", "side": "drop", "ann_date": "20260529",
+     "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": 0.4},
+    {"code": "000002", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260909",
+     "eff_close_date": None, "phase": "unknown_eff", "source": "none", "flow_adv_days": None},
+], columns=ie.EVENT_COLS)
+
+
+def _offline(monkeypatch):
+    import autoresearch.data.tushare_source as ts_src
+    from autoresearch.scan import calendar as cal
+    monkeypatch.setattr(ts_src, "_pro", lambda: _DeadPro())
+    monkeypatch.setattr(cal, "knob", lambda block, key, cli, default, cfg=None: default if cli is None else cli)
+
+
+def test_harvest_calendar_third_leg_is_off_by_default(tmp_path, monkeypatch):
+    from autoresearch.scan import calendar as cal
+    _offline(monkeypatch)
+
+    def must_not_run(*a, **k):
+        raise AssertionError("index_events must not be harvested when the knob is off")
+    monkeypatch.setattr(ie, "harvest_index_events", must_not_run)
+    df = cal.harvest_calendar("2026-06-11", {"000001"}, root=tmp_path)
+    assert df.empty and (tmp_path / "2026-06-11" / "calendar.csv").exists()
+    assert not (tmp_path / "2026-06-11" / "index_events.csv").exists()
+
+
+def test_harvest_calendar_third_leg_filters_to_wanted_codes_and_keeps_phase(tmp_path, monkeypatch):
+    from autoresearch.scan import calendar as cal
+    _offline(monkeypatch)
+
+    def fake_harvest(date, outdir, **k):
+        ie.write_index_events(outdir, _EV)
+        return _EV
+    monkeypatch.setattr(ie, "harvest_index_events", fake_harvest)
+    df = cal.harvest_calendar("2026-06-11", {"000001", "000002"}, root=tmp_path, index_rebalance=True)
+    rows = df[df["kind"] == "index_rebalance"]
+    assert rows["code"].tolist() == ["000001"]                    # 999999 不在 want;000002 无生效日不进日历
+    assert rows.iloc[0]["event_date"] == "20260612"
+    assert rows.iloc[0]["detail"] == "沪深300 调入|passive_close_eve"
+    assert pd.isna(rows.iloc[0]["ratio"])
+    assert (tmp_path / "2026-06-11" / "index_events.csv").exists()   # 全量表照落(999999 也在里面)
+    assert len(ie.load_index_events(tmp_path / "2026-06-11")) == 3
+
+
+def test_harvest_calendar_source_absent_leaves_other_legs_intact(tmp_path, monkeypatch):
+    from autoresearch.scan import calendar as cal
+    _offline(monkeypatch)
+    monkeypatch.setattr(ie, "harvest_index_events", lambda date, outdir, **k: None)
+    df = cal.harvest_calendar("2026-06-11", {"000001"}, root=tmp_path, index_rebalance=True)
+    assert df.empty and not (tmp_path / "2026-06-11" / "index_events.csv").exists()
