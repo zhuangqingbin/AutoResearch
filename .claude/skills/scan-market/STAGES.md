@@ -91,7 +91,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 **哨兵建议**(`menu.sentinel_advice`,按全市场健康占比):<3% 建议哨兵档(跳 L3+L4 省 ~70% token);3–5% 仅 consider;≥5% 全扫。**由人拍板不自动**。
 
-**落刀帽与 floor(2026-09-24 §2.2)**:`l2.knife_cap` 开→merit 核/floor 桶/回填三步各自的落刀份额算的是**当日 L0 全市场帧**的落刀面(`falling_knife_mask`),不是 L2 自身占比;**反转/低位转强两桶豁免**(语义即「跌过、在转」);被帽跳过的落刀行由下一个非落刀候选顶上补名额,顶替行打 `selection_detail="knife_cap"`——复盘数这一列即知帽生效了多少行。生产 `l2.floors` 已覆盖(健康 15→25、反转 12→6、低位转强 8→6),`DEFAULT_FLOORS` 代码常量不动。
+**落刀帽与 floor(2026-09-24 §2.2)**:`l2.knife_cap` 开→merit 核/floor 桶/回填三步各自的落刀份额算的是**当日 L0 全市场帧**的落刀面(`falling_knife_mask`),不是 L2 自身占比;**反转/低位转强两桶豁免**(语义即「跌过、在转」);被帽跳过的落刀行由下一个非落刀候选顶上补名额,顶替行打布尔列 **`knife_cap_swap`**——复盘数**这一列**才知道帽生效了多少行。⚠️ **不要去数 `selection_detail == "knife_cap"`**:floor 桶(lane)的顶替行在 `selection_detail` 里恒写桶名、从不写 `knife_cap`,那个字符串只出现在 merit/回填两步——按它数最多会漏掉 200 行里的 ~81 行(2026-09-24 修复轮 P14 为此新增了 `knife_cap_swap`;旧 CSV 无此列时 `menu_replay` 会退回旧口径并在读数里标明「漏计 floor 桶」,诚实但偏低)。生产 `l2.floors` 已覆盖(健康 15→25、反转 12→6、低位转强 8→6),`DEFAULT_FLOORS` 代码常量不动。
 
 **行业席位(2026-09-24 §2.3)**:`l2.sector_seats.enabled` 开 → `universe.run` 在 `scored` 就绪后、召回前用 `sector_healthy_top3` 选入围行业(≤`max_sectors`),行业内取非落刀健康上涨成员按当日 composite 降序各取 `per_sector` 只(剔 📌/ST/当日涨幅≥9.5%),`selection_reason="sector_seat"` 全程直通(镜像 `pinned`,不占 l2_n 竞争名额,不进 `recall_n`)。**生产 `scan_config.jsonc` 已开**(`per_sector:2 / max_sectors:3`,2026-09-25 补——批 2 曾只在离线重放里以参数形式存在,`user_config` 缺键即关的默认让这个键面世当天就处于关闭态,直到这次修正才第一次在真实扫描里生效);席位换掉菜单 200 行里的其他行,**不净增 L4 卡数**(`l3/merge.py` 只对 l3-rank 自己判成 finalist 的席位行打标,finalist 名额仍由 `l4_budget` 决定)。回滚杆 = `enabled: false`(一行,parity)。
 
