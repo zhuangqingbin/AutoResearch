@@ -578,6 +578,11 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     "learning/l2_knife_audit.md", "learning/structural_audit.md",
     "learning/temperature.csv", "temperature.csv", "research/temperature_calib.md",
     "_macro_cn.json", "weights.json", "L1_weights.json", "_claim_ledger.csv",
+    # 2026-09-25(终审 M4):`L1_weight_profile.json` 与紧邻的 `L1_weights.json` 同类 ——
+    # 都是 `session_agent.domain_ops._freeze_scan_runtime_inputs` 写进 run 冻结输入目录的
+    # **身份快照镜像**(前者对应偏好档、后者对应旧校准档),不是漏斗自己产出的业务产物。
+    # 与其兄弟同样处理:进白名单而非登记表。`publisher.py` 对两者各有一条完整性断言。
+    "L1_weight_profile.json",
     "_dossier_snapshot.json",
     # 2026-09-07(Q-R):守卫扩到 autoresearch/research 与 autoresearch/broker 后冒出的非产物
     "docs/research/2026-08-28-overnight-concentrated-census-readout.md",   # 已提交的读数文档(census 的 md 默认落点)
