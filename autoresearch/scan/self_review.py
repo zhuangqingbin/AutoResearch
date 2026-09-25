@@ -302,10 +302,28 @@ def card_contract_lint(scan_dir) -> list[dict]:
         return []
     p4_re = re.compile(r"进入P4倾向[:：]")
     # 2026-09-25 §2.5:今晚处于调样生效前夜的票 → 卡入场行不该是「允许」。文件缺席 → 整段 no-op(parity)。
-    from autoresearch.scan.index_events import events_by_code, load_index_events
+    # minor-8(final whole-branch review):这条 warn 的措辞断言「E6 硬门 rebalance_close 会
+    # 否决」——只有 `relative_buy.rebalance_gate` 真的开着才是真话。文档化的单杆回滚(只关
+    # 这一个开关,`calendar.index_rebalance` 仍开着继续产 `index_events.csv`)会让文件在场 +
+    # 相位命中,但门本身根本不存在;此前这条检查只按「文件在场」判,不看门旋钮,回滚后仍会
+    # 印出一句假话。改按 `configured_rebalance_gate()`(与 E6 门、run_health 三态同一个读点)
+    # 门控:关 → 这一整段 no-op,不必再读 index_events.csv。
     from autoresearch.scan.l4.parsers import parse_card_context
-    eve_rows = {code: rows for code, rows in (events_by_code(load_index_events(scan_dir)) or {}).items()
-                if any(r.get("phase") == "passive_close_eve" for r in rows)}
+    from autoresearch.scan.relative_buy import configured_rebalance_gate
+    eve_rows: dict[str, list[dict]] = {}
+    if configured_rebalance_gate():
+        from autoresearch.scan.index_events import events_by_code, load_index_events
+        try:
+            loaded = load_index_events(scan_dir)
+        except Exception as exc:  # noqa: BLE001 — I2:读不出来只丢这一条 warn,不能拖垒整份
+            # 卡片契约 lint——两个生产调用点都是 contextlib.suppress(Exception),一炸就是
+            # 全部发现消失(含入场行缺失/P4倾向缺失这些与调样无关、本 branch 之前就有的检查,
+            # 它们正是 l4-card.md agent 规则依赖的机检)。
+            print(f"[self_review] index_events.csv 读取失败({exc!r})→ 调样前夜入场检查这一次跳过",
+                  file=sys.stderr)
+            loaded = None
+        eve_rows = {code: rows for code, rows in (events_by_code(loaded) or {}).items()
+                    if any(r.get("phase") == "passive_close_eve" for r in rows)}
     out: list[dict] = []
     for p in sorted(base.glob("*.md")):
         text = p.read_text(encoding="utf-8")

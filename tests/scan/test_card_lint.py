@@ -86,15 +86,22 @@ def test_card_contract_lint_flags_missing_entry_line(tmp_path):
     assert has_machine_entry_line("**入场**: <禁止|条件(<一句>)>") is False     # 占位符不算
 
 
-def test_card_contract_lint_warns_when_card_allows_entry_on_rebalance_eve(tmp_path):
+def test_card_contract_lint_warns_when_card_allows_entry_on_rebalance_eve(tmp_path, monkeypatch):
     """2026-09-25 §2.5:该票今晚是调样生效前夜,卡入场行却写『允许』→ warn(E6 门会否决,但卡应自己写 禁止)。
 
     brief 原字面卡面文本没有『评级』仪表盘表——`parse_card_context._parse_dashboard` 找不到表
     会在够到 `**入场**` 行之前整段早退(`entry_stance` 恒 UNKNOWN),三张卡全部读不出 ALLOWED,
     这条测试原样抄反而会红。这里按仓库既有真实卡面形状(`test_parsers_card_context.py` 的
     `| 评级 | 现价 | 仓位 |` 三行)补一张最小表,断言本身(哪只该警、警什么)照抄不动。
+
+    minor-8(final whole-branch review)后这条检查按 `configured_rebalance_gate()` 门控;
+    `tests/scan/conftest.py` 的 autouse `_isolate_default_pinned` 把 `DEFAULT_PATH` 指向不存在
+    的路径,所以本用例显式 monkeypatch `load_user_config` 打开这道门,不依赖真实生产配置。
     """
     import pandas as pd
+
+    import autoresearch.scan.user_config as uc
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"relative_buy": {"rebalance_gate": True}})
 
     from autoresearch.scan import index_events as ie
     d = _mk(tmp_path, "2026-12-10", {
@@ -128,12 +135,51 @@ def test_card_contract_lint_rebalance_check_is_silent_without_events_file(tmp_pa
     assert not [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
 
 
-def test_card_contract_lint_rebalance_check_says_drop_not_add_for_a_drop_row(tmp_path):
-    """fix(task-12 附带修复 B)的另一半:side="drop" 必须译成"调出"——只测 add→"调入" 分支
-    会漏掉一个恒返回"调入"的坏 ternary。"""
+def test_card_contract_lint_rebalance_check_is_silent_when_gate_knob_is_off(tmp_path, monkeypatch):
+    """minor-8(final whole-branch review):这条 warn 断言『E6 硬门 rebalance_close 会否决』——
+    只有 `relative_buy.rebalance_gate` 真的开着才是真话。文档化的单杆回滚(只关这一个开关,
+    `calendar.index_rebalance` 仍开着继续产 `index_events.csv`)会让文件在场 + 相位命中,
+    但门本身根本不存在;此前这条检查只按『文件在场』判,不看门旋钮,回滚后仍会印出一句假话。"""
     import pandas as pd
 
+    import autoresearch.scan.user_config as uc
     from autoresearch.scan import index_events as ie
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"relative_buy": {"rebalance_gate": False}})
+    d = _mk(tmp_path, "2026-12-10", {
+        "600035": ("# 决策卡 — 600035 楚天 @ 2026-12-10\n**Rating**: Hold\n"
+                   "| 评级 | 现价 | 仓位 |\n|---|---|---|\n| Hold | 10 | 10% |\n进入P4倾向: Hold\n"
+                   "**入场**: 允许\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+    })
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "600035", "index_code": "000905", "index_name": "中证500", "side": "add", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS))
+    assert not [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
+
+
+def test_card_contract_lint_survives_a_corrupt_index_events_file(tmp_path, monkeypatch):
+    """I2(final whole-branch review):`index_events.csv` 非原子写,中断的一次会留下一个读不出来
+    的半成品。两个生产调用点(`report_sections.py` 的 `self_review_banner`/`_review_extras`)
+    都是 `contextlib.suppress(Exception)`——旧代码这里一炸,**全部**卡片契约发现都消失,包括
+    与调样毫无关系、这条 branch 添加之前就已经存在的检查(入场行缺失/P4倾向缺失),这些正是
+    `l4-card.md` 的 agent 规则依赖的机检。"""
+    import autoresearch.scan.user_config as uc
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"relative_buy": {"rebalance_gate": True}})
+    d = _mk(tmp_path, "2026-12-10", {"600035": "# 决策卡\n**Rating**: Hold\n"})   # 缺入场行 + 缺 P4 行
+    (d / "index_events.csv").write_bytes(b"")              # 零字节:中断写留下的半成品
+    checks = {h["check"] for h in card_contract_lint(d)}
+    assert "卡片契约·入场行缺失" in checks and "卡片契约·P4倾向缺失" in checks
+    assert "卡片契约·调样前夜入场允许" not in checks         # 读不出来 → 这一条诚实地什么都不加
+
+
+def test_card_contract_lint_rebalance_check_says_drop_not_add_for_a_drop_row(tmp_path, monkeypatch):
+    """fix(task-12 附带修复 B)的另一半:side="drop" 必须译成"调出"——只测 add→"调入" 分支
+    会漏掉一个恒返回"调入"的坏 ternary。minor-8 后按门旋钮门控,见上一条测试的说明。"""
+    import pandas as pd
+
+    import autoresearch.scan.user_config as uc
+    from autoresearch.scan import index_events as ie
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"relative_buy": {"rebalance_gate": True}})
     d = _mk(tmp_path, "2026-12-10", {
         "600018": ("# 决策卡 — 600018 上港 @ 2026-12-10\n**Rating**: Hold\n"
                    "| 评级 | 现价 | 仓位 |\n|---|---|---|\n| Hold | 10 | 10% |\n进入P4倾向: Hold\n"
