@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -646,26 +647,43 @@ def measure_report_budget(scan_dir: Path | str, report_dir: Path | str) -> dict:
 
 
 def index_events_health(scan_dir: Path) -> dict:
-    """`index_events.csv` 三态(design 2026-09-25 §2.7 / F11):disabled = 旋钮关且无文件;absent = 旋钮开
-    但源不可达(文件缺席,degraded.json 另有一行);ok = 文件在场(含只有表头的空表 = 源可达无事件)。
-    门命中数不在这里——run_health 在 E6 之前写盘,命中数只在决策文件 `index_events.hits` 与 brief ③。"""
+    """`index_events.csv` 四态(design 2026-09-25 §2.7 / F11 + I2/I3 final whole-branch review):
+    disabled = 旋钮关且无文件;absent = 旋钮开但源不可达(文件缺席,degraded.json 另有一行);
+    error = 文件在场但读不出来(非原子写中断留下的半成品,如零字节文件——I2:与「压根没有」是
+    两个不同的因,不能合并成同一个 absent);ok = 文件在场且读得出来(含只有表头的空表 = 源可达
+    无事件)。门命中数不在这里——run_health 在 E6 之前写盘,命中数只在决策文件
+    `index_events.hits` 与 brief ③。
+
+    `n_unresolved_eff`(I3):`phase == "unknown_eff"` 的行数——门沉默的五种因里唯一不可读的
+    一种(生效日解析不出/临时调整不套规则),此前哪个字段都不报,一个「门本该判但判不了」的
+    夜晚与「压根没什么可判」在这个体检块里长得一模一样。"""
     from autoresearch.scan.index_events import load_index_events
     from autoresearch.scan.user_config import knob
 
-    ev = load_index_events(scan_dir)
+    try:
+        ev = load_index_events(scan_dir)
+    except Exception as exc:  # noqa: BLE001 — I2:一份读不出来的 index_events.csv 不能拖垒整份
+        # run_health(生产四个调用点全是 contextlib.suppress(Exception),一炸就是整份体检
+        # 都不刷新,不只是丢一个键)。
+        print(f"[health] index_events.csv 读取失败({exc!r})→ source=error,不阻断其它体检字段",
+              file=sys.stderr)
+        return {"source": "error", "n_rows": 0, "n_finalists_involved": 0,
+                "n_passive_close_eve": 0, "n_unresolved_eff": 0}
     if ev is None:
         on = bool(knob("calendar", "index_rebalance", None, False))
         return {"source": "absent" if on else "disabled", "n_rows": 0,
-                "n_finalists_involved": 0, "n_passive_close_eve": 0}
+                "n_finalists_involved": 0, "n_passive_close_eve": 0, "n_unresolved_eff": 0}
     if not len(ev):
-        return {"source": "ok", "n_rows": 0, "n_finalists_involved": 0, "n_passive_close_eve": 0}
+        return {"source": "ok", "n_rows": 0, "n_finalists_involved": 0, "n_passive_close_eve": 0,
+                "n_unresolved_eff": 0}
     fin = _read(Path(scan_dir) / "finalists.csv")
     fin_codes = (set(fin["code"].astype(str).str.zfill(6))
                  if fin is not None and "code" in fin.columns else set())
     codes = ev["code"].astype(str).str.zfill(6)
     return {"source": "ok", "n_rows": int(len(ev)),
             "n_finalists_involved": int(codes.isin(fin_codes).sum()),
-            "n_passive_close_eve": int((ev["phase"] == "passive_close_eve").sum())}
+            "n_passive_close_eve": int((ev["phase"] == "passive_close_eve").sum()),
+            "n_unresolved_eff": int((ev["phase"] == "unknown_eff").sum())}
 
 
 def run_health(scan_dir: Path) -> dict:

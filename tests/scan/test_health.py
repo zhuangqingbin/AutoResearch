@@ -714,7 +714,11 @@ def test_run_health_carries_report_budget_only_after_measuring(tmp_path):
 
 
 def test_run_health_index_events_three_worlds(tmp_path, monkeypatch):
-    """disabled(旋钮关无文件 → 键不出现)/ absent(旋钮开无文件)/ ok(有文件,含空表)。"""
+    """disabled(旋钮关无文件 → 键不出现)/ absent(旋钮开无文件)/ ok(有文件,含空表)。
+
+    I3(final whole-branch review)追加:`n_unresolved_eff` 钉进这条既有测试——门为什么沉默
+    有五种因,四种可读,第五种(生效日解析不出/不套规则,`phase="unknown_eff"`)此前哪都读不到,
+    一个"门本该判但判不了"的夜晚与"压根没什么可判"长得一模一样。"""
     import autoresearch.scan.user_config as uc
     from autoresearch.scan import index_events as ie
     d = _mk_day(tmp_path, "2026-12-10", codes=("000001", "000002"))
@@ -722,7 +726,8 @@ def test_run_health_index_events_three_worlds(tmp_path, monkeypatch):
     assert "index_events" not in run_health(d)                                   # 旋钮关:逐字节不变
     monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"calendar": {"index_rebalance": True}})
     assert run_health(d)["index_events"] == {"source": "absent", "n_rows": 0,
-                                             "n_finalists_involved": 0, "n_passive_close_eve": 0}
+                                             "n_finalists_involved": 0, "n_passive_close_eve": 0,
+                                             "n_unresolved_eff": 0}
     ie.write_index_events(d, pd.DataFrame(columns=ie.EVENT_COLS))
     assert run_health(d)["index_events"]["source"] == "ok"                      # 空表 ≠ 缺席
     ie.write_index_events(d, pd.DataFrame([
@@ -730,8 +735,28 @@ def test_run_health_index_events_three_worlds(tmp_path, monkeypatch):
          "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
         {"code": "600221", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20261127",
          "eff_close_date": "20261211", "phase": "announced_runup", "source": "csindex", "flow_adv_days": None},
+        {"code": "000002", "index_code": "000905", "index_name": "中证500", "side": "drop", "ann_date": "20260909",
+         "eff_close_date": None, "phase": "unknown_eff", "source": "none", "flow_adv_days": None},
     ], columns=ie.EVENT_COLS))
     h = run_health(d)["index_events"]
-    assert h == {"source": "ok", "n_rows": 2, "n_finalists_involved": 1, "n_passive_close_eve": 1}
+    assert h == {"source": "ok", "n_rows": 3, "n_finalists_involved": 2, "n_passive_close_eve": 1,
+                "n_unresolved_eff": 1}
     monkeypatch.setattr(uc, "load_user_config", lambda path=None: {})
     assert run_health(d)["index_events"]["source"] == "ok"                      # 文件在场就报,不看旋钮
+
+
+def test_run_health_index_events_error_state_does_not_take_down_the_rest_of_health(tmp_path, monkeypatch):
+    """I2(final whole-branch review):`index_events.csv` 非原子写,中断的一次会留下一个读不出来
+    的半成品。`write_run_health` 的全部四个生产调用点都是 `contextlib.suppress(Exception)`——
+    旧代码这里一炸,**整份** `run_health.json` 都不刷新(不只是丢一个 index_events 键,l4_phases/
+    decision_records 等其它字段这一次也全部没更新,而下游有探针按它的存在与否判断"体检跑过没
+    有")。镜像决策文件三态的姿势:读失败记独立的第四态 `"error"`,不是静默地当成 `"absent"`
+    (「读不出来」与「压根没有」是两个不同的因)。"""
+    import autoresearch.scan.user_config as uc
+    d = _mk_day(tmp_path, "2026-12-10", codes=("000001",))
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"calendar": {"index_rebalance": True}})
+    (d / "index_events.csv").write_bytes(b"")              # 零字节:中断写留下的半成品
+    h = run_health(d)                                        # 没有异常穿透 = 整份体检没被拖垒
+    assert h["index_events"] == {"source": "error", "n_rows": 0, "n_finalists_involved": 0,
+                                 "n_passive_close_eve": 0, "n_unresolved_eff": 0}
+    assert "l4_phases" in h and "counts" in h                 # 其它既有字段照常在场
