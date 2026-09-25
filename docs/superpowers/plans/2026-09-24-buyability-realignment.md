@@ -3020,13 +3020,24 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 每场跑完读 `brief.md` ③ 的归因行与 `_ledger/views/runs.csv`：
 
-| 门 | 判据 | 读哪 |
-|---|---|---|
-| L1 | A 级 BUY 天数 ≥ 5/10 | `runs.csv.n_buy_a`、`stage_rulers.csv` 的 `E6/e6_a_tier_day_share` |
-| L2 | `wall=="menu"` ≤ 2/10 | `runs.csv.wall` |
-| L3 | finalist 隔夜 \|gap\| 90 分位 > 1.0pp | `recommendations.csv.gap_c1_o2`（role=finalist） |
-| L4 | L2 落刀 ≤ L0 落刀 + 6pp | `_buyability.json.menu` |
-| L5 | 单场成本 ≤ $46 中位 | `token_usage.md` |
-| L6 | `conflicts.card_says_prohibited` = 0 | `_relative_buy_decision.json` |
+> ⚠️ **2026-09-25 更正**：下表原先的 L1 行（「A 级 BUY 天数 ≥ 5/10」）**已被实测推翻并重定义**，见
+> `docs/specs/2026-09-24-buyability-realignment-design.md` §3.2 与其下的「L1 为什么不设阈值」。
+> **以 spec 为准，不要照旧表执行。** 照旧表跑会读到 0/10，再按下方「连续 3 场不达标」的话去调参，
+> 而唯一能调动那个数的旋钮就是研究口径 —— 那正是本波立案要终结的事。
+
+| 门 | 判据 | 读哪 | 改动前基线 |
+|---|---|---|---|
+| L1a | 非盲且解析成功的卡里 `entry_source=="line"` 占比 = 100% | `_buyability.json.cards` | 0%（无卡带入场行） |
+| L1b | `wall=="cards_silent"` 计数 → 0 | `_buyability.json.wall` | Task 18 上线前恒 silent |
+| L1c | A 级 BUY 日占比 | `runs.csv.n_buy_a`、`stage_rulers.csv` 的 `E6/e6_a_tier_day_share` | **0/8 —— 只记录，不设门** |
+| L2 | `wall=="menu"` ≤ 2/10 | `runs.csv.wall` | **8/8**（菜单落刀 27–56% vs 全市场 15–27%） |
+| L3 | finalist 隔夜 \|gap\| 90 分位 > 1.0pp | `recommendations.csv.gap_c1_o2`（role=finalist） | 63/66 场已过（门弱）；**伴随读数**：中位 0.65pp、<1pp 占比 64.4% |
+| L4 | L2 落刀 ≤ L0 落刀 + 6pp | `_buyability.json.menu` | 离线 7/7 过，余量 19.4–26.8pp |
+| L5 | 单场成本 ≤ $46 中位 | `token_usage.md` | 中位 $46.22（范围 $39.32–$51.47，只有一半余量） |
+| L6 | `conflicts.card_says_prohibited` = 0 | `_relative_buy_decision.json` | **无法观测**：买禁止票的两天早于该字段上线，有该字段的两天没出 BUY；回放估计值 3 |
+| A7b | merit 核天然落刀浓度 vs 配额门槛的余量 | `menu_replay` 关帽重放 | 13.3pp（1.83% vs 15.1%） |
 
 期间不改规则;任一门连续 3 场不达标 → 停下来把读数交给用户裁,不自行调参。
+**L1c 例外:它无阈值,读到 0 不算不达标,也不构成调参理由。** 唯一能抬高它的旋钮是卡片的
+研究口径(Hold 四条件),而放松它正是本波要终结的「制造 BUY」——实测八天里能通往 A 级的
+八张卡在 EV 与 R:R 两项上**逐张全灭**,那不是口径问题,是那批候选本身不值得在隔夜尺上开仓。
