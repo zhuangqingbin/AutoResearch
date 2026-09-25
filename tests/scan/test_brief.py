@@ -27,7 +27,8 @@ _DATE = "2026-08-06"
 _RUN = "20260806_2308"
 
 
-def _decision(*, mode="shadow", blocked=False, abs_gap=None, buy_code="600018") -> dict:
+def _decision(*, mode="shadow", blocked=False, abs_gap=None, buy_code="600018",
+              index_events=None) -> dict:
     """`_relative_buy_decision.json` 的最小同构件(字段名照抄 T23 产物,不发明)。"""
     gap = {"value": None, "status": "UNMEASURED", "n": 0} if abs_gap is None else abs_gap
     cands = [
@@ -47,7 +48,7 @@ def _decision(*, mode="shadow", blocked=False, abs_gap=None, buy_code="600018") 
          "expected_abs_gap": {"value": None, "status": "UNMEASURED", "n": 0}},
     ]
     buys = [] if blocked else [{"code": buy_code, "basis": "relative", "rank": 1}]
-    return {
+    doc = {
         "schema_version": 1, "rule_version": "e6.v1", "mode": mode, "date": _DATE,
         "ruler": "gap_c1_o2",
         "benchmark": {
@@ -68,6 +69,9 @@ def _decision(*, mode="shadow", blocked=False, abs_gap=None, buy_code="600018") 
         "excluded": [{"code": "603127", "reason": "hard_gate.no_redflag",
                       "detail": "research_rating=Sell"}],
     }
+    if index_events is not None:
+        doc["index_events"] = index_events
+    return doc
 
 
 def _scan_dir(root: Path, *, with_decision=True, decision=None) -> Path:
@@ -643,6 +647,43 @@ def test_missing_decision_file_is_explicit(tmp_path):
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     shadow = next(ln for ln in md.splitlines() if "影子 relative BUY" in ln)
     assert "未生成" in shadow, "决策文件缺席必须显式说,不得静默省行"
+
+
+# ─────────────── v4.1(2026-09-25 §2.4)③ 附加行:第五门 rebalance_close 留痕 ───────────────
+#
+# `index_events` 块只有旋钮开时才存在;缺块必须读成「没开这道门」,不是「没有事件」——
+# 三种结果(命中/源缺席/块缺席或无命中)必须互相区分得开,任何两个混同都是回归。
+
+def _hits(codes, *, source="ok"):
+    return {"source": source, "gate_evaluated": source == "ok", "n_rows": len(codes),
+            "n_candidates_in_events": len(codes), "hits": list(codes)}
+
+
+def test_buy_line_prints_rebalance_eve_vetoes_with_sources(tmp_path):
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active", index_events=_hits(["603127"])))
+    out = brief.build(scan, run_folder=_RUN)
+    assert "⛔ 指数调样生效前夜否决 1 只:603127(hard_gate.rebalance_close)" in out["markdown"]
+    dumped = json.dumps(out["sources"], ensure_ascii=False)
+    assert "relative.rebalance_hits" in dumped and "relative.rebalance_hit_codes" in dumped
+
+
+def test_buy_line_prints_rebalance_source_absent_honestly(tmp_path):
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active", index_events=_hits([], source="absent")))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "⛔ 指数调样门:源不可达,本日未评估" in md
+
+
+def test_buy_line_is_silent_without_index_events_block_or_hits(tmp_path):
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active"))
+    assert "指数调样" not in brief.build(scan, run_folder=_RUN)["markdown"]           # 旧 schema:逐字 parity
+    scan2 = _scan_dir(tmp_path / "b", decision=_decision(mode="active", index_events=_hits([])))
+    assert "指数调样" not in brief.build(scan2, run_folder=_RUN)["markdown"]          # 门开无命中:不出行
+
+
+def test_blocked_day_also_prints_rebalance_vetoes(tmp_path):
+    dec = _decision(mode="active", blocked=True, index_events=_hits(["600018", "600285"]))
+    scan = _scan_dir(tmp_path, decision=dec)
+    assert "⛔ 指数调样生效前夜否决 2 只:600018、600285" in brief.build(scan, run_folder=_RUN)["markdown"]
 
 
 # ─────────────── R-X1 两尺分歧日提示(fix-1,复核 I-4) ───────────────

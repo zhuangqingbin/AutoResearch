@@ -547,6 +547,25 @@ def _realized_text(stat: dict, label: str) -> str:
     return body
 
 
+def _rebalance_line(rel: dict, src: list[dict]) -> str | None:
+    """③ 附加行(v4.1):第五门 `rebalance_close` 的评估结果。块缺席(旧 schema / 门关)或无命中 → None(不出行)。
+    源缺席要**说出来**:门放行了,但那是「没看见」不是「没事件」(design F11)。"""
+    rb = rel.get("rebalance")
+    if not isinstance(rb, dict):
+        return None
+    if rb.get("source") == "absent":
+        text = "  ⛔ 指数调样门:源不可达,本日未评估(hard_gate.rebalance_close 放行,不等于无事件)"
+        _src(src, "relative.rebalance_source", "absent", DECISION_FILENAME, "index_events.source", text)
+        return text
+    hits = [str(c) for c in (rb.get("hits") or [])]
+    if not hits:
+        return None
+    text = f"  ⛔ 指数调样生效前夜否决 {len(hits)} 只:{'、'.join(hits)}(hard_gate.rebalance_close)"
+    _src(src, "relative.rebalance_hits", len(hits), DECISION_FILENAME, "len(index_events.hits)", text)
+    _src(src, "relative.rebalance_hit_codes", "、".join(hits), DECISION_FILENAME, "index_events.hits", text)
+    return text
+
+
 def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     lines: list[str] = []
     buys = facts["buys"]
@@ -604,6 +623,9 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
                 f"候选 {rel.get('n_candidates')} / 合格 {rel.get('n_eligible')})")
         _src(src, "relative.blocked", True, DECISION_FILENAME, "blocked", text)
         lines.append("- " + text)
+        rb_line = _rebalance_line(rel, src)
+        if rb_line:
+            lines.append(rb_line)
         # blocked 日是不可买归因这一行存在的理由(八个真实扫描日六个 blocked)——
         # 上面那行「BLOCKED(...hard_gate.no_redflag×7...)」把六个否决因揉成一个数,
         # 下面这行才是把它拆开的地方(2026-09-25 controller 追加裁定:不改 blocked_reasons
@@ -641,6 +663,9 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
          "rows[e6_buy ∧ mode=active ∧ MATURE ∧ ACTIONABLE]", text)
     _src(src, "relative.pool", rel.get("pool"), DECISION_FILENAME, "pool", text)
     lines.append("- " + text)
+    rb_line = _rebalance_line(rel, src)
+    if rb_line:
+        lines.append(rb_line)
     if rel.get("pool") == "composite":
         # v3.0 的诚实呈现(A5):证据是什么、期望多大、执行条件是什么 —— 三样都写在
         # BUY 行下面,免得读者把「相对最优」读成「明天会涨」。
