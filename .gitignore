@@ -254,3 +254,6 @@ backups/
 /task_plan.md
 /findings.md
 /progress.md
+
+# SDD 执行台账/评审包(git-ignored scratch;每个 plan 一个子目录)
+.superpowers/
