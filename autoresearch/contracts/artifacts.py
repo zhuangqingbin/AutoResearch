@@ -122,6 +122,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("weights_used", "weights_used.json", "staging", "prelude", "universe", "json", "always"),
     Artifact("degraded", "degraded.json", "staging", "prelude", "universe", "json", "always"),
     Artifact("calendar", "calendar.csv", "staging", "prelude", "calendar", "csv", "always"),
+    Artifact("index_events", "index_events.csv", "staging", "prelude", "calendar", "csv", "gated",
+             required_when="calendar.index_rebalance 开且中证公告源可达(design 2026-09-25 §2.2)"),
     # ---- 控制面 ----------------------------------------------------------
     Artifact("stage_results", "stage_results/*.json", "staging", "prelude", "control_plane", "json", "always"),
     Artifact("run_mode", "run_mode.json", "staging", "gate1", "run_mode", "json", "always"),
