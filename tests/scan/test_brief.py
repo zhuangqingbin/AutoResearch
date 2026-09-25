@@ -654,9 +654,10 @@ def test_missing_decision_file_is_explicit(tmp_path):
 # `index_events` 块只有旋钮开时才存在;缺块必须读成「没开这道门」,不是「没有事件」——
 # 三种结果(命中/源缺席/块缺席或无命中)必须互相区分得开,任何两个混同都是回归。
 
-def _hits(codes, *, source="ok"):
+def _hits(codes, *, source="ok", n_unresolved_eff=0):
     return {"source": source, "gate_evaluated": source == "ok", "n_rows": len(codes),
-            "n_candidates_in_events": len(codes), "hits": list(codes)}
+            "n_candidates_in_events": len(codes), "n_unresolved_eff": n_unresolved_eff,
+            "hits": list(codes)}
 
 
 def test_buy_line_prints_rebalance_eve_vetoes_with_sources(tmp_path):
@@ -682,6 +683,38 @@ def test_buy_line_prints_rebalance_source_error_honestly(tmp_path):
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     assert "⛔ 指数调样门:源存在但读取失败,本日未评估" in md
     assert "(hard_gate.rebalance_close 放行,不等于无事件)" in md
+
+
+def test_buy_line_prints_rebalance_source_disabled_honestly(tmp_path):
+    """minor-1(final whole-branch review):`source="absent"` 曾横跨两个世界——日历腿本身关着
+    (文档化的单杆回滚:只关 `calendar.index_rebalance`,留着 E6 门)与该旋钮开着但源真的不可达。
+    门后果相同(全员放行),但这句话不同:「源不可达」对前者是假话——回滚只是关了一条产它的腿,
+    不是这条腿想产却产不出来。"""
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active", index_events=_hits([], source="disabled")))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "指数调样门" in md and "日历腿" in md and "关闭" in md
+    assert "源不可达" not in md
+    assert "(hard_gate.rebalance_close 放行,不等于无事件)" in md
+
+
+def test_buy_line_prints_unresolved_eff_candidates_line(tmp_path):
+    """I3(final whole-branch review):门沉默的五种因里唯一不可读的一种——生效日解析不出/
+    临时调整不套规则(`phase="unknown_eff"`)。这类候选门照样放行、不进 `hits`,一个"门本该判
+    但判不了"的夜晚与"压根没什么可判"在 brief 上此前长得一模一样。"""
+    scan = _scan_dir(tmp_path, decision=_decision(
+        mode="active", index_events=_hits([], n_unresolved_eff=2)))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "2 只候选" in md and "unknown_eff" in md and "不计入 hits" in md
+
+
+def test_buy_line_prints_both_hits_and_unresolved_when_both_present(tmp_path):
+    """命中与「读不清」不是互斥的两件事——同一夜可能既有票被门否决,又有另一票的生效日还
+    没解析出来。两条各自出行,互不覆盖。"""
+    scan = _scan_dir(tmp_path, decision=_decision(
+        mode="active", index_events=_hits(["600018"], n_unresolved_eff=1)))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "⛔ 指数调样生效前夜否决 1 只:600018" in md
+    assert "1 只候选" in md and "unknown_eff" in md
 
 
 def test_buy_line_is_silent_without_index_events_block_or_hits(tmp_path):

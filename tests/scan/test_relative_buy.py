@@ -2331,7 +2331,7 @@ def test_rebalance_gate_vetoes_the_passive_close_eve_row_and_says_where(tmp_path
     assert by["000034"]["hard_gate"][REBALANCE_GATE] is True
     assert doc["buys"][0]["code"] == "000034"                                # 原冠军被门否决,亚军上
     assert doc["index_events"] == {"source": "ok", "gate_evaluated": True, "n_rows": 1,
-                                   "n_candidates_in_events": 1, "hits": ["002345"]}
+                                   "n_candidates_in_events": 1, "n_unresolved_eff": 0, "hits": ["002345"]}
     veto = [r for r in doc["excluded"] if r["reason"] == f"hard_gate.{REBALANCE_GATE}"]
     # fix(task-12 附带修复 B):excluded 明细渲染中文调入/调出,不是原始 side 字面量
     # "add"/"drop"——与 calendar.py:109 的翻译口径统一(该处已是先例)。
@@ -2361,7 +2361,20 @@ def test_rebalance_gate_source_absent_passes_everyone_and_says_so(tmp_path):
     doc = build_decision(scan, index_events=None, rebalance_gate=True)
     assert all(row["hard_gate"][REBALANCE_GATE] is True for row in doc["candidates"])
     assert doc["index_events"] == {"source": "absent", "gate_evaluated": False, "n_rows": 0,
-                                   "n_candidates_in_events": 0, "hits": []}
+                                   "n_candidates_in_events": 0, "n_unresolved_eff": 0, "hits": []}
+
+
+def test_rebalance_gate_source_disabled_when_calendar_leg_itself_is_off(tmp_path):
+    """minor-1(final whole-branch review):`index_events is None` 横跨两个世界——日历腿本身
+    关着(文档化的单杆回滚:只关 `calendar.index_rebalance`,留着 E6 门 `relative_buy.
+    rebalance_gate`)与该旋钮开着但源当天真的不可达。门后果相同(全员放行),但 `source` 必须
+    分开记,`disabled` 不是 `absent` 的同义词——`index_events_disabled` 是 `_index_events_input`
+    (I/O 边界)判定后原样记账的独立信号,本函数不自己判断为什么。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = build_decision(scan, index_events=None, index_events_disabled=True, rebalance_gate=True)
+    assert all(row["hard_gate"][REBALANCE_GATE] is True for row in doc["candidates"])
+    assert doc["index_events"] == {"source": "disabled", "gate_evaluated": False, "n_rows": 0,
+                                   "n_candidates_in_events": 0, "n_unresolved_eff": 0, "hits": []}
 
 
 def test_rebalance_gate_source_error_passes_everyone_and_says_so(tmp_path):
@@ -2373,7 +2386,17 @@ def test_rebalance_gate_source_error_passes_everyone_and_says_so(tmp_path):
     doc = build_decision(scan, index_events_error=True, rebalance_gate=True)
     assert all(row["hard_gate"][REBALANCE_GATE] is True for row in doc["candidates"])
     assert doc["index_events"] == {"source": "error", "gate_evaluated": False, "n_rows": 0,
-                                   "n_candidates_in_events": 0, "hits": []}
+                                   "n_candidates_in_events": 0, "n_unresolved_eff": 0, "hits": []}
+
+
+def test_rebalance_gate_error_wins_over_disabled_when_both_bits_are_set(tmp_path):
+    """`index_events_error` 与 `index_events_disabled` 理论上不该同时为真(见 `_index_events_input`
+    的分支互斥),但 `build_decision` 是纯函数、不检查调用方有没有违反那个约定——这里钉死优先级,
+    防一次重构把 if/elif 悄悄改成两个独立 if 而不被发现(那种改法会让 `error` 状态在这个组合下
+    读成 `disabled`,把「读不出来」误报成「压根没打算产」)。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = build_decision(scan, index_events_error=True, index_events_disabled=True, rebalance_gate=True)
+    assert doc["index_events"]["source"] == "error"
 
 
 def test_rebalance_gate_source_ok_but_empty_is_evaluated_not_absent(tmp_path):
@@ -2392,6 +2415,24 @@ def test_rebalance_gate_can_block_the_whole_day_honestly(tmp_path):
     assert doc["blocked"] is True and doc["buys"] == []
     assert {r["reason"] for r in doc["blocked_reasons"]} == {f"hard_gate.{REBALANCE_GATE}"}
     assert doc["index_events"]["hits"] == sorted(_RANK_ORDER)
+
+
+def test_rebalance_gate_n_unresolved_eff_counts_candidates_the_gate_could_not_read(tmp_path):
+    """I3(final whole-branch review):门沉默的五种因里唯一不可读的一种——`phase="unknown_eff"`
+    的行既不触发 `hits`(不是 passive_close_eve)也不改变 `eligible`(门照样放行),此前没有
+    任何字段区分"这只票没有调样事件"与"这只票有调样事件但门读不出来、只能猜是安全的"。
+    `n_unresolved_eff` 数的是**候选**(不是行):002345 只带一条 unknown_eff 行 → 计入,不进
+    hits;000034 只带 passive_close_eve → 进 hits,不计入;600188 两条都带 → 两边都算,证明
+    这两个计数不是互斥的;601699 没有任何行 → 两边都不算。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    ev = {**_events("002345", "unknown_eff", eff=None),
+         **_events("000034", "passive_close_eve"),
+         "600188": [*_events("600188", "unknown_eff", eff=None)["600188"],
+                    *_events("600188", "passive_close_eve")["600188"]]}
+    doc = build_decision(scan, index_events=ev, rebalance_gate=True)
+    ie = doc["index_events"]
+    assert ie["n_unresolved_eff"] == 2 and sorted(ie["hits"]) == ["000034", "600188"]
+    assert ie["n_candidates_in_events"] == 3                  # 002345/000034/600188,601699 缺席
 
 
 def test_rebalance_gate_and_tiering_compose(tmp_path):
@@ -2427,11 +2468,27 @@ def test_write_decision_ignores_index_events_file_when_gate_off(tmp_path):
     assert "index_events" not in doc and doc["buys"][0]["code"] == "002345"
 
 
-def test_write_decision_gate_on_without_file_records_absent(tmp_path):
+def test_write_decision_gate_on_without_file_records_absent(tmp_path, monkeypatch):
+    """minor-1(final whole-branch review)后 `source="absent"` 特指日历腿开着但源不可达——
+    显式打开 `calendar.index_rebalance`,不依赖 `tests/scan/conftest.py` 的 autouse
+    `_isolate_default_pinned`(把 `DEFAULT_PATH` 指向不存在的路径)之后的默认关状态。"""
+    import autoresearch.scan.user_config as uc
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"calendar": {"index_rebalance": True}})
     scan = _build_scan(tmp_path, _RANK_CANDS)
     doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
     assert doc["index_events"] == {"source": "absent", "gate_evaluated": False, "n_rows": 0,
-                                   "n_candidates_in_events": 0, "hits": []}
+                                   "n_candidates_in_events": 0, "n_unresolved_eff": 0, "hits": []}
+
+
+def test_write_decision_gate_on_without_file_records_disabled_when_calendar_leg_off(tmp_path, monkeypatch):
+    """minor-1 的另一半:日历腿本身关着(`calendar.index_rebalance=False`)时,同样是文件缺席,
+    但必须记 `source="disabled"` 不是 `"absent"`——brief 据此印出的话不同(见 `_rebalance_line`)。"""
+    import autoresearch.scan.user_config as uc
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"calendar": {"index_rebalance": False}})
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
+    assert doc["index_events"] == {"source": "disabled", "gate_evaluated": False, "n_rows": 0,
+                                   "n_candidates_in_events": 0, "n_unresolved_eff": 0, "hits": []}
 
 
 def test_write_decision_gate_on_with_unreadable_file_records_error_and_still_writes(tmp_path, capsys):
@@ -2448,7 +2505,7 @@ def test_write_decision_gate_on_with_unreadable_file_records_error_and_still_wri
     (scan / INDEX_EVENTS_FILENAME).write_bytes(b"")           # 零字节:中断写留下的半成品
     doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
     assert doc["index_events"] == {"source": "error", "gate_evaluated": False, "n_rows": 0,
-                                   "n_candidates_in_events": 0, "hits": []}
+                                   "n_candidates_in_events": 0, "n_unresolved_eff": 0, "hits": []}
     assert doc["buys"][0]["code"] == "002345"                 # 当天照样产出决策文件,冠军照选
     assert "index_events" in capsys.readouterr().err          # 降级必须可见(同 configured_rebalance_gate 姿势)
 

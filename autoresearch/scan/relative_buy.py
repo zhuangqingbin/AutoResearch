@@ -937,10 +937,10 @@ def _build_card_snapshot(scan: Path, *, reuse: dict[str, dict] | None = None) ->
     return out
 
 
-def _index_events_input(scan: Path, rebalance_gate: bool) -> tuple[dict[str, list[dict]] | None, bool]:
-    """v4.1 I/O 边界(镜像 `_build_card_snapshot`):旋钮开才读 `index_events.csv`;缺文件 → `(None, False)`
-    (= 源缺席,`build_decision` 记 source=absent 放行);旋钮关 → `(None, False)` 且 `build_decision`
-    根本不看它。两个写者共用。
+def _index_events_input(scan: Path, rebalance_gate: bool) -> tuple[dict[str, list[dict]] | None, bool, bool]:
+    """v4.1 I/O 边界(镜像 `_build_card_snapshot`):旋钮开才读 `index_events.csv`;缺文件 → `(None,
+    False, disabled?)`(= 源缺席,`build_decision` 记 source=absent/disabled 放行);旋钮关 →
+    `(None, False, False)` 且 `build_decision` 根本不看它。两个写者共用。
 
     fix round 1(2026-09-26,coordinator review 第 3 条):该表的写者是非原子写(`write_index_events`
     直接 `to_csv`,不像本文件 `write_decision` 自己用的临时文件+`replace`),中断的一次会留下一个
@@ -948,20 +948,32 @@ def _index_events_input(scan: Path, rebalance_gate: bool) -> tuple[dict[str, lis
     `verify_decision`,只有外层 `safe_write_decision`/`safe_verify_decision` 的兜底 catch 接得住——
     但那意味着当天**完全不产出**决策文件,比任何一道门单独否决都坏(`_relative_buy_decision.json`
     是 `buyability`/`relative_ledger` 都要读的产物)。这里按 `configured_rebalance_gate` 已经在用的
-    姿势兜底:读失败 → 响亮打一行 stderr、返回 `(None, True)`,第二个返回值(`error`)让
+    姿势兜底:读失败 → 响亮打一行 stderr、返回 `(None, True, False)`,第二个返回值(`error`)让
     `build_decision` 把这一天记成 `index_events.source="error"`——不是静默地当成 `"absent"`
     (「读不出来」与「压根没有」是两个不同的因,即使门后果相同;三态见 `build_decision` docstring)。
+
+    minor-1(final whole-branch review):第三个返回值区分「文件缺席」的两个不同因——旋钮
+    `calendar.index_rebalance` 本身关着(日历腿从没打算产这份文件,与本函数自己的 `rebalance_gate`
+    旋钮是两个独立的开关:E2 裁定的单杆回滚可以只关日历腿、留着 E6 门)vs 该旋钮开着但源当天真的
+    不可达。此前两者都编码成同一个 `index_events is None`,`source="absent"` 因而横跨两个世界,
+    brief 据此印出的「源不可达,本日未评估」在前一种情形下是假话——镜像 `health.index_events_health`
+    早就做对的三态拆分(同一份 `calendar.index_rebalance` 知,`health` 那边已经在读)。
     """
     if not rebalance_gate:
-        return None, False
+        return None, False, False
     from autoresearch.scan.index_events import events_by_code, load_index_events
 
     try:
-        return events_by_code(load_index_events(scan)), False
+        events = events_by_code(load_index_events(scan))
     except Exception as exc:  # noqa: BLE001 — B 级源读失败不得连累整份决策文件,但降级必须可见
         print(f"[relative_buy] index_events.csv 读取失败({exc!r})→ rebalance_close 门放行"
               f"(记 index_events.source=error,不是 absent)", file=sys.stderr)
-        return None, True
+        return None, True, False
+    if events is None:
+        from autoresearch.scan.user_config import knob
+        on = bool(knob("calendar", "index_rebalance", None, False))
+        return None, False, not on
+    return events, False, False
 
 
 def _published_card_sources(target: Path) -> dict[str, dict]:
@@ -1186,7 +1198,8 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                    tiering: bool = False,
                    index_events: dict[str, list[dict]] | None = None,
                    rebalance_gate: bool = False,
-                   index_events_error: bool = False) -> dict:
+                   index_events_error: bool = False,
+                   index_events_disabled: bool = False) -> dict:
     """`context/scan/<date>` → 统一相对决策文档(确定性、零 LLM、零联网、只读)。
 
     护照**现算**(`passport.build_passport`),不读盘上那份 `_candidate_passport.json`:
@@ -1233,6 +1246,15 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     这个字段回答的是"门跑了没有",不是"为什么没跑")。由 `write_decision`/`verify_decision` 的
     I/O 边界(`_index_events_input`)在读 `index_events.csv` 抛异常时置位;本函数不自己读盘,
     也不判断「为什么」`index_events` 是 `None`——那是边界已经替它决定好的事实,原样记账。
+
+    `index_events_disabled`(minor-1,final whole-branch review):四态 `source` 的第四值,
+    只在 `index_events is None ∧ index_events_error=False` 时才有意义。`index_events is None`
+    此前恒记 `source="absent"`,但它其实横跨两个不同的世界:① `calendar.index_rebalance` 旋钮
+    本身关着——日历腿从没打算产这份文件,这是文档化的单杆回滚(只关日历腿、留着 E6 门)会
+    留下的常态,不是任何意义上的降级;② 该旋钮开着,但源当天真的不可达(需要 `degraded.json`
+    留痕的真实降级)。两者门后果相同(全员放行),但 brief 据此印出的一句话不同——"源不可达"
+    只对②为真,对①是假话。由 `_index_events_input` 判定并置位;本函数同样不自己判断「为什么」,
+    只原样记账(与 `index_events_error` 同一套纪律)。
     """
     if mode not in {MODE_SHADOW, MODE_ACTIVE}:
         raise ValueError(
@@ -1420,15 +1442,23 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         "tiering": tiering,
         "tier_counts": tier_counts,
         # v4.1:第五门的评估留痕(只在旋钮开时出现;缺这个块 = 仪器未上线,不是「当日无事件」)。
-        # fix round 1:三态 `source`——`index_events_error` 只影响这一行;下面四个字段(gate_evaluated/
-        # n_rows/n_candidates_in_events/hits)在「错误」与「缺席」两态下都因为 `index_events` 本身
-        # 仍是 `None` 而自然算出相同的(False/0/0/[])——两态门后果本就相同,不需要各写一份。
+        # fix round 1 + minor-1(final review):四态 `source`——`index_events_error`/
+        # `index_events_disabled` 只影响这一行;下面的 gate_evaluated/n_rows/n_candidates_in_events/
+        # hits 在「错误」「缺席-已关」「缺席-不可达」三态下都因为 `index_events` 本身仍是 `None`
+        # 而自然算出相同的(False/0/0/[])——三态门后果本就相同,不需要各写一份。
         **({"index_events": {
             "source": ("error" if index_events_error else
+                       "disabled" if index_events is None and index_events_disabled else
                        "absent" if index_events is None else "ok"),
             "gate_evaluated": index_events is not None,
             "n_rows": 0 if index_events is None else sum(len(v) for v in index_events.values()),
             "n_candidates_in_events": sum(1 for row in candidates if row["code"] in (index_events or {})),
+            # I3(final whole-branch review):门沉默的五种因里唯一不可读的一种(生效日解析不出/
+            # 临时调整不套规则,phase="unknown_eff")——候选票若只带这种行,门放行且不进 hits,
+            # 与「压根没什么可判」长得一模一样。这里数一数有几个候选正处于这个盲区。
+            "n_unresolved_eff": sum(1 for row in candidates
+                                    if any(r.get("phase") == "unknown_eff"
+                                           for r in (index_events or {}).get(row["code"], []))),
             "hits": sorted(row["code"] for row in candidates
                            if row["hard_gate"].get(REBALANCE_GATE) is False),
         }} if rebalance_gate else {}),
@@ -1636,11 +1666,12 @@ def write_decision(scan_dir: Path | str, date: str | None = None,
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
     card_snapshot = _build_card_snapshot(scan)
-    _events, _events_error = _index_events_input(scan, rebalance_gate)
+    _events, _events_error, _events_disabled = _index_events_input(scan, rebalance_gate)
     payload = _serialize_decision(
         build_decision(scan, date, mode, exclude_pinned, pool,
                        card_snapshot=card_snapshot, tiering=tiering,
                        index_events=_events, index_events_error=_events_error,
+                       index_events_disabled=_events_disabled,
                        rebalance_gate=rebalance_gate))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
@@ -1719,10 +1750,11 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
     card_snapshot = _build_card_snapshot(scan, reuse=_published_card_sources(target))
-    _events, _events_error = _index_events_input(scan, rebalance_gate)
+    _events, _events_error, _events_disabled = _index_events_input(scan, rebalance_gate)
     fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool,
                                card_snapshot=card_snapshot, tiering=tiering,
                                index_events=_events, index_events_error=_events_error,
+                               index_events_disabled=_events_disabled,
                                rebalance_gate=rebalance_gate)
     fresh_bytes = _serialize_decision(fresh_doc)
     resolved_date = str(fresh_doc.get("date") or date or scan.name)

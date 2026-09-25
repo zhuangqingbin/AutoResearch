@@ -550,16 +550,22 @@ def _realized_text(stat: dict, label: str) -> str:
 def _rebalance_line(rel: dict, src: list[dict]) -> str | None:
     """③ 附加行(v4.1):第五门 `rebalance_close` 的评估结果。块缺席(旧 schema / 门关)或无命中 → None(不出行)。
     源缺席 / 源存在但读不出来都要**说出来**:门放行了,但那是「没看见」不是「没事件」(design F11)。
-    `source` 三值(2026-09-25 §2.4 追加裁定):`"absent"`(文件不在)与 `"error"`(文件在但读不出来,
-    如中途写坏的零字节文件)是两种不同的**因**,同一种门后果——各自专属一行,不合并成一句,
-    也不许 `"error"` 落进下面的 `hits` 空判断悄悄不出行(那会把"这张表读不出来"静默吞成
-    "今天没有事件",是三种结果里最坏的"什么都不说")。"""
+    `source` 四值(2026-09-25 §2.4 追加裁定 + minor-1 final whole-branch review):`"absent"`
+    (旋钮开但源不可达)、`"disabled"`(日历腿本身关着——单杆回滚,不是降级)、`"error"`(文件在但
+    读不出来,如中途写坏的零字节文件)是三种不同的**因**,同一种门后果——各自专属一行,不合并
+    成一句,也不许 `"error"`/`"disabled"` 落进下面的 `hits` 空判断悄悄不出行(那会把"这张表读不
+    出来/没打算产"静默吞成"今天没有事件",是几种结果里最坏的"什么都不说")。"""
     rb = rel.get("rebalance")
     if not isinstance(rb, dict):
         return None
     if rb.get("source") == "absent":
         text = "  ⛔ 指数调样门:源不可达,本日未评估(hard_gate.rebalance_close 放行,不等于无事件)"
         _src(src, "relative.rebalance_source", "absent", DECISION_FILENAME, "index_events.source", text)
+        return text
+    if rb.get("source") == "disabled":
+        text = ("  ⛔ 指数调样门:日历腿已关闭(calendar.index_rebalance=false),本日未评估"
+                "(hard_gate.rebalance_close 放行,不等于无事件)")
+        _src(src, "relative.rebalance_source", "disabled", DECISION_FILENAME, "index_events.source", text)
         return text
     if rb.get("source") == "error":
         text = "  ⛔ 指数调样门:源存在但读取失败,本日未评估(hard_gate.rebalance_close 放行,不等于无事件)"
@@ -571,6 +577,22 @@ def _rebalance_line(rel: dict, src: list[dict]) -> str | None:
     text = f"  ⛔ 指数调样生效前夜否决 {len(hits)} 只:{'、'.join(hits)}(hard_gate.rebalance_close)"
     _src(src, "relative.rebalance_hits", len(hits), DECISION_FILENAME, "len(index_events.hits)", text)
     _src(src, "relative.rebalance_hit_codes", "、".join(hits), DECISION_FILENAME, "index_events.hits", text)
+    return text
+
+
+def _rebalance_unresolved_line(rel: dict, src: list[dict]) -> str | None:
+    """③ 附加行(I3,final whole-branch review):门沉默的五种因里唯一不可读的一种——生效日
+    解析不出/临时调整不套规则(`phase="unknown_eff"`)。这类候选门照样放行、不进 `hits`,与
+    "没有调样事件"长得一模一样;`n_unresolved_eff > 0` 时单独说出来,免得读者把"判不了"读成
+    "没什么可判"。与 `_rebalance_line` 的命中行不互斥,同一夜可能两条都出。"""
+    rb = rel.get("rebalance")
+    if not isinstance(rb, dict):
+        return None
+    n = rb.get("n_unresolved_eff") or 0
+    if not n:
+        return None
+    text = f"  ❓ 指数调样门:{n} 只候选生效日待定(unknown_eff),门放行但未必真的安全(不计入 hits)"
+    _src(src, "relative.rebalance_unresolved", n, DECISION_FILENAME, "index_events.n_unresolved_eff", text)
     return text
 
 
@@ -634,6 +656,9 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
         rb_line = _rebalance_line(rel, src)
         if rb_line:
             lines.append(rb_line)
+        rb_unresolved = _rebalance_unresolved_line(rel, src)
+        if rb_unresolved:
+            lines.append(rb_unresolved)
         # blocked 日是不可买归因这一行存在的理由(八个真实扫描日六个 blocked)——
         # 上面那行「BLOCKED(...hard_gate.no_redflag×7...)」把六个否决因揉成一个数,
         # 下面这行才是把它拆开的地方(2026-09-25 controller 追加裁定:不改 blocked_reasons
@@ -674,6 +699,9 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     rb_line = _rebalance_line(rel, src)
     if rb_line:
         lines.append(rb_line)
+    rb_unresolved = _rebalance_unresolved_line(rel, src)
+    if rb_unresolved:
+        lines.append(rb_unresolved)
     if rel.get("pool") == "composite":
         # v3.0 的诚实呈现(A5):证据是什么、期望多大、执行条件是什么 —— 三样都写在
         # BUY 行下面,免得读者把「相对最优」读成「明天会涨」。
