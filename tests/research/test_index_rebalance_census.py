@@ -122,6 +122,21 @@ def test_truncated_snapshot_is_visible_but_stats_are_unchanged(tmp_path, monkeyp
     assert "⚠" in md and "300" in md and "150" in md
 
 
+def test_custom_index_display_name_does_not_lose_the_suspect_floor(tmp_path, monkeypatch):
+    """minor-6(final whole-branch review):`_NOMINAL_SIZE` 此前按中文显示名键控,`--index
+    CODE=CustomName` 换一个自定义名字就会让 `_NOMINAL_SIZE.get(name)` 查不到,`nominal=None`
+    让 suspect 判定整段静默失效——不留任何痕迹,读数看起来和"这份快照没问题"一样。改按指数
+    代码键控后,显示名怎么叫都不影响这条判据(与 `test_truncated_snapshot_is_visible_but_
+    stats_are_unchanged` 用同一份截断 fixture,只换了 `indexes=` 的显示名)。"""
+    daily = _lake(tmp_path, monkeypatch)
+    doc = cen.run_census(start="2026-06", end="2026-06", lake_daily=daily, fetch=_fetch_truncated_cur,
+                         indexes={"000300.SH": "我的自定义名字"})
+    assert doc["snapshot_sizes"] == [
+        {"E": "20260612", "index": "我的自定义名字", "prev_n": 300, "cur_n": 150,
+         "included": True, "suspect": True}
+    ]
+
+
 def test_missing_snapshot_is_not_confused_with_a_suspect_one(tmp_path, monkeypatch):
     """源不可达(两份快照都是空)与「有数据但可疑地少」是两个不同的世界,不能编码成同一个值。"""
     daily = _lake(tmp_path, monkeypatch)
@@ -240,3 +255,20 @@ def test_calendar_gap_is_none_when_calendar_is_unreachable(tmp_path, monkeypatch
     doc2 = cen.run_census(start="2026-06", end="2026-06", lake_daily=daily, fetch=_fetch_index_weight,
                           calendar_fetch=_raises, indexes={"000300.SH": "沪深300"})
     assert doc2["calendar_gaps"][0]["calendar_days"] is None
+
+
+def test_six_index_whitelist_key_sets_agree_across_modules():
+    """minor-6(final whole-branch review):六指数白名单此前五处各自表达、彼此没有任何东西拴住,
+    其中一个常量(`INDEX_WHITELIST`)还被 `scan/index_flow.py` 从 `scan/index_events.py` 转手
+    导入,而不是从它真正定义的地方(`contracts/index_whitelist.py`)——两条导入路径拿到的是
+    同一个对象,值不会分叉,但路径本身就是一条会漂移的边。这里把散落的几份表都拴在一起:
+    `contracts.INDEX_WHITELIST`(六位代码)、census 的 `INDEXES`(点分 ts_code)、census 的
+    `_NOMINAL_SIZE`(minor-6 后同样按 ts_code 键控)、`QUARTERLY` 子集,以及 `index_flow` 的
+    导入路径本身。"""
+    from autoresearch.contracts.index_whitelist import INDEX_WHITELIST
+    from autoresearch.scan import index_flow
+
+    assert {code.split(".")[0] for code in cen.INDEXES} == set(INDEX_WHITELIST)
+    assert set(cen._NOMINAL_SIZE) == set(cen.INDEXES)
+    assert set(cen.INDEXES) >= cen.QUARTERLY
+    assert index_flow.INDEX_WHITELIST is INDEX_WHITELIST      # 同一个对象,不是各自一份拷贝

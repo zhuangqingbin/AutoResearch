@@ -53,8 +53,12 @@ POST = 3
 # 六指数的固定样本量(编制规则明文规定,不是估出来的)——只用来给 snapshot_sizes 打一个「可疑地
 # 少」的可见性标记,从不参与统计口径本身。低于该指数样本量 90% 记为 suspect;90% 留足了余量:
 # 正常月份的调样只动个位数只,不会让总行数掉出这条线,而「读到一半」(如 300→150)远低于它。
-_NOMINAL_SIZE: dict[str, int] = {"沪深300": 300, "中证500": 500, "中证1000": 1000,
-                                 "中证A500": 500, "科创50": 50, "创业板指": 100}
+# minor-6(final whole-branch review):键控从中文显示名改成指数代码(与 `INDEXES` 同键空间)——
+# `--index CODE=CustomName` 换一个自定义显示名就会让按名字查表的旧写法找不到条目,`nominal`
+# 悄悄变成 `None`,suspect 判定整段失效却不留任何痕迹(读数看起来和"这份快照没问题"一样)。
+# 按代码键控后,显示名怎么叫都不影响这条判据——判据问的是"这个指数"，不是"这个名字"。
+_NOMINAL_SIZE: dict[str, int] = {"000300.SH": 300, "000905.SH": 500, "000852.SH": 1000,
+                                 "000510.SH": 500, "000688.SH": 50, "399006.SZ": 100}
 _SIZE_FLOOR_RATIO = 0.9
 
 
@@ -227,7 +231,7 @@ def run_census(start: str = "2022-06", end: str = "2026-06", *, lake_daily: Path
             prev, n_prev = constituents(code, py, pm, fetch)
             cur, n_cur = constituents(code, y, m, fetch)
             included = bool(prev) and bool(cur)
-            nominal = _NOMINAL_SIZE.get(name)
+            nominal = _NOMINAL_SIZE.get(code)          # minor-6:按代码查,不按显示名(见常量旁注)
             suspect = bool(included and nominal is not None
                           and (n_prev < nominal * _SIZE_FLOOR_RATIO or n_cur < nominal * _SIZE_FLOOR_RATIO))
             snapshot_sizes.append({"E": ev["E"], "index": name, "prev_n": n_prev, "cur_n": n_cur,

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.scan.index_events import INDEX_WHITELIST
+from autoresearch.contracts.index_whitelist import INDEX_WHITELIST
 
 BENCHMARK_PATTERNS: dict[str, str] = {
     "000300": r"沪深300",
