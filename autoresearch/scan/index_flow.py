@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """ETF 被动规模 → 调样票「被动买入 ≈ x 天 ADV」描述字段(design 2026-09-25 §2.2 `flow_adv_days`;批 B3)。
 
-只做描述:不进任何门、不进排序、不改评级。三源(fund_basic / fund_share / fund_nav)任一缺 → None,字段留空
-(空 = 未计算,不是 0)。口径:
+只做描述:不进任何门、不进排序、不改评级。三源(fund_basic / fund_share / fund_nav)任一缺 → None,整张
+事件表的该字段留空(空 = 未计算,不是 0);第四源 `index_weight` 某一指数的成分快照真空(B 级合法空,
+非取数失败)→ 只跳过**那一个指数**的贡献,不用"只有本次涉及票"的假分母去凭空算出一个偏大几十到
+几百倍的数字(比留空更危险——它长得像一个算出来的数字)。口径:
   AUM_index(亿) = Σ 非增强/非联接 ETF 的 fd_share(万份)× unit_nav / 1e4
   weight_proxy(code, index) = circ_mv(code) / Σ circ_mv(该指数最新月末成分 ∪ 本次调样涉及票)   —— 自由流通市值近似,
                               **不是**指数公司发布的真实权重(该数只用于估算,读者必须能一眼看出这是近似值)
@@ -144,7 +146,17 @@ def flow_adv_days(events: pd.DataFrame, as_of: str, *, lake_daily: Path | None =
         # 概念上应已在 `_members` 的月末快照里,但快照可能滞后于事件,显式并入让权重代理两侧对称
         # (review 2026-09-25:只并入 add 侧会让调出票的权重分母少算它自己那一份,把净额算偏)。
         touched = set(rows["code"].astype(str))
-        denom = sum(circ.get(c, 0.0) for c in (_members(idx, as_of, fetch) | touched))
+        members = _members(idx, as_of, fetch)
+        # 2026-09-25 review:成分快照真空(B 级取数取到但 0 行——tushare 尚未发布/限流)时,
+        # `members` 是空集,不能悄悄退化成「分母只有 touched 这几只」——一个真实指数总有几十到
+        # 几百个成分,空集从来不是"这个指数真的没有成分",只可能是"这次没能读出来"。绝不能把
+        # 「没问出答案」和「问出的答案是只有这几只」编码成同一个空集(缺席 ≠ 否,本仓反复踩过的坑):
+        # 分母会因此只剩这一两只调样票自己,权重代理算成接近 100%,把 flow_adv_days 撑大几十到
+        # 几百倍——比留空更危险的错误,因为它长得像一个算出来的数字。这个指数本次直接跳过
+        # (denom 用不着算,连 touched 的份额都不猜),不让它污染 flow_by_code。
+        if not members:
+            continue
+        denom = sum(circ.get(c, 0.0) for c in (members | touched))
         if denom <= 0:
             continue
         for r in rows.itertuples(index=False):

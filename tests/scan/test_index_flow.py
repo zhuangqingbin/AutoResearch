@@ -70,6 +70,23 @@ def test_flow_adv_days_is_net_across_indices_over_adv20(lake):
     assert s.tolist() == pytest.approx([30.0, 30.0], rel=1e-3)
 
 
+def test_flow_adv_days_skips_an_index_whose_membership_snapshot_came_back_empty(lake):
+    """`index_weight` 取到但 0 行(B 级合法空,不是取数失败)—— 空集绝不能被悄悄当成"这个指数
+    本次的分母只有 touched 那几只":一个真实指数总有几十到几百个成分,空集只可能是"没能读出来"、
+    从不是"真的没有成分"。把它当分母会让权重代理逼近 100%,把 flow_adv_days 撑大几十到几百倍——
+    比留空更危险,因为它长得像一个算出来的数字。这个指数本次必须整个跳过。"""
+    def fetch_no_members(endpoint, params):
+        if endpoint == "index_weight":
+            return pd.DataFrame(columns=["index_code", "con_code", "trade_date", "weight"])
+        return _fetch(endpoint, params)
+    ev = pd.DataFrame([
+        {"code": "600221", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS)
+    s = fl.flow_adv_days(ev, AS_OF, fetch=fetch_no_members)
+    assert s.isna().all()
+
+
 def test_build_index_events_with_flow_fills_the_column(lake, monkeypatch):
     monkeypatch.setattr(cache, "_real_today", lambda: AS_OF)
     from autoresearch.data.sources.csindex import DETAIL_COLS, LIST_COLS
