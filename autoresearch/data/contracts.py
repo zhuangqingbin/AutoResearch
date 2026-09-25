@@ -166,6 +166,23 @@ CONTRACTS: dict[str, Contract] = {
     "stock_yjbb_em": _c(TIER_DEGRADE, note="业绩(报告期)"),
     "fina_mainbz": _c(TIER_DEGRADE, note="分业务收入/利润(dossier 业务模型;小票/金融股披露口径可缺)",
                       empty_ok=True),
+    # ── B 级:指数调样事件源(design 2026-09-25 §2.1)——缺失时漏斗照常,日历第三腿/守卫整段不出现 ──
+    # 两条 csindex 是爬虫式脆源:半截/空**不入湖**(落了就 path.exists() 恒命中,当日永远残缺)。
+    # required_cols 只列下游真读的列;detail 不要求 index_code(无附件的纯文本公告该列合法全空)。
+    "csindex_rebalance_list": _c(TIER_DEGRADE, "ann_id title publish_date", 1,
+                                 note="中证调样公告列表:最新 5 条快照(scan/index_events 消费)",
+                                 persist_violations=False),
+    "csindex_rebalance_detail": _c(TIER_DEGRADE, "ann_id publish_date content_text", 1,
+                                   note="中证调样公告详情 + 附件名单长表(一行一票一指数一侧)",
+                                   persist_violations=False),
+    "index_weight": _c(TIER_DEGRADE, "index_code con_code trade_date weight",
+                       note="指数月末成分快照:普查 / 公告对账(research/index_rebalance_census)"),
+    "index_basic": _c(TIER_DEGRADE, "ts_code name", note="指数元数据"),
+    "fund_basic": _c(TIER_DEGRADE, "ts_code name benchmark", note="ETF 元数据(基准含指数名;scan/index_flow)"),
+    "fund_share": _c(TIER_DEGRADE, "ts_code trade_date fd_share", note="ETF 份额:被动规模估算;某日无数据 = 真实空",
+                     empty_ok=True),
+    "fund_nav": _c(TIER_DEGRADE, "ts_code nav_date unit_nav", note="ETF 净值:被动规模估算;某日无数据 = 真实空",
+                   empty_ok=True),
     # ── B 级:衍生品(design 2026-08-03 §2;I 类基建,消费者默认关闭)──
     # 全部 B 级:期权/转债缺失时漏斗照常成立(它们不进 composite、不进 L0 硬门)。
     "opt_daily": _c(TIER_DEGRADE, "ts_code trade_date vol oi",

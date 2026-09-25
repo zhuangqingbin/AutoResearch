@@ -13,6 +13,7 @@ dependencies = [
     # multi-agent analysis runs in-session via the analyze-ticker skill (Claude
     # as the engine), so no LLM-provider / LangGraph / CLI deps are needed.
     "langchain-core>=0.3.81",   # only for the @tool decorator on the data tools
+    "openpyxl>=3.1",
     "pandas>=2.3.0",
     "python-dotenv>=1.0.0",
     "requests>=2.32.4",

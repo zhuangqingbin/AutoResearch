@@ -48,7 +48,7 @@ def test_every_entry_is_wellformed():
         assert pol["key"] in {"date", "period", "as_of", "static", None}, name
         assert pol["settle"] in {"eod", "live"}, name
         assert pol["source"] in {"tushare", "akshare", "eastmoney", "fred", "yfinance",
-                                 "cboe", "official", "sec"}, name
+                                 "cboe", "official", "sec", "csindex"}, name
         # live endpoints must not be keyed (they are never written to the lake)
         if pol["settle"] == "live":
             assert pol["key"] is None, name

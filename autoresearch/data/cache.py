@@ -34,9 +34,10 @@ _COMPRESSION = "zstd"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # 各 key 模式下,从 params 里找"日期/报告期/实体"用的候选键名(吸收 tushare/akshare 差异)。
-_DATE_PARAM_KEYS = ("trade_date", "date", "ann_date", "cal_date")
+_DATE_PARAM_KEYS = ("trade_date", "date", "ann_date", "cal_date", "nav_date")   # nav_date:fund_nav(2026-09-25)
 _PERIOD_PARAM_KEYS = ("period", "date", "end_date")
-_ENTITY_PARAM_KEYS = ("ts_code", "symbol", "code", "exchange_id", "exchange")
+# index_code:index_weight 一指数一月一份;ann_id:中证公告详情一公告一份(2026-09-25 指数调样事件源)
+_ENTITY_PARAM_KEYS = ("ts_code", "symbol", "code", "exchange_id", "exchange", "index_code", "ann_id")
 
 
 class _NoSourceTrace:

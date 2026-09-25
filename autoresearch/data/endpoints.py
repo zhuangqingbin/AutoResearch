@@ -79,6 +79,23 @@ ENDPOINTS: dict[str, dict] = {
     "stock_basic": {"key": "static", "settle": "eod", "source": "tushare"},
     "trade_cal": {"key": "static", "settle": "eod", "source": "tushare"},
 
+    # ── ① tushare 指数 / 基金(design 2026-09-25 指数调样事件源 §2.1;全部 B 级,消费者 presence-gated)──
+    # index_weight:月末成分快照,一指数一月一份 —— 实体 index_code + as_of(调用方把 today 传成月末),
+    # 键形如 000300_SH@20260630;用于普查 / 对账(公告名单 vs 月末实现),**不是**前瞻源。
+    "index_weight": {"key": "as_of", "settle": "eod", "source": "tushare"},
+    "index_basic": {"key": "static", "settle": "eod", "source": "tushare"},   # 指数元数据(单一 market=CSI 参数集)
+    "fund_basic": {"key": "static", "settle": "eod", "source": "tushare"},    # ETF 元数据(基准含指数名;market=E,status=L)
+    "fund_share": {"key": "date", "settle": "eod", "source": "tushare"},      # ETF 份额(trade_date 全基金一日一份)
+    "fund_nav": {"key": "date", "settle": "eod", "source": "tushare"},        # ETF 净值(nav_date 键,见 cache._DATE_PARAM_KEYS)
+
+    # ── ② 中证指数公司公告(source=csindex 自采;akshare 无对应函数)──
+    # list:queryAnnouncementByType 只给最新 5 条、不分页 → 每取数日一份快照(all@today),历史靠湖累积;
+    #      snapshot=True:接口只返回「此刻」,补跑不得写成过去某天的假历史(SnapshotDateError 守门)。
+    # detail:queryAnnouncementById + 附件 xlsx 解析后的长表,内容不可变 → 实体 ann_id,取一次永久留底
+    #      (取数方先找湖里任一 <ann_id>@*.parquet,见 scan/index_events._load_detail)。
+    "csindex_rebalance_list": {"key": "as_of", "settle": "eod", "source": "csindex", "snapshot": True},
+    "csindex_rebalance_detail": {"key": "as_of", "settle": "eod", "source": "csindex"},
+
     # ── ② akshare 按取数日快照(内容随取数日变,用 entity@as_of 留底) ──
     "stock_zh_a_gdhs_detail_em": {"key": "as_of", "settle": "eod", "source": "akshare"},      # 股东户数
     "stock_restricted_release_queue_em": {"key": "as_of", "settle": "eod", "source": "akshare"},  # 解禁队列
