@@ -336,7 +336,14 @@ def _sector_pack_staging(industry: str, scan_dir: Path | str) -> dict:
         pack["n_l2"] = int((l2["industry"].astype(str) == str(industry)).sum())
     cal = _read_csv(scan_dir / "calendar.csv")
     if cal is not None and {"code", "event_date"} <= set(cal.columns):
-        c = cal[cal["code"].isin(set(g["code"]))]
+        # minor-5(final whole-branch review):日历第三腿(指数调样)打破了 calendar.csv 的旧
+        # 不变量——它的事件日期恒在未来。`effective`/`post` 相位的行 `event_date` 可以等于或
+        # 早于扫描日,若不设下界,`next_date`(= min(event_date))会把一个已经生效过去的调样
+        # 标成"下一次",喂给行业 brief agent 的机器契约,读者会把过去的事实读成还没发生的事。
+        # 解禁/披露两腿本就恒在未来(harvest 时已按 `>= 当日` 过滤),这条下界对它们是 no-op。
+        today = str(scan_dir.name).replace("-", "")[:8]
+        event_compact = cal["event_date"].astype(str).str.replace("-", "", regex=False).str[:8]
+        c = cal[cal["code"].isin(set(g["code"])) & (event_compact >= today)]
         if len(c):
             pack["calendar"] = {
                 "n_events": int(len(c)),

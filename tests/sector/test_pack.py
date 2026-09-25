@@ -75,6 +75,22 @@ def test_sector_pack_fields(tmp_path):
     assert p["calendar"]["by_kind"] == {"disclosure": 1, "unlock": 1}
 
 
+def test_sector_pack_calendar_excludes_past_dated_rebalance_rows_from_next_date(tmp_path):
+    """minor-5(final whole-branch review):第三腿(指数调样)打破了 `calendar.csv` 的旧不变量——
+    它的事件日期恒在未来。`effective`/`post` 相位的行 `event_date` 可以等于或早于扫描日,而
+    `next_date` = `min(event_date)` 若不设下界,一个已经生效过去的调样会被标成"下一次"喂给
+    行业 brief agent 的机器契约,读者会把过去的事实当成还没发生的事去解读。"""
+    d = _mk_scan(tmp_path)
+    pd.DataFrame([
+        {"code": "600001", "event_date": "2026-06-25", "kind": "index_rebalance"},   # 8 天前:过去
+        {"code": "600002", "event_date": "2026-07-10", "kind": "disclosure"},         # 未来:保留
+    ]).to_csv(d / "calendar.csv", index=False)
+    p = sector_pack("半导体", d)
+    assert p["calendar"]["n_events"] == 1                    # 过去那行被挡在外面,不是 2
+    assert p["calendar"]["next_date"] == "2026-07-10"
+    assert p["calendar"]["by_kind"] == {"disclosure": 1}
+
+
 def test_sector_pack_degrades(tmp_path):
     d = _mk_scan(tmp_path)
     empty = sector_pack("不存在的行业", d)

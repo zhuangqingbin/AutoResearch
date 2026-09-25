@@ -16,6 +16,7 @@ docs/specs/2026-09-25-index-inclusion-signal-design.md §2.3(第三条腿)
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -99,18 +100,32 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
                              "detail": f"预约披露(期 {period})", "ratio": None})
 
     if index_rebalance:
-        from autoresearch.scan import index_events as _ie
+        # I1(final whole-branch review,2026-09-26):上面解禁/披露两腿各自 try/except,恰恰是
+        # 为了不被彼此的失败拖累——这条腿此前没有,而它跑在两腿之后、`df.to_csv` 之前,一次
+        # 未捕获异常(可达触发:湖分区缺一列契约本不要求的列,导致 itertuples 属性访问抛
+        # AttributeError/KeyError)会在写盘前直接终止整个函数,连同上面两腿已经收集好的行
+        # 一起带走。`calendar.csv` 是四处消费者(L4 简报/summary/档案/行业包)共读的恒在产物,
+        # 不该因为第三腿一个人的问题整份消失——镜像上面两腿的姿势:响亮降级,不吞异常来源。
+        try:
+            from autoresearch.scan import index_events as _ie
 
-        ev = _ie.harvest_index_events(date, outdir)
-        if ev is not None:
-            for r in ev.itertuples(index=False):
-                eff = r.eff_close_date
-                if r.code not in want or r.phase == "unknown_eff" or not isinstance(eff, str) or not eff:
-                    continue
-                flow = None if r.flow_adv_days is None or pd.isna(r.flow_adv_days) else float(r.flow_adv_days)
-                rows.append({"code": r.code, "kind": "index_rebalance", "event_date": str(eff)[:8],
-                             "detail": f"{r.index_name} {'调入' if r.side == 'add' else '调出'}|{r.phase}",
-                             "ratio": flow})
+            ev = _ie.harvest_index_events(date, outdir)
+            if ev is not None:
+                for r in ev.itertuples(index=False):
+                    eff = r.eff_close_date
+                    if r.code not in want or r.phase == "unknown_eff" or not isinstance(eff, str) or not eff:
+                        continue
+                    flow = None if r.flow_adv_days is None or pd.isna(r.flow_adv_days) else float(r.flow_adv_days)
+                    rows.append({"code": r.code, "kind": "index_rebalance", "event_date": str(eff)[:8],
+                                 "detail": f"{r.index_name} {'调入' if r.side == 'add' else '调出'}|{r.phase}",
+                                 "ratio": flow})
+        except Exception as exc:  # noqa: BLE001 — 第三腿的失败不得连累上面两腿已收集的行
+            from autoresearch.data.contracts import record_degradation
+            # `record_degradation` 自己就会打一行 stderr(数据契约的既有姿势),不必再手写一条
+            # 重复的 print——两行说同一件事只会让真实降级现场更难读。
+            record_degradation("index_events", f"日历第三腿异常({type(exc).__name__}: {exc})"
+                                               "→ 本次不产出 index_rebalance 行,其它两腿正常落盘",
+                               key=date)
 
     df = pd.DataFrame(rows, columns=_CAL_COLS).sort_values(["event_date", "code"]).reset_index(drop=True)
     df.to_csv(outdir / "calendar.csv", index=False)
@@ -199,11 +214,24 @@ def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
     disc = df[(df["kind"] == "disclosure") & df["code"].isin(fin)]
     unlk = df[(df["kind"] == "unlock") & (pd.to_numeric(df["ratio"], errors="coerce") >= big_ratio)]
     from autoresearch.scan.index_events import load_index_events
-    ev = load_index_events(scan_dir)
+    # I2(final whole-branch review,2026-09-26):`index_events.csv` 的写者是非原子写,中断的
+    # 一次会留下一个读不出来的半成品。这是**唯一**把调样市场级计数送进已发布 summary 的路径
+    # (`report_sections.py:1178-1179`,外层没有 catch)——读表这一步不能没有防护,否则一份
+    # 坏文件会把上面已经算好的 disc/unlk 两段一起拖垒,不只是丢一行调样计数。
+    try:
+        ev = load_index_events(scan_dir)
+    except Exception as exc:  # noqa: BLE001 — 读失败只丢调样这一段,不连累 disc/unlk
+        print(f"[calendar] index_events.csv 读取失败({exc!r})→ summary 调样计数这一段留空",
+              file=sys.stderr)
+        ev = None
     if ev is not None and len(ev):
         # amendment(task-6):unknown_eff 排除——见上面 docstring 与 harvest_calendar 同一处理。
-        ev = ev[ev["eff_close_date"].notna() & (ev["eff_close_date"].astype(str).str[:8] <= cut)
-                & (ev["phase"] != "unknown_eff")]
+        # minor-5(final whole-branch review):下界钉在今天——`effective`/`post` 相位的行
+        # `eff_close_date` 可能等于或早于今天(第三腿打破了 calendar.csv 的旧不变量「事件日期
+        # 恒在未来」),「未来 N 天」标题下不该把已经发生的事实也算进「未来」。
+        today_str = day0.strftime("%Y%m%d")
+        ev = ev[ev["eff_close_date"].notna() & (ev["eff_close_date"].astype(str).str[:8] >= today_str)
+                & (ev["eff_close_date"].astype(str).str[:8] <= cut) & (ev["phase"] != "unknown_eff")]
     has_ev = ev is not None and len(ev) > 0
     if not len(disc) and not len(unlk) and not has_ev:
         return ""

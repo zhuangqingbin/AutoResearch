@@ -50,6 +50,19 @@ def test_calendar_section(tmp_path):
     assert calendar_section(tmp_path / "nope") == ""
 
 
+def test_calendar_section_survives_a_corrupt_index_events_file(tmp_path):
+    """I2(final whole-branch review):`index_events.csv` 是非原子写,中断的一次会留下一个
+    读不出来的半成品(如零字节文件)。`calendar_section` 是**唯一**把调样市场级计数送进已
+    发布 summary 的路径(`report_sections.py:1178-1179`,无外层 catch)——旧代码读表这一步
+    没有任何防护,读盘异常会穿透整个函数,把本该正常渲染的解禁/披露两段一起带走(不只是
+    少一行调样计数,是整份 summary 的这一节都没有,再往上甚至没有报告)。"""
+    d = _mk(tmp_path)
+    (d / "index_events.csv").write_bytes(b"")          # 零字节:中断写留下的半成品
+    s = calendar_section(d)
+    assert "📅" in s and "000001 20260716" in s        # 解禁/披露两段没被调样那半段拖垒
+    assert "指数调样" not in s                          # 调样计数这一段诚实地什么都没加
+
+
 def test_brief_injects_calendar(tmp_path):
     from autoresearch.scan.agents.l4_card import compose_funnel_brief
     d = _mk(tmp_path)
@@ -167,6 +180,38 @@ def test_harvest_calendar_source_absent_leaves_other_legs_intact(tmp_path, monke
     assert df.empty and not (tmp_path / "2026-06-11" / "index_events.csv").exists()
 
 
+class _PartialPro:
+    """解禁腿真出一行数据,披露腿离线;第三腿由各测试自己 monkeypatch(I1)。"""
+
+    def share_float(self, **kw):
+        return pd.DataFrame([{"ts_code": "000001.SZ", "float_date": "20260615",
+                              "float_ratio": 5.0, "holder_name": "A", "share_type": "定增股份"}])
+
+    def disclosure_date(self, **kw):
+        raise RuntimeError("offline")
+
+
+def test_harvest_calendar_third_leg_exception_does_not_lose_the_other_two_legs(tmp_path, monkeypatch):
+    """I1(final whole-branch review):解禁/披露两腿各自有 try/except,恰恰是为了不被彼此的失败
+    拖累;第三腿此前一个没有——它跑在两腿之后、`to_csv` 之前,一次未捕获异常(如湖分区缺一列
+    契约本不要求的列,导致 `r.index_code`/`r.side` 之类的属性访问抛 AttributeError/KeyError)
+    会在写盘前直接终止整个函数,连同上面两腿已经收集好的行一起带走——`calendar.csv` 是
+    L4 简报/summary/档案/行业包四处消费者共读的**恒在**产物,不该因为第三腿一个人的问题而
+    整份消失。"""
+    import autoresearch.data.tushare_source as ts_src
+    from autoresearch.scan import calendar as cal
+    monkeypatch.setattr(ts_src, "_pro", lambda: _PartialPro())
+    monkeypatch.setattr(ts_src, "_ts_call", lambda fn, *a, **k: fn())
+
+    def boom(date, outdir, **k):
+        raise KeyError("index_code")   # 模拟湖分区缺一列契约不要求的列 → 深处属性访问真的会炸
+    monkeypatch.setattr(ie, "harvest_index_events", boom)
+    df = cal.harvest_calendar("2026-06-11", {"000001"}, root=tmp_path, index_rebalance=True)
+    assert (tmp_path / "2026-06-11" / "calendar.csv").exists()
+    assert (df["kind"] == "unlock").any()                       # 解禁腿的行没被第三腿的异常带走
+    assert not (df["kind"] == "index_rebalance").any()          # 第三腿本身诚实地什么都没贡献
+
+
 def _mk_index(tmp_path, date="2026-06-11"):
     d = tmp_path / date
     d.mkdir(parents=True, exist_ok=True)
@@ -224,6 +269,29 @@ def test_calendar_section_prints_market_level_rebalance_counts(tmp_path):
     # amendment(task-6):000007 是 unknown_eff,即使带 eff_close_date 也不得计入——若漏过滤,
     # 上面的 "沪深300 ×2" 断言会失败(实际会是 ×3),这里再加一条直接否定式断言便于定位。
     assert "沪深300 ×3" not in s
+
+
+def test_calendar_section_excludes_past_dated_post_phase_rows_from_the_future_window(tmp_path):
+    """minor-5(final whole-branch review):第三腿打破了 calendar.csv 的旧不变量——它的日期
+    恒在未来。`effective`/`post` 相位的行 `eff_close_date` 可以等于或早于扫描日,而
+    `calendar_section` 的上界过滤(`<= cut`)对一个已经过去的日期毫无意义地恒真,若没有下界,
+    一个 3 天前已生效的调样会被算进「未来 14 天」标题下的市场级计数。"""
+    d = tmp_path / "2026-06-11"
+    d.mkdir(parents=True)
+    pd.DataFrame(columns=["code", "kind", "event_date", "detail", "ratio"]).to_csv(
+        d / "calendar.csv", index=False)
+    from autoresearch.scan import index_events as ie
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "000004", "index_code": "000300", "index_name": "沪深300", "side": "add",
+         "ann_date": "20260529", "eff_close_date": "20260608", "phase": "post",
+         "source": "csindex", "flow_adv_days": None},          # 3 天前已生效——过去,不是未来
+        {"code": "000005", "index_code": "000905", "index_name": "中证500", "side": "drop",
+         "ann_date": "20260529", "eff_close_date": "20260613", "phase": "announced_runup",
+         "source": "csindex", "flow_adv_days": None},          # 未来窗内——应保留
+    ], columns=ie.EVENT_COLS))
+    s = calendar_section(d)
+    assert "中证500" in s and "20260613" in s
+    assert "沪深300" not in s and "20260608" not in s
 
 
 def test_calendar_section_shows_rebalance_even_without_unlock_or_disclosure_rows(tmp_path):
