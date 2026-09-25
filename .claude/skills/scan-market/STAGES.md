@@ -177,7 +177,7 @@ L2 之后、与 L3 证据取数**并发**:
 ### 渐进深度 + 早停
 
 ```
-P0 简报（市场地形+档案+解禁/披露旗+行业备忘+误读预警）
+P0 简报（市场地形+档案+解禁/披露/调样旗+行业备忘+误读预警）
   → P1–P3 表面填 4 维
   → 【主早停②】非买点 → 早停卡（短格式 ≤36 行;未核维标「未核」）
   → survivor 读 deep 进 P4 陷阱核（质押/商誉/解禁/审计/现金流,记「进入P4倾向」）
@@ -323,6 +323,8 @@ D1(2026-08-19,用户裁决 A3)删掉了预注册状态机(`experiment_registry`/
 **E6 v4.0(2026-09-24 可买性对齐 §2.6,controller Ruling P21)** —— `RULE_VERSION="e6.v4.0"`,一根总闸 `relative_buy.tiering`(默认 `false`=v3.0 逐字;**生产已开 `true`**),与 `relative_buy.pool` 回到 `"finalists"`(全部派发卡,席位含在内;`"composite"` 仍是回滚值)同批改。四处改动:①**票级 `data_a`**——`failed_data` 里 `l4_<code>` 只否决该票,不再连坐当日其余候选;②**入场门**——卡面机读入场行 `card_context.entry_stance=="PROHIBITED"` 直接进 `no_redflag` 硬门否决(`entry_source` 为 line 或 prose 皆算,§2.5);③**A/R 分级**——A 级候选=`eligible ∧ ¬pinned ∧ entry_stance=="ALLOWED"`;A 级空则退到 R 级候选=`eligible ∧ ¬pinned ∧ entry_stance≠"ALLOWED"`(PROHIBITED 已被②否决,故实际是 CONDITIONAL/UNKNOWN);两级皆空 → 诚实 `blocked`(不为凑单放行);`buys[0]` 加 `tier:"A"|"R"`/`basis:"card_backed"|"relative_forced"`,顶层加 `tier_counts`;④**盲卡不入账**——task-book `status!="SUCCEEDED"` 或 slim 缺席的票不写进 `_final_ratings.json`,单独落 `_blind_cards.json`,账本读 `_final_ratings.json` 自然不入账。
 **A 级只记录、不设门**:158 张真实卡(两引擎合计)里 A 级恒 0——早停卡结构性不得写「允许」而 70% 的卡是早停卡,把它设成门会逼着放松 Hold 四条件(09-12 四笔亏损 BUY 的病根),`stage_rulers.csv` 的 `E6/e6_a_tier_day_share`(有 BUY 的日子里 `buy_tier=="A"` 的占比,无 BUY 的日子不计入分母)只记读数。用户①「成功交易日 ≥1 BUY」裁定不受影响——命令由 R 级(`relative_forced`)照常满足。`_selection_conflicts` 的 `card_says_prohibited` 在 tiering 开启后应恒为 0(PROHIBITED 已在硬门被否,冲突检测器不该再见到它);历史基线测不到——买过禁止票的两天早于 `card_context` schema,有 schema 的两天没出 BUY,当前唯一能给的是用现代码回放得到的估计值 3,不是观测值。
 
+**E6 v4.1(2026-09-25 指数调样事件 §2.4)** —— `RULE_VERSION="e6.v4.1"`,一根总闸 `relative_buy.rebalance_gate`(默认 `false`=v4.0 逐字;**生产已开 `true`**,与 `calendar.index_rebalance` 同批开、应同批关)。开 → 第五硬门 `rebalance_close`:扫描日 = 调样生效前夜(`index_events.csv` 里 `phase=="passive_close_eve"`)的调样票(调入/调出、六指数任一,E2 裁定一刀不分)否决;独立计数、不并入 `no_redflag`;决策文件多顶层 `index_events` 块(`source ok|absent|error`、`gate_evaluated`、`n_rows`、`hits`)、`field_usage.hard_gate.fields` 变五项(role 文案跟着说「五类」)。`source` 三态不是两态——`absent`(旋钮开但 `index_events.csv` 缺席)与 `error`(文件在场但读不出来,如非原子写留下的半成品)是两个不同的**因**,门后果相同(全员放行)但各自留痕,不合并成一个值(fix round 1,2026-09-26)。证据:17 次调样隔夜尺普查生效前夜(E−1)−0.31pp、胜率 35%(中证500 −0.72pp·胜 22%、中证1000 −0.25pp 两个显著为负;沪深300/A500/科创50 ≈0),见 `docs/specs/2026-09-25-index-inclusion-signal-design.md` 附录 A。数据链:prelude `calendar` 步 → `scan/index_events.py`(中证公告 list→detail→xlsx)→ `calendar.csv` 第三腿 `kind=index_rebalance` → L4 简报 ⛔/📅 行、summary 📅 市场级计数、档案 §6、sector pack。
+
 ---
 
 ## 覆盖档案链 —— `autoresearch/dossier`(**不属于闭环,整条保留**)
@@ -361,6 +363,8 @@ D1(2026-08-19,用户裁决 A3)删掉了预注册状态机(`experiment_registry`/
 
 - **L2 上模型**:全 zoo 负 IC + 回测无稳健 alpha;新特征 IC 过硬之前不复活。
 - **业绩预告做 L1 事件通道**:强制披露季 T+5 超额 −0.27%/胜率 35%,追缺口 −2.92%——公告后追买无肉;alpha 若有,在披露前的预期变化里。
+- **指数纳入当正向催化**(2026-09-25):17 次调样隔夜尺普查,公告夜 −0.07pp、生效前跑道 −0.10pp(t_day −5.4)、生效前夜 −0.31pp(胜率 35%);「纳入=利好」在主尺不成立,只作事实日期 + 生效前夜守卫(E6 v4.1)。
+- **预测调样名单做席位**(2026-09-25):完美预见(倒推真实调样名单)沪深300 A−1 夜 +0.90pp·胜80%、科创50 +1.29pp·胜78% 看似有肉;但复刻编制规则的预测器精度仅 37–70%(沪深300)/0–80%(科创50),用预测名单(含误报)算的 A−1 夜超额两者皆不显著(+0.21pp/+0.55pp),误报票反被罚 −0.44pp·胜率19%;判据「精度≥70% 且胜率≥65%」不达标,路线 C 不立项,重开条件见 `docs/specs/2026-09-25-index-inclusion-signal-design.md` §2.8。
 
 ---
 

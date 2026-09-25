@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""scan-market · 解禁 + 预约披露日历(确定性;harvest 走 tushare)。
+"""scan-market · 解禁 + 预约披露 + 指数调样日历(确定性;harvest 走 tushare + 中证公告)。
 
-design: docs/specs/2026-07-02-scan-calendar-shadow-design.md §1
+design: docs/specs/2026-07-02-scan-calendar-shadow-design.md §1(前两条腿)、
+docs/specs/2026-09-25-index-inclusion-signal-design.md §2.3(第三条腿)
 
-两个事实日期源:`share_float`(限售解禁 → 风险窗)+ `disclosure_date`(财报预约披露
-`pre_date` → 催化日期锚,观察单"中报 beat"类触发从此有确切日子)。产物
-`<scan_dir>/calendar.csv`;L4 简报注入风险/催化行,summary 嵌未来两周日历。
-铁律:日历是**事实日期**非方向;解禁旗只提示 P4 必核,不自动降级。
+**三个事实日期源,不是两个(2026-09-25 补第三条腿)**:`share_float`(限售解禁 → 风险窗)+
+`disclosure_date`(财报预约披露 `pre_date` → 催化日期锚,观察单"中报 beat"类触发从此有
+确切日子)+ `index_events`(指数调样,旋钮 `calendar.index_rebalance`,默认关、**生产已开**——
+六指数白名单公告驱动,调样是**事实日期**,唯一带方向词的一行是生效前夜且方向是「禁止」,
+不是加分)。产物 `<scan_dir>/calendar.csv`;L4 简报注入风险/催化/调样行,summary 嵌未来
+两周日历。铁律:日历是**事实日期**非方向;解禁旗只提示 P4 必核,不自动降级。
 
   uv run --no-sync python -m autoresearch.scan.calendar 2026-07-02   # L2∪finalists 取数落 staging
 """

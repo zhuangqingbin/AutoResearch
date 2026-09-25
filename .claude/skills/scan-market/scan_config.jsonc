@@ -207,6 +207,28 @@
     "sector_seats": { "enabled": true, "per_sector": 2, "max_sectors": 3 }
   },
 
+  // ── 日历 · 指数调样事件第三腿(2026-09-25 指数调样事件 §2.3;用户裁定 E1「日历事实 + 生效前夜守卫」,
+  //   非加分)──────────────────────────────────────────────────────────────
+  // 【生效点】scan/calendar.harvest_calendar(index_rebalance=knob)→ scan/index_events.
+  //   harvest_index_events(中证指数公司公告 list→detail→xlsx 名单,六指数白名单,全量落
+  //   index_events.csv,不过 want 过滤)→ calendar.harvest_calendar 按 L2∪finalists 且
+  //   phase 已解析(非 unknown_eff)且生效日非空过滤,写 calendar.csv 第三腿 kind=
+  //   "index_rebalance" → calendar_flags(L4 简报注入 / 档案 §6 / sector pack 四处继承)+
+  //   calendar_section(summary 📅 未来 14 天里的市场级计数,读全量 index_events.csv,不过
+  //   want 过滤——一次调样常常谁都不在当日 L2∪finalists 名单里)。
+  // ⚖️ 证据(2026-09-25 隔夜尺普查,17 次调样·1652 调入票次,对照 = 同指数未变动成分股,
+  //   主尺 gap_c1_o2):公告夜 −0.07pp;跑道(A+1..E−3)−0.10pp(t_day −5.4);**生效前夜
+  //   (E−1,买 E 收盘→卖 E+1 开盘)−0.31pp、胜率 35%**(中证500 −0.72pp·胜 22%、中证1000
+  //   −0.25pp 两个显著为负;沪深300/A500/科创50 的 E−1 ≈0)。唯一正相位在 A−1 预测夜且需
+  //   预测名单(路线 C 已因精度不足而不立项,见 §2.8/spec 附录 B)。日历行是**事实日期**:
+  //   六个相位里只有 passive_close_eve 那一行带方向词,且方向是「禁止」(防锚定,不给正向
+  //   加分)。已知覆盖缺口:399006 创业板指的调样公告不在本源发布,该指数的调样事件永远
+  //   只能靠 census(index_weight 月末快照普查)对账,不会经这条路径产出日历行。
+  // 回滚杆 = "index_rebalance": false(一行,逐字 parity:不取网、不落 index_events.csv、
+  //   calendar.csv 无第三腿新行)——**与 relative_buy.rebalance_gate 应同开同关**(两根杆
+  //   分别控制「看得见」与「否决」,但本项目从未打算只开一半)。
+  "calendar": { "index_rebalance": true },
+
   // ── 旁路 · 行业 brief(L2 后并发)──────────────────────────────────────────
   // 【生效点】sector/reuse.py main(--ttl 恒优先)/ sector/pack.py main(--k 恒优先)。
   "sector": {
@@ -318,8 +340,25 @@
   // 📌 另注:2026-08-26 设计稿(记忆标注「现行总调度权威」)至今仍把 finalists 池列为缺陷,
   //   那份文档**未随本次改动更新**。两处说法冲突时以本注释与 2026-09-24 spec §2.6 为准。
   // 回滚杆 = "tiering": false(v3 逐字)+ "pool": "composite"。
+  //
+  // ── rebalance_gate · E6 第五硬门(2026-09-25 指数调样事件 §2.4,`RULE_VERSION="e6.v4.1"`)──
+  // 【生效点】relative_buy.configured_rebalance_gate()→ post_run 的两个决策写者
+  //   (safe_write_decision / safe_verify_decision,同一个开关值传两边,同 tiering 纪律)→
+  //   build_decision(rebalance_gate=…, index_events=盘上 index_events.csv 按 code 分组)→
+  //   `_hard_gate` 第⑤段 rebalance_close:扫描日 = 调样生效前夜(index_events.csv 里
+  //   phase=="passive_close_eve")的调样票(调入/调出、六指数任一,E2 裁定一刀不分)否决;
+  //   独立计数、不并入 no_redflag;决策文件多顶层 index_events 块(source ok|absent|error、
+  //   gate_evaluated、n_rows、hits)、field_usage.hard_gate.fields 变五项。源缺席/读取失败
+  //   → 门放行 + source=absent|error 留痕(「没看见」≠「没事件」,两者门后果相同但因不同,
+  //   各自留痕不合并)。
+  // ⚖️ 证据:同上 calendar.index_rebalance 那条(17 次调样普查,生效前夜 −0.31pp、胜率
+  //   35%,中证500/中证1000 显著为负)——这一门否决的正是那一夜的买入。E2 裁定:全部调样票
+  //   一刀,不分调入/调出、不分指数(沪深300/A500/科创50 的 E−1 ≈0 不亏,但差异不足以支撑
+  //   「只挡中证500/1000」这种更精细的规则,证据只够支撑「一刀」)。
+  // 回滚杆 = "rebalance_gate": false(一行;关时决策文件与 v4.0 逐字节相同,除
+  //   rule_version 字符串本身)——**与 calendar.index_rebalance 应同开同关**。
   "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19",
-                    "pool": "finalists", "tiering": true },
+                    "pool": "finalists", "tiering": true, "rebalance_gate": true },
 
   // ── 现场重建 · transcript 绑定(2026-09-12 scene-reconstruction Task 4)──
   // 【生效点】autoresearch/scan/post_run.publish_run_observation(决策校验完成之后、

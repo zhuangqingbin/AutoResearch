@@ -1329,7 +1329,12 @@ def render_summary(model: ReportModel) -> str:
                          if not ln.lstrip().startswith("#")).strip()
     cal_lines = [ln for ln in (cal_body, *model.overseas_calendar_lines) if ln]
     if cal_lines:
-        out += ["## 📅 未来 14 天(披露=催化锚,解禁=风险窗;事实日期非方向)", *cal_lines, ""]
+        # fix(task-12 两处 stale claim 之一):标题曾漏「调样」——calendar.py 自己生成的
+        # `### 📅 …` 内标题早已是三项(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日),
+        # 但内标题被上面 `cal_body` 剥掉、本节标题是这里另起的一份硬编码拷贝,没跟着改。
+        # 正文行本身(cal_lines)一直都渲染到位——这只是标题漏字,不是数据没接进来。
+        out += ["## 📅 未来 14 天(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日;事实日期非方向)",
+               *cal_lines, ""]
 
     # 10 运行事实(managed 紧凑一行;完整块 → appendix E)
     start, end = RUN_OBSERVATION_MARKERS

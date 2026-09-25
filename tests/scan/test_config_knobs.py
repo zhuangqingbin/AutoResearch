@@ -337,3 +337,17 @@ def test_configured_rebalance_gate_reads_config_and_degrades_loudly(monkeypatch,
     monkeypatch.setattr(uc, "load_user_config", boom)
     assert configured_rebalance_gate() is False
     assert "rebalance_gate" in capsys.readouterr().err                       # 配置层故障留痕
+
+
+# ───────────────────────── 活体验收:生产日历第三腿 + E6 第五门同开(2026-09-25 §4 批 B1/B2) ─────────────────────────
+
+
+def test_production_config_index_rebalance_knobs_on():
+    """生产配置:日历第三腿(`calendar.index_rebalance`)与 E6 第五门(`relative_buy.
+    rebalance_gate`)同开——两根杆按设计「应同开同关」(各自的回滚杆注释里都这么写),
+    这条测试锁的是"两个都真的开着",不是只锁一个,防止未来只回滚一半而没人注意到
+    另一半仍在跑一条已经不对齐的组合。"""
+    from pathlib import Path
+    cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
+    assert cfg["calendar"]["index_rebalance"] is True
+    assert cfg["relative_buy"]["rebalance_gate"] is True
