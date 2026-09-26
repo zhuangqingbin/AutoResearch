@@ -1549,6 +1549,9 @@ BRIEF_LINT_SEVERITY = {
     "brief·超预算": "warn",
     "brief·边表缺失": "warn",
     "brief·边表过期": "warn",
+    # ── warn:10 日观察席(影子,2026-09-26 §5 B3)──
+    "观察席·缺节": "warn",
+    "观察席·措辞": "warn",
 }
 
 _BRIEF_DECISION_FIELDS = ("buys.production_n", "relative.code", "relative.rank",
@@ -1665,6 +1668,21 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
             add("brief↔summary不一致",
                 f"决策字段在 summary 的 🧭 仪表盘块里对不上:{'、'.join(missing)}"
                 " —— 两层报告的 BUY 数/code/basis/基准读数必须同源同值")
+
+    # ⑦ 10 日观察席(影子,2026-09-26 §5 B3):brief 印了 ⑦ 指针,summary 就必须有 §12
+    # (整节消失 = 读者分不清「没跑」与「没有」);§12 文案不得出现「BUY/买入/可买」——
+    # 它是 10 日尺影子,不是决策。禁词表与渲染器同源(`swing_seat.BANNED_WORDS`)。
+    if summary:
+        from autoresearch.scan import swing_seat as _seat
+
+        seat_section = _seat.section_text(summary)
+        if seat_section is None and "**⑦" in text:
+            add("观察席·缺节",
+                "brief 印了 ⑦ 指针但 summary 没有「10 日观察席(影子)」节 —— 空日也要写「无」")
+        words = _seat.banned_words(seat_section) if seat_section else []
+        if words:
+            add("观察席·措辞",
+                f"§12 出现 {'、'.join(words)} —— 观察席是 10 日尺影子,不是决策,不得写成交易建议")
 
     # ⑤ active 期 BUY 契约(影子期跳过并留痕)
     decision = None

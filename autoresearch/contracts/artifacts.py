@@ -185,6 +185,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
              required_when="有复核分歧"),
     Artifact("candidate_passport", "_candidate_passport.json", "staging", "l5", "passport", "json", "always"),
     Artifact("brief_sources", "_brief_sources.json", "staging", "l5", "brief", "json", "always"),
+    # 2026-09-26 §5 B3:10 日观察席(影子)—— L5 一次算好落盘,summary §12 与 brief ⑦ 同源读它
+    Artifact("swing_seat", "_swing_seat.json", "staging", "l5", "swing_seat", "json", "always"),
     Artifact("report_budget", "_report_budget.json", "staging", "l5", "health", "json", "always"),
     Artifact("gate_fires", "gate_fires.csv", "staging", "l5", "self_review", "csv", "always"),
     # ---- 发布目录 ----------------------------------------------------------

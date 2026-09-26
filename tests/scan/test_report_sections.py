@@ -487,3 +487,30 @@ def test_calendar_heading_includes_rebalance_clause_when_the_knob_is_on():
     summary = rs.render_summary(_calendar_model(index_rebalance_enabled=True))
     assert ("## 📅 未来 14 天(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日;事实日期非方向)"
             in summary)
+
+
+# ─────────────────── §12 10 日观察席(影子,2026-09-26 daily-engine §5 B3)───────────────────
+
+def test_seat_section_sits_right_before_honest_limits_and_is_persisted(tmp_path):
+    """§12 在「诚实局限」之前;L5 一次算好、落 `_swing_seat.json`(brief ⑦ 读同一份)。
+    夹具两只非 📌 Hold 卡没写入场行 → 都进席(≠禁止);📌 持仓票不进。"""
+    from autoresearch.scan import swing_seat as ss
+
+    d = _scan(tmp_path)
+    summary, _appendix, model = _render(d)
+    assert ss.SECTION_TITLE in summary
+    assert summary.index(ss.SECTION_TITLE) < summary.index("## 诚实局限")
+    assert summary.index("## 运行事实") < summary.index(ss.SECTION_TITLE)
+    persisted = ss.load_swing_seat(d)
+    assert persisted is not None and persisted == model.swing_seat
+    assert sorted(r["code"] for r in persisted["rows"]) == ["000686", "300476"]
+    assert ss.banned_words(ss.section_text(summary)) == []
+
+
+def test_seat_section_never_disappears_even_when_the_model_carries_none():
+    """ReportModel 没有席位(生成失败 / 老调用方)→ §12 仍在,写「未生成」而不是整节消失。"""
+    from autoresearch.scan import swing_seat as ss
+
+    summary = rs.render_summary(ReportModel(analysis_date=_D, hhmm="1200", folder=_F))
+    section = ss.section_text(summary)
+    assert section is not None and "未生成" in section
