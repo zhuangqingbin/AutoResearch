@@ -36,11 +36,14 @@ def test_agent_files_exist_with_frontmatter():
 
 
 def test_l4_card_contract_anchors_synced():
-    """l4-card 与 lite-playbook 的机器契约锚一致(卡被 parse_rating/lint/stage_eval 直接读)。"""
+    """l4-card.md 是卡片机器契约的唯一真身(卡被 parse_rating/lint/stage_eval 直接读)。
+
+    2026-09-26 A2-6:lite-playbook 不再是第二份真身(它只剩指针 + standalone 差异),
+    锚只在 agent 文件里查;反向断言见 test_playbooks_are_pointers_not_second_copies。
+    """
     from autoresearch.scan.agents.l4_card import _OW_GATES  # 单一事实源
     from autoresearch.scan.self_review import _CARD_V4_MARKER  # 单一事实源(T17/T24)
     agent = _agent_text("l4-card")
-    playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     anchors = ["进入P4倾向", "FINAL TRANSACTION PROPOSAL", "**Rating**",
                "断言分级", "一致预期差",
                "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
@@ -67,7 +70,24 @@ def test_l4_card_contract_anchors_synced():
                *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
-        assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
+
+
+def test_playbooks_are_pointers_not_second_copies():
+    """agent 文件是契约唯一真身;playbook 的 lite 段只许是指针(2026-09-26 A2-6)。
+
+    变异验证:把任一模板正文粘回 playbook → 本测试红。
+    """
+    from autoresearch.scan.self_review import _CARD_V4_MARKER
+    lite = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
+    assert ".claude/agents/l4-card.md" in lite, "lite-playbook 缺指向 l4-card.md 的指针"
+    assert _CARD_V4_MARKER not in lite, "lite-playbook 仍含卡模板正文(第二份真身)"
+    assert "FINAL TRANSACTION PROPOSAL" not in lite, "lite-playbook 仍含卡模板正文(第二份真身)"
+    macro = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
+    assert ".claude/agents/macro-brief.md" in macro, "macro-playbook 缺指向 macro-brief.md 的指针"
+    assert "首席策略师 prompt(模板)" not in macro, "macro-playbook 仍含 lite prompt 模板"
+    sector = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
+    assert ".claude/agents/sector-brief.md" in sector, "sector-playbook 缺指向 sector-brief.md 的指针"
+    assert "- **链定位一句**" not in sector, "sector-playbook 仍含 lite 模板正文"
 
 
 def test_l4_card_v4_marker_full_line_byte_identical():
@@ -85,16 +105,11 @@ def test_l4_card_v4_marker_full_line_byte_identical():
     from autoresearch.scan.self_review import _CARD_V4_MARKER
 
     agent = _agent_text("l4-card")
-    playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     pat = re.compile(re.escape(_CARD_V4_MARKER) + r".*")
     agent_lines = set(pat.findall(agent))
-    playbook_lines = set(pat.findall(playbook))
     assert agent_lines, "l4-card 未找到 v4 标记行"
-    assert playbook_lines, "lite-playbook 未找到 v4 标记行"
     assert len(agent_lines) == 1, f"l4-card 内两处标记行说明句不一致:{agent_lines}"
-    assert len(playbook_lines) == 1, f"lite-playbook 内两处标记行说明句不一致:{playbook_lines}"
-    assert agent_lines == playbook_lines, (
-        f"两文件标记行说明句不一致:l4-card={agent_lines!r} ≠ playbook={playbook_lines!r}")
+    assert agent.count(_CARD_V4_MARKER) == 2, "l4-card 两张卡模板都必须带 v4 标记行"
 
 
 def test_l4_card_research_body_anchors_synced():
@@ -141,8 +156,6 @@ def test_sector_brief_anchors_synced():
     for a in (TERRAIN_HDR, "不编", "实时网查"):
         assert a in agent, f"sector-brief 缺契约锚「{a}」"
     assert "WebSearch" in agent.split("---", 2)[1], "sector-brief frontmatter 缺 WebSearch tool"
-    playbook = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
-    assert "实时网查" in playbook, "sector-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
 
 
 def test_skill_docs_wire_agent_types():
@@ -154,16 +167,13 @@ def test_skill_docs_wire_agent_types():
 
 
 def test_macro_brief_anchors_synced():
-    """macro-brief 六小节标题 + 防锚定铁律与 macro-playbook 末节(市场研判 lite)同源。"""
+    """macro-brief 六小节标题 + 防锚定铁律(唯一真身在 agent 文件;playbook 只剩指针)。"""
     agent = _agent_text("macro-brief")
-    playbook = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
     anchors = ["一句话定调", "市场结构", "板块红黑榜", "操作基调",
                "描述性地形", "不锚定卡片"]
     for a in anchors:
         assert a in agent, f"macro-brief 缺契约锚「{a}」"
-        assert a in playbook, f"macro-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
     assert "实时网查" in agent, "macro-brief 缺契约锚「实时网查」"
-    assert "实时网查" in playbook, "macro-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
     assert "WebSearch" in agent.split("---", 2)[1], "macro-brief frontmatter 缺 WebSearch tool"
 
 
@@ -424,10 +434,9 @@ def test_macro_brief_consumes_new_pack_blocks():
     老 24 个标量 = 白接)。锚同时钉 agent def 与 playbook 真值源。
     """
     agent = _agent_text("macro-brief")
-    playbook = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
+    # 2026-09-26 A2-6:消费者契约只钉 agent 文件(playbook 只剩指针,不再是第二真值源)
     for a in ("cross_money", "index_val"):
         assert a in agent, f"macro-brief 未消费 pack 新块「{a}」"
-        assert a in playbook, f"macro-playbook 未同步 pack 新块「{a}」"
     assert "macro_cn_degraded" in agent, "macro-brief 未要求披露取数降级(降级不留痕=本仓红线)"
 
 

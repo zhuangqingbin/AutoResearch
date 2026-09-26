@@ -7,30 +7,9 @@
 > `## 地形段` 抽取),勿改字。2026-08-19 D6(⚖A6):研判段已整段砍除——brief 只产出
 > 地形段(纯事实),行业方向叙事改由确定性 top3(`market.py` 的 `sector_healthy_top3`)独扛。
 
-## lite brief 模板(~150–250 字/行业)
+## lite brief(scan-market Stage 1;每行业一个 `sector-brief` agent)
 
-输入:`$CTX/sector/<date>/<行业>.json`(确定性 pack,数字不可编造;字段含 n_market/n_l2/
-median_pct_60d/median_pe/pe_p25/pe_p75/median_pb/median_np_yoy/median_roe/main_pos_frac/
-main_net_sum_yi/healthy_n/median_winner/leaders/calendar)。(原 sector_memo 历史事实行随 2026-08-21 learning 层退役删除。)
-落点:`$CTX/scan/<date>/sector_briefs/<行业>.md`。
-
-```
-# 行业 brief — <行业> @ <date>
-
-## 地形段(喂 L3/L4 · 描述性)
-- **链定位一句**:<这行业当下的需求驱动/处在什么产业链上;事实性,不带方向>
-- **景气读数**:成分 <n_market> 只 · 中位60日 <median_pct_60d>% · 中位np_yoy <median_np_yoy>% · 中位roe <median_roe> · 健康上涨 <healthy_n> 只
-- **估值地形**:中位PE <median_pe>(P25 <pe_p25> / P75 <pe_p75>)· 中位PB <median_pb> — <链内谁贵谁便宜,只报数字位置>
-- **资金地形**:主力净流入为正占比 <main_pos_frac> · 合计 <main_net_sum_yi> 亿 · 中位获利盘 <median_winner>
-- **龙头座次**(市值 top,事实):<leaders → 名称(市值亿/PE/60日%) ×3–5>
-- **事件日历**:<calendar → n_events 条 · 最近 next_date · by_kind;无 → 近两周无行业级事件>
-```
-
-**铁律**:地形段禁"超配/低配/回避/买卖/看多/看空"字样(它会喂 L3/L4——防锚定;行业方向
-不由本 brief 判断);数字全出 pack,缺字段写 —,不编、不靠记忆补;♻️复用 brief 顶部的
-banner 保留勿删。
-
-**实时网查(有界)**:pack 之外可发 **≤2 条** WebSearch 查本行业最新头条(政策/景气/龙头事件),入地形段须标『实时网查』+ 落日期(as-of≤分析日),只报事实、不下方向判断。
+**单段模板(`## 地形段`)、六条读数行、铁律(地形段禁方向词、数字全出 pack、♻️ banner 保留)与有界实时网查(≤2 条,标『实时网查』)的唯一真身是 `.claude/agents/sector-brief.md`**。本节只记接口事实:输入 `$CTX/sector/<date>/<行业>.json`(字段 n_market/n_l2/median_pct_60d/median_pe/pe_p25/pe_p75/median_pb/median_np_yoy/median_roe/main_pos_frac/main_net_sum_yi/healthy_n/median_winner/leaders/calendar),落点 `$CTX/scan/<date>/sector_briefs/<行业>.md`;标题 `## 地形段` 是 `sector/brief.py` 的 `TERRAIN_HDR`,勿改字。
 
 ## full 深研(standalone,6 节;报告落 `$RPT/sector/<date>/<行业>.md`)
 

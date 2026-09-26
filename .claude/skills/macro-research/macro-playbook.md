@@ -69,36 +69,10 @@ $CTX/macro/<date>/        # 分节草稿(gitignored);assemble → $RPT/macro/<YY
 
 ## lite 档:市场研判(首席策略师 · scan-market Stage 0 / 日频 brief)
 
-> 自 scan-market `screening-playbook.md` 迁入(2026-07-03 海拔重构,design:
-> `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.2:市场层=宏观能力 lite 档)。
-> **一次产出、三处复用**:写 `$CTX/scan/<date>/market_view.md` → scan 的 L3 prompt 地形段 +
-> 每张 L4 卡简报(`market_context_block` 自动注入)+ L5 置顶;缺文件 → L5 回退确定性脉搏(parity 不破)。
-
-**输入(全确定性,数字不可编造)**:
-- **lite 档(scan-market 派发)读 `strategist_pack.json` 的 `pack` 段**,不是 full `market_pack.json` ——
-  它是后者的**单向投影**(Wave10 A4),allowlist 之外的键(`sector_healthy_top3` / `run_contract` /
-  `user_config`,以及将来任何新增键)默认进不来。`frame --json-out` 落 market_pack 时同步落投影。
-- full `market_pack` JSON(L5 / L3 数字 validator 的事实源,策略师**不读**)—— **Stage 0**(与 universe 并行,推荐):`uv run --no-sync python -m autoresearch.scan.frame <date> --json`(湖派生帧 → `market_pack_from_frame`);或 **L2 后**:`autoresearch.scan.market.market_pack(scan_dir)`。两口径同字段(帧口径的 sectors 无打分列,描述性可缺)。
-- `$CTX/macro/macro_state.json`(本 skill **full 档** assemble 自动落的机读产物,**presence-gated**):存在 **且** 未过期(`today − as_of ≤ 7天` 且 当日 regime == `regime_at_run`,双失效由 `autoresearch.macro.state.load_macro_state` 判)才注入;缺/过期 → 只用 pack,研判中标一句"无新鲜宏观视图(仅日频 pack)"。**`frame <date> --json` 已把失效判定后的 `macro_state`(+`macro_state_note`)捆绑进同一份 JSON——Stage 0 一条命令拿全输入。**
-
-**首席策略师 prompt(模板)**:
-> 你是一名**资深 A 股投资大师 / 首席策略师**。下面是今日全市场确定性数据包(`market_pack`,数字不可编造)[,及最近一次全球宏观研究的机读摘要 `macro_state`]。写一段 ~300–400 字的市场研判 `market_view.md`,**6 小节**:
-> 1. **一句话定调**(regime + 结构 + 情绪,如"避险哑铃:AI 半导体极致拥挤 + 宽基超跌落刀");
-> 2. **市场结构**(宽度〔多少票站上 MA60〕/ 主力资金净流向 / 估值分散〔哑铃两端〕;**pack 有 `cross_money`/`index_val` 时必引北向、两融、指数 PE 分位各一个数** —— 它们是 pack 里唯一不来自全A横截面自聚合的外生变量,不引=白接);
-> 3. **板块红黑榜**(强 top3 / 弱 bottom3,各一句 why);
-> 4. **操作基调**(基于 regime 的整体仓位姿态;**规范性,仅 L5 用**);
-> 5. **关注**(催化日历:中报窗口 / 政策会议 / 解禁);
-> 6. 收尾"仅供研究,非投资建议"。
-> **铁律**:前 3 节是**描述性地形**(会喂 L3/L4 校准,**不得含个股买卖指令 / 不得对具体票定方向**);第 4–5 节才是规范性 + 前瞻。**个股评级只由 L4 rubric 三门决定,你的研判不改判、不锚定卡片**。macro_state 缺/过期时,不得引用旧宏观的方向性结论。
-> **实时网查(有界)**:pack/macro_state 之外可发 **≤2 条** WebSearch 查最新宏观/政策头条,入研判须标『实时网查』+ 落日期(as-of≤分析日),只补事实、不改前 3 节描述性地形的中立性。
-> 数据包:`<market_pack JSON>` [宏观摘要:`<macro_state JSON>`]
-
-**防锚定现在是数据级的**(Wave10 A4):策略师看不到 `sector_healthy_top3`(L5 专用的确定性看多行业
-排名)—— 此前靠 prompt 里一句「忽略它」约束,07-30/31 连续两日复发。**指令级约束的失败率不为零,
-数据级为零:看不见就写不出。** 下面这条分层不变量仍然要守(它管的是另一件事:即便只有地形数字,
-也不能把规范性判断混进前 3 节)。
-
-**产出分层(防锚定不变量,务必守)**:1–3 节=描述性地形(L3/L4 读);4–5 节=规范性+前瞻(仅 L5)。**为什么这样切**:一段"避险别追"的 house view 会把 20 张 L4 卡带成集体附和 → 破坏"每只独立自下而上 DD + rubric 防 gestalt 多报";喂卡片的必须是**数字地形**,不是方向指令。
+**prompt 模板、六小节结构、防锚定分层(1–3 节描述性地形喂 L3/L4;4–5 节规范性仅 L5)、有界实时网查(≤2 条,标『实时网查』)的唯一真身是 `.claude/agents/macro-brief.md`**。本节只记输入与复用事实:
+- 输入 = `strategist_pack.json` 的 `pack` 段(`market_pack` 的单向投影:`sector_healthy_top3` / `run_contract` / `user_config` 进不来 —— 防锚定是数据级的,看不见就写不出)+ presence-gated `macro_state.json`(本 skill full 档产物;`today − as_of ≤ 7 天` 且 regime 未变才注入,由 `autoresearch.macro.state.load_macro_state` 判)。`frame <date> --json` 一条命令给全两者。
+- 产物 `$CTX/scan/<date>/market_view.md`,三处复用:L3 表地形段、每张 L4 卡的 `market_context_block`、L5 置顶;缺文件 → L5 回退确定性脉搏。
+- 个股评级只由 L4 rubric 决定,研判不改判、不锚定卡片。
 
 ## 已知数据坑
 1. FRED 国际 series 若 `MACRO_DATA_UNAVAILABLE` → WebSearch,标『实时网查』。
