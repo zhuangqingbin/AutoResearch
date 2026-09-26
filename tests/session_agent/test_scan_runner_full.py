@@ -15,6 +15,8 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from autoresearch.common import workspace as ws
 from autoresearch.session_agent import artifacts, legacy_scan, runner, service
 from autoresearch.session_agent.executors.base import DispatchResult
@@ -139,7 +141,10 @@ class _FakeScanModels:
         }[request.role]
         for path in request.output_paths.values():
             _write(Path(path), text)
-        evidence = (("host-binding:" + "1" * 64,) if request.independent_context else ())
+        # Without host transcripts an independent task gets a stand-in ref (and the test
+        # patches the receipt resolver); with them the runner binds the real transcript.
+        evidence = (("host-binding:" + "1" * 64,)
+                    if request.independent_context and self.transcripts is None else ())
         transcript = None
         if self.transcripts is not None:
             transcript = self.transcripts / f"{request.task_id}.a{request.attempt}.jsonl"
@@ -590,6 +595,55 @@ def test_real_intel_ops_across_an_l4_retry_keep_both_bound_intels(tmp_path, monk
     assert not [item for item in missing if ".intel" in item
                 and not item.startswith(("COMMAND_CAPTURE_MISSING", "SOURCE_RECEIPTS_MISSING"))
                 ], missing
+
+
+def _harness_only_gaps(capsule: Path) -> set[str]:
+    """The closure gaps this harness cannot close, enumerated from the frozen plan.
+
+    Both come from ``_FakeScanOperations`` standing in for the ``domain_ops`` subprocesses:
+    it bypasses ``exec_capture`` (no ``events/invocations.json`` → every deterministic
+    SESSION attempt lacks its command capture) and the providers' source receipts.  A real
+    run captures both; nothing else may be missing (N1/N2/N3 proof).
+    """
+    plan = json.loads((capsule / "evidence/evidence_plan.json").read_text("utf-8"))
+    gaps = set()
+    for key in plan["task_keys"]:
+        if key["owner"] != "SESSION" or "command_capture" not in key["requirements"]:
+            continue                        # inference keys and taskbook tickets: nothing faked
+        identity = f"{key['task_id']}:a{key['attempt']}"
+        safe = re.sub(r"[^A-Za-z0-9_-]", "-", key["task_id"])
+        gaps |= {f"COMMAND_CAPTURE_MISSING:{identity}",
+                 f"COMMAND_CAPTURE_MISSING:session-{safe}-a{key['attempt']}:FileNotFoundError"}
+        if "source_receipts" in key["requirements"]:
+            gaps.add(f"SOURCE_RECEIPTS_MISSING:{identity}")
+    return gaps
+
+
+@pytest.mark.parametrize("branchy", [False, True], ids=["plain", "intel-repair-review"])
+def test_full_scan_evidence_closure_has_only_harness_gaps(tmp_path, monkeypatch, branchy):
+    """The completeness delivery gate on a synthetic FULL scan: with transcripts bound the
+    way the runner binds them (no fabricated host-binding refs, no patched receipt
+    resolver) and the real intel_status/finalize ops, the closure's ``missing`` list is
+    exactly the harness-only gaps — no TRANSCRIPT_MISSING for sector briefs (N1), no
+    OUTPUTS/INPUT_SNAPSHOT_MISSING for intel (N2), no ticket capture/receipt legs (N3)."""
+    host = profile(independent_context=True, web_search=True) if branchy else None
+    handle = _scan_run(tmp_path, monkeypatch, host=host,
+                       user_config={"l4_intel": {"enabled": True}} if branchy else None)
+    models = _FakeScanModels(branchy=branchy, transcripts=tmp_path / "host_transcripts")
+    operations = _RealIntelOperations(handle, branchy=branchy)
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=_plain_hooks(handle, operations))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    assert final["errors"] == []                  # no transcript binding refused (N1)
+    roles = {request.role for request in models.requests}
+    assert {"sector.brief", "scan.l4.card"} <= roles
+    if branchy:
+        assert {"scan.l4.intel", "scan.l4.review", "scan.l3.repair"} <= roles
+        assert "scan.l4.intel.status" in operations.calls
+    missing = set(_closure_missing(handle))
+    harness_only = _harness_only_gaps(Path(handle.capsule))
+    assert missing == harness_only, sorted(missing - harness_only)
+    assert not [item for item in harness_only if f"l4.{CODE}.a1:" in item]   # tickets (N3)
 
 
 def test_session_task_timeout_retry_adds_no_evidence_gap(tmp_path, monkeypatch):
