@@ -41,7 +41,7 @@ class ScanConfig:
     agents: dict | None = None        # {stage: {model, effort}} 覆盖 workflow 内建(Task 2 消费)
     pinned: dict | None = None        # {cap, ttl_days} 保送票参数(Task 3+ 消费)
     l4_intel: dict | None = None      # {enabled,max_queries} 活体情报参数
-    l3: dict | None = None            # {two_pass,pass1_target,finalist_max}
+    l3: dict | None = None            # {two_pass,pass1_target,lowturn,composite_seat}(卡数见 l4.max_cards)
     budgets: dict | None = None       # 成本/墙钟/并发观测预算；不拥有截断权限
     performance: dict | None = None   # 流式调度/稳定上下文/行业 brief A/B;不拥有评级语义
     # 2026-08-11 配置单一事实源波(消费点 = user_config.knob() 各接线,见 SKILL「配置」节)

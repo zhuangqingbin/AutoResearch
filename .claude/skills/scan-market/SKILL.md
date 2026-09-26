@@ -35,6 +35,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 - **全部用户可调参数只有一个家:`scan_config.jsonc`**(按阶段排序,每键注释 = 文档,标【生效点】)。例外两个:保送票清单 `pinned.jsonc`;L1 校准权重 `$CTX/factor_lab/weights.json`(仅 `weight_profile:"calibrated"` 档读,生产档 `"preference"` 不读)。
 - **装载链**:`frame --json` 经 `user_config.py` 白名单校验后回显 → 随 Workflow `args.config` 传入(workflow 无文件系统)→ L4 每股 `args.cfg` 原样透传。**传 `{}` = 静默关 intel + 降 effort**,现直接 throw。
 - **防漂移铁律**:白名单外的键 load 即 raise;新增参数三件套 = 白名单 + 真实消费点 + 测试锁;改值 ≠ 无害(行为类旋钮先想清楚、留测试锁);**性能开关不拥有评级**(现仅存 `performance.streaming_l4`,Wave10 B4 退役两个越权开关;任何开关不得改 finalist cap、rubric 三门、主尺 `common.ruler.MAIN_RULER`、BUY 数量)。
+- **L4 卡数唯一旋钮 `l4.max_cards`**(非📌 含席位,默认 13;`budget_flags:false` 不理五面旗);`l3.finalist_max` 已退役。
 
 ## 流程(6 段)
 

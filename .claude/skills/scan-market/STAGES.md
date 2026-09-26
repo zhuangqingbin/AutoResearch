@@ -89,12 +89,12 @@ L2 之后、与 L3 证据取数**并发**:`sector.reuse <date> --apply`(TTL ≤5
 2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned 全入 + composite 前 5 + lowturn 强留 ≤8 + `sector_seat`/composite 证据席强留 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);healthy lane 不再全入;被切的落影子 `_l3_pass1_cut.csv`;
 3. `l3_table_md` 压紧凑表:`pct_1d` 与 `dist_high_60` 两列 + pf 词「今日大涨」(≥9.5)/「贴顶」;presence-gated `seat` 列(🏭 行业席位)+ 图例;
 4. `l3-rank`(max)通看 ~40 只,按 6 维 rubric **比较着选**,给出 finalist tier 7–10 只 + bench(`_l3_bench.csv`);
-5. `L3_judged_full.csv` → `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget))→ ⑦`chase_1d`(`pct_1d`≥9.5 剔除 + bench 回填 `chase_backfill`,≥55 才够格)→ ④`healthy_quota`(现 `HEALTHY_QUOTA_FRAC=0` 不动作)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ ⑧`sector_cap`(同 `sector` >3 席剔最弱 + 回填异行业 `sector_backfill`)→ ⑨`composite_seat`(当日 L2 菜单 composite 最高的 M=3 只强制进 finalists,`guard=composite_seat`/`lane=composite`,与 📌 同级,不占名额、不受②③约束,剔 📌/ST/`pct_1d≥9.5`)。各守卫的列缺 → 整段 no-op(parity);📌 保送在全部守卫之后注入,不受⑦⑧影响;
+5. `L3_judged_full.csv` → `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入)→ ②`lt55`(<55 剔除)→ ③`cap`(=GATE1 回显的 `l3cap` = min(`l4.max_cards`−席位数, 当日 l4_budget),唯一算法 `scan/l4/card_count`)→ ⑦`chase_1d`(`pct_1d`≥9.5 剔除 + bench 回填 `chase_backfill`,≥55 才够格)→ ④`healthy_quota`(现 `HEALTHY_QUOTA_FRAC=0` 不动作)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ ⑧`sector_cap`(同 `sector` >3 席剔最弱 + 回填异行业 `sector_backfill`)→ ⑨`composite_seat`(当日 L2 菜单 composite 最高的 M=3 只强制进 finalists,`guard=composite_seat`/`lane=composite`,与 📌 同级,不占 finalist 名额(计入 `l4.max_cards`)、不受②③约束,剔 📌/ST/`pct_1d≥9.5`)→ ⑩`max_cards`(非 📌 行含席位总数 ≤ `l4.max_cards`,超出按席位优先、conviction 截尾进 bench,`guard=max_cards`)。各守卫的列缺 → 整段 no-op(parity);📌 保送在全部守卫之后注入,不受⑦⑧影响;
 6. 注入:策略师地形段。
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制 + 明日买家,写不出不选)与行为化 conviction(≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只;50-69 = 值得 L4 验不背书)。
 
-**token 经济与预算**:`delta=True` 略去无变化票;L4 派发数由 `menu.l4_budget` 控(五面旗:落刀>60% / 相对落刀>40% 且>2×全市场 / 健康涨≤2 / risk_off / 0买连败≥3;1 旗→22、≥2 旗→15);`l3cap = min(10, l4_budget)` 由 workflow 传作 `--budget`。
+**token 经济与预算**:`delta=True` 略去无变化票;L4 派发数由 `menu.l4_budget` 控(五面旗:落刀>60% / 相对落刀>40% 且>2×全市场 / 健康涨≤2 / risk_off / 0买连败≥3;1 旗→22、≥2 旗→15);`l3cap`/`max_cards` 由 GATE1 回显(`card_count.effective_caps`):`l3cap` 进 L3 区间与 `l3_select --budget`,`max_cards` 作 GATE2 预算(GATE2 数非豁免 lane 全部行,席位也算)。
 
 **三面旗**(presence-gated,缺=parity):主力失真 `dist_flag`(反号/微量)、监管 `reg_flag`(近 10 日立案/问询/处罚)、误读三预警 `misread_flag`(低基:np_yoy>100 且 roe<8;背离:cmf/obv 正但 main_net_ratio<0;套牢:winner_rate<25 且 ma_bull=0 且 pct_60d>0;L4 简报同步注旗,l3-rank 硬约束 E 强制自证)。
 
@@ -115,7 +115,7 @@ L2 之后、与 L3 证据取数**并发**:`sector.reuse <date> --apply`(TTL ≤5
 ### 派发三步
 
 1. 落 `_l4_shared_instructions.md`(只有标头的稳定骨架)→ `l4_card prompts <date>` 落 `_harvest_list.txt` + `_l4_prompt_<code>.md`。
-2. 默认 `streaming_l4=true`:初始化 `_l4_tasks.json`(状态 `PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED`,逐票记 prompt/slim/card hash、attempt、pinned、错误类、时间戳)。**init 前置 prompts 落稿并做硬门校验**(缺 → `ok:false` 整线停在派发前)。派发帽 `caps.l4_stock` 一次全派;发生 `RATE_LIMIT` 后下一批降宽一档。
+2. 默认 `streaming_l4=true`:初始化 `_l4_tasks.json`(状态 `PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED`,逐票记 prompt/slim/card hash、attempt、pinned、错误类、时间戳)。**init 前置 prompts 落稿并做硬门校验**(缺 → `ok:false` 整线停在派发前)。任务簿票数 = finalists.csv 行数,发布前 `l4_card_count_lint` 对账(非📌 > `l4.max_cards` → warn)。派发帽 `caps.l4_stock` 一次全派;发生 `RATE_LIMIT` 后下一批降宽一档。
 3. 每股 `l4-stock` 先 preflight;本票 slim 与 `l4-intel` 并行,二者终态后出卡(`l4-card`)。成功仅在 prompt/slim/card hash 全验证时复用;只有 `RATE_LIMIT`/`CONNECTION`/`TIMEOUT` 允许第 2 次尝试,schema/contract/data-integrity 失败不重试且不碰其它票。`streaming_l4=false` 回滚旧批量 `harvest-slim` GATE3。子命令语义与单票恢复见 `docs/ops/scan-ops.md`。
 
 **⛔ 强制满卡**(`force_full_card`):逐卡块内插「禁止早停」,两条通路任一成立即触发——① 📌 保送票恒强制;② 强先验:`conviction≥70` ∧(`n_channels≥4` ∨ L2 配额救回)。只保证核得够深,不保证结论向好。

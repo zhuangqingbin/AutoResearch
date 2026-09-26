@@ -112,8 +112,9 @@ def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
     为什么必须改:E6 自 2026-08-19 `mode=active`,**每个成功日必出 1 只 relative BUY**,
     而本函数还在数 ≥OW 卡 —— 2026-08-21 汇总屏因此打出「⚠️ 0买连败10日·重旗+连败≥7硬压→10」,
     那是一面假旗。`health.count_buys_with_source` 早已按 E3b 裁定改口径,只有这里没跟上。
-    (当日实际影响为零:`scan-market.js` 的 `l3cap = min(10, l4_budget)` 与 `finalist_max=10`
-    使预算 10 与 30 都落到 cap 10 —— 病只在「旗说假话」,不在名额。)
+    (当日实际影响为零:当时 `scan-market.js` 的 `l3cap = min(10, l4_budget)` 与 `finalist_max=10`
+    使预算 10 与 30 都落到 cap 10 —— 病只在「旗说假话」,不在名额。2026-09-26 起卡数由
+    `l4.max_cards` 决定,见 `scan/l4/card_count`。)
 
     碰到最近一个有买的日即停。lookback 限回看深度(成本上限)。
     2026-07-03 病灶:9 连 0 买日预算仍=30 基准——连败从不是预算函数的输入。

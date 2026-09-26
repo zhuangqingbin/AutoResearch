@@ -23,3 +23,18 @@
 - ⑤ session_agent host 模式真跑(批 2 Task 1)。
 - `--max-budget-usd` 在订阅额度下是否生效未测;批 2 用 `--max-turns` + 驱动器墙钟兜底。
 - 默认会话的 35k 前缀含 MEMORY.md 与 skill 列表;研究角色不应看到记忆(`--agent` 已替换系统提示,②的 30.5k 里是否仍含记忆待批 2 用 transcript 核)。
+
+## max_cards 回放(批 1.5 Task 5,2026-09-26)
+
+源:`context_claude/scan_runs/20260917T125201296461Z/staging/2026-09-17`(只读;GATE1 冻结 `l4_budget=30`,📌 取源 finalists 的 lane=pinned 行 300750/688981)。`python -m autoresearch.scan.l4.card_count replay <S> --max-cards N --out <scratch>`:
+
+| max_cards | l3cap | 非📌 卡 | 📌 | 守卫⑩截 |
+|---|---|---|---|---|
+| 5 | 2 | **5** | 2 | 0 |
+| 8 | 5 | **8** | 2 | 0 |
+| 13(默认) | 10 | 9(L3 当日够格 6 + 席位 3) | 2 | 0 |
+
+- **parity**:同一 staging 上,改动前代码(aa8ed71 worktree,`write_finalists(budget=10)`)与新代码 `max_cards=13` 的 `finalists.csv`、`_l3_bench.csv` **逐字节相同**。
+- 与 09-17 原始 finalists 相比差一个 composite 席位(601799 → 600480):来自 09-24 席位「不接刀」剔除(`pick_composite_seats` 的 `falling_knife_mask`),早于本批,与卡数旋钮无关。
+- 未验:真跑三处数字一致(GATE1 播报 / `l4_tasks stats` / brief ②)留 Task 6(下一场干净会话真扫)。
+

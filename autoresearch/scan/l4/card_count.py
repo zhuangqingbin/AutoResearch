@@ -27,3 +27,88 @@ def effective_caps(cfg: dict | None, l4_budget: int) -> dict:
     l3cap = min(finalist_cap, int(l4_budget)) if budget_flags else finalist_cap
     return {"max_cards": max_cards, "budget_flags": budget_flags, "seat_m": seat_m,
             "finalist_cap": finalist_cap, "l3cap": max(1, int(l3cap))}
+
+
+def _day_pinned(staging) -> list[dict]:
+    """回放用的当日 📌:源 finalists.csv 的 lane=pinned 行(码 + 当日 pinned_note);缺 → GATE1 冻结的
+    run_mode.pinned_codes。不读今天的 pinned.jsonc(那是另一天的持仓)。"""
+    import csv
+    import json
+    from pathlib import Path
+
+    fin = Path(staging) / "finalists.csv"
+    if fin.is_file():
+        with fin.open(encoding="utf-8") as fh:
+            return [{"code": str(r["code"]).zfill(6), "note": r.get("pinned_note") or ""}
+                    for r in csv.DictReader(fh) if (r.get("lane") or "") == "pinned"]
+    g1 = Path(staging) / "stage_results" / "gate1.json"
+    if g1.is_file():
+        metrics = json.loads(g1.read_text(encoding="utf-8")).get("metrics") or {}
+        return [{"code": str(c).zfill(6), "note": ""}
+                for c in ((metrics.get("run_mode") or {}).get("pinned_codes") or [])]
+    return []
+
+
+def _day_l4_budget(staging) -> int:
+    import json
+    from pathlib import Path
+
+    g1 = Path(staging) / "stage_results" / "gate1.json"
+    if g1.is_file():
+        budget = (json.loads(g1.read_text(encoding="utf-8")).get("metrics") or {}).get("l4_budget")
+        if isinstance(budget, int) and budget > 0:
+            return budget
+    return 30
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`replay <staging> --max-cards N [--budget B] --out <dir>`:把一场真 staging 拷到 scratch,按给定
+    max_cards 重跑 write_finalists,打印一行 JSON。只读源目录(验「改小立刻生效 / 默认逐字 parity」)。"""
+    import argparse
+    import json
+    import shutil
+    from pathlib import Path
+    from unittest import mock
+
+    from autoresearch.scan.l3.merge import write_finalists
+    from autoresearch.scan.user_config import load_user_config
+
+    ap = argparse.ArgumentParser(prog="python -m autoresearch.scan.l4.card_count")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    rp = sub.add_parser("replay", help="离线回放 max_cards(只写 --out)")
+    rp.add_argument("staging")
+    rp.add_argument("--max-cards", type=int, required=True)
+    rp.add_argument("--budget", type=int, default=None, help="旗后 l4_budget;缺省读源 GATE1 冻结值,再缺省 30")
+    rp.add_argument("--out", required=True)
+    a = ap.parse_args(argv)
+    src, out = Path(a.staging).resolve(), Path(a.out).resolve()
+    if a.max_cards < 1:
+        ap.error("--max-cards 须为正整数")
+    if out == src or src in out.parents or out in src.parents:
+        ap.error(f"--out 不得与源 staging 重叠(回放只写 scratch):{out}")
+    dst = out / src.name
+    if dst.exists():
+        ap.error(f"回放目标已存在(不覆盖):{dst}")
+    shutil.copytree(src, dst)
+    pin_path = out / f"_replay_pinned_{src.name}.json"
+    pin_path.write_text(json.dumps([{**p, "expires": "2099-12-31"} for p in _day_pinned(src)],
+                                   ensure_ascii=False), encoding="utf-8")
+    base = load_user_config()
+    cfg = {**base, "l4": {**(base.get("l4") or {}), "max_cards": int(a.max_cards)}}
+    budget = a.budget if a.budget is not None else _day_l4_budget(src)
+    caps = effective_caps(cfg, budget)
+    with mock.patch("autoresearch.scan.user_config.load_user_config", lambda path=None: cfg):
+        res = write_finalists(src.name, budget=caps["l3cap"], root=out, pinned_path=pin_path)
+    import pandas as pd
+
+    fin = pd.read_csv(dst / "finalists.csv", dtype={"code": str})
+    pinned_n = int((fin["lane"].fillna("") == "pinned").sum()) if "lane" in fin.columns else 0
+    print(json.dumps({"out": str(dst), "max_cards": caps["max_cards"], "l3cap": caps["l3cap"],
+                      "l4_budget": budget, "finalists_non_pinned": int(len(fin)) - pinned_n,
+                      "finalists_pinned": pinned_n, "max_cards_cut_n": res["max_cards_cut_n"]},
+                     ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

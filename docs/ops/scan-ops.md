@@ -36,6 +36,8 @@ launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm   # 手动触
 
 **一次性全派**:`l4_tasks batches` 返回单批全量 pending,`effective_cap`=`caps.l4_stock`(默认 64);tushare 并发由 `prepare_slim` 内 K 槽信号量控制,不靠派发节奏限流。回滚杆 `budgets.concurrency.l4_stock=4`。
 
+**卡数**由 `scan_config.jsonc` 的 `l4.max_cards` 决定(非 📌 含 composite 席位;唯一算法 `scan/l4/card_count`,GATE1 回显,`write_finalists` 守卫⑩截尾);任务簿票数 = finalists.csv 行数,发布前 `l4_card_count_lint` 对账。离线验证:`python -m autoresearch.scan.l4.card_count replay <staging> --max-cards N --out <scratch>`。
+
 ## 活体情报站
 
 铁律见 STAGES.md L4 节(价格断言须与 verified OHLCV 对账)。已知线头:限频自报仍会超 cap(warn 信号已按实测中位对齐 `max_queries=20`)。
