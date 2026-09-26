@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -48,13 +49,25 @@ def gate1(scan_dir: Path) -> dict:
         return {"ok": False, "gate": "gate1", "reason": "L2 为空"}
     if not _codes_ok(df["code"].astype(str)):
         return {"ok": False, "gate": "gate1", "reason": "L2 代码非 6 位(前导零坑)"}
+    from autoresearch.scan.l4.card_count import effective_caps
     from autoresearch.scan.menu import l4_budget, sentinel_advice
+    from autoresearch.scan.user_config import load_user_config
 
     level, sentinel_reason = sentinel_advice(scan_dir)
     budget, _ = l4_budget(scan_dir)
+    # L4 卡数(2026-09-26 l4.max_cards):唯一算法在 card_count,这里算一次并回显;Workflow 与
+    # session_agent 只读回显(l3cap → L3 区间/finalists 上限;max_cards → GATE2 预算)。
+    try:
+        cfg = load_user_config()
+    except Exception as exc:  # noqa: BLE001 — 配置层故障不挡扫描,但降级要响亮(同 user_config.knob)
+        print(f"[warn] scan_config 读取失败({exc!r})→ L4 卡数用内建默认", file=sys.stderr)
+        cfg = {}
+    caps = effective_caps(cfg, int(budget))
     return {"ok": True, "gate": "gate1", "reason": "ok", "sentinel_level": level,
             "sentinel_reason": sentinel_reason,
-            "l4_budget": int(budget), "l2_n": int(len(df))}
+            "l4_budget": int(budget), "l2_n": int(len(df)),
+            "l3cap": caps["l3cap"], "max_cards": caps["max_cards"],
+            "budget_flags": caps["budget_flags"]}
 
 
 def gate1_decide(scan_dir: Path, *, force_full: bool = False) -> dict:
@@ -183,7 +196,8 @@ def record_gate_stage_result(scan_dir: Path, result: dict, *, budget: int | None
     if gate == "gate1":
         metrics = {
             key: result[key]
-            for key in ("sentinel_level", "sentinel_reason", "l4_budget", "l2_n", "run_mode")
+            for key in ("sentinel_level", "sentinel_reason", "l4_budget", "l2_n", "run_mode",
+                        "l3cap", "max_cards", "budget_flags")
             if key in result
         }
     elif gate == "gate2":

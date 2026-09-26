@@ -1637,17 +1637,25 @@ def scan_l3_merge(handle=None) -> dict:
     from autoresearch.scan.l3.merge import write_finalists
 
     gate1 = json.loads(_text(current, "scan.gate1.result"))
-    budget = gate1.get("l4_budget")
-    if type(budget) is not int or budget < 1:
-        raise RuntimeError("invalid frozen GATE1 l4_budget")
+    # L4 卡数(2026-09-26 l4.max_cards):只读 GATE1 回显 —— l3cap 进 write_finalists,max_cards 做
+    # GATE2 预算(GATE2 数非豁免 lane 全部行,composite 席位也算)。老 run 的冻结 GATE1 没有这两键:
+    # 回退旗后预算(= 改动前行为)并留痕。
+    budget = gate1.get("l3cap", gate1.get("l4_budget"))
+    gate2_budget = gate1.get("max_cards", gate1.get("l4_budget"))
+    if "l3cap" not in gate1 or "max_cards" not in gate1:
+        atomic_write_json(Path(current.staging) / "session_outputs/l3_merge_note.json",
+                          {"fallback": "l4_budget", "budget": budget, "gate2_budget": gate2_budget,
+                           "reason": "frozen GATE1 lacks l3cap/max_cards (pre-2026-09-26 run)"})
+    if type(budget) is not int or budget < 1 or type(gate2_budget) is not int or gate2_budget < 1:
+        raise RuntimeError("invalid frozen GATE1 l3cap/max_cards/l4_budget")
     write_finalists(
         current.analysis_date,
         budget=budget,
         root=Path(current.staging).parent,
         judged_path=Path(current.staging) / "_l3_effective_judged.json",
     )
-    result = gate2(Path(current.staging), budget=budget)
-    record_gate_stage_result(Path(current.staging), result, budget=budget)
+    result = gate2(Path(current.staging), budget=gate2_budget)
+    record_gate_stage_result(Path(current.staging), result, budget=gate2_budget)
     atomic_write_json(Path(current.staging) / "session_outputs/gate2.json", result)
     if not result.get("ok"):
         raise RuntimeError(str(result.get("reason") or "GATE2 failed"))

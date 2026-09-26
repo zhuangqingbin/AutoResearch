@@ -42,7 +42,7 @@ tools: Read, Write, Grep, Glob
 把判断过的 ~20–28 只(finalist + bench)写成 **JSON 数组**,用 Write 落派发 prompt 给的路径(本 run staging 目录下的 `_l3_judged.json`)。每元素字段(严格):
 `code`(表内原样,保前导零)、`name`、`sector`(表内 industry)、`lenses`(命中的 5 维,逗号分隔)、`conviction`(0-100)、`fragility`(最大脆弱点一句)、`thesis`(多头论点一句,数字出自表)、`mechanism`(一句,兑现机制,与 thesis 同级)、`risk`(红队一句)、`catalyst`(催化,带日期最好)、`triage_lean`(OW|Hold|UW)、`lane`(trend|growth|reversion|accumulation|main|value|healthy|lowturn)、`pct_60d`(表内数字)、`sentiment`(看多|中性|看空)、**`finalist`**(true|false)。
 
-`finalist:true` 者 **7–10 只**:**conviction≥75 必须 true**(误杀保险,确定性层会强制补入)——除非命中硬约束 B/E(在 thesis/risk 写明为何不选);**conviction<55 禁止 true**;够格不足 7 只就出更少,**禁止凑数**(宁缺毋滥)。`finalist:false` 即 **bench**——不是弃权,仍按 6 维 rubric 认真判断。
+`finalist:true` 者 **7–10 只**(以派发给出的上限为准):**conviction≥75 必须 true**(误杀保险,确定性层会强制补入)——除非命中硬约束 B/E(在 thesis/risk 写明为何不选);**conviction<55 禁止 true**;够格不足 7 只就出更少,**禁止凑数**(宁缺毋滥)。`finalist:false` 即 **bench**——不是弃权,仍按 6 维 rubric 认真判断。
 
 `conviction`(0-100,**T+2 行为化定义**):≥70 = 我能说出 D+1 谁来买、且愿意明天开盘真金买入(**每日 ≥70 至多 ~5 只**);50-69 = 值得 L4 深核但我不背书;<50 不该出现在入选里。
 `mechanism`(一句):**两日内兑现机制**——催化落地/突破跟随/板块轮动位/超跌第一波修复 之一 + 明日买家是谁;写不出兑现机制的票不选。

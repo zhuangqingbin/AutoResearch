@@ -622,7 +622,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
         "outputs": ["scan.finalists", "scan.l3.bench", "scan.gate2.result", "scan.l3.final.bundle"],
         "callers": ["scan.gate2"],
         "errors": ["L3_MERGE_FAILED", "GATE2_FAILED"],
-        "limits": "frozen GATE1 l4_budget",
+        "limits": "frozen GATE1 l3cap/max_cards (pre-2026-09-26 runs: l4_budget)",
         "retained_cli": True,
     },
     "scan.gate2.skip": {

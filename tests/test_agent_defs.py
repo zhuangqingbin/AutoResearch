@@ -709,3 +709,22 @@ def test_stages_channel_quota_listing_matches_config():
     for key, value in quotas.items():
         assert f"{key} {value}" in stages, f"STAGES.md 配额行缺或不等:{key} {value}"
     assert f"{len(quotas)} 键全写" in stages, "STAGES.md 配额行的键数与 jsonc 不符"
+
+
+def test_scan_workflow_reads_l3cap_from_gate1_not_a_literal():
+    """卡数唯一算法在 Python(card_count.effective_caps);JS 只许读 GATE1 回显。变异:写回 Math.min(10 → 红。"""
+    js = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in js.splitlines() if not ln.lstrip().startswith("//"))   # 注释里的沿革不算
+    assert "Math.min(10" not in code, "scan-market.js 仍写死 finalist 上限 10"
+    assert "g1m.l3cap" in js, "scan-market.js 未读 GATE1 的 l3cap"
+    # GATE2 数的是非豁免 lane 全部行(composite 席位也算),预算必须是 max_cards 而非 l3cap
+    assert "g1m.max_cards" in js, "scan-market.js 未读 GATE1 的 max_cards(GATE2 预算)"
+    assert "gates gate2 ${date} --budget ${l3cap}" not in js, "GATE2 预算仍是 l3cap:10 finalist+3 席位必挂"
+    # l3cap<7 时区间不能写成「7~5」
+    assert "7~${l3cap}" not in js, "L3 prompt 区间下界没跟随 l3cap"
+
+
+def test_l3_rank_defers_finalist_count_to_dispatch_cap():
+    """l4.max_cards 改大要真生效:l3-rank 定义里的 7–10 只是默认区间,本场上限以派发给出的为准。"""
+    body = (AGENTS / "l3-rank.md").read_text(encoding="utf-8")
+    assert "以派发给出的上限为准" in body
