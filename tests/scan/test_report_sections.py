@@ -514,3 +514,24 @@ def test_seat_section_never_disappears_even_when_the_model_carries_none():
     summary = rs.render_summary(ReportModel(analysis_date=_D, hhmm="1200", folder=_F))
     section = ss.section_text(summary)
     assert section is not None and "未生成" in section
+
+
+def test_a_failed_seat_build_never_leaves_the_previous_runs_file_behind(tmp_path, monkeypatch):
+    """复审 M2:staging 按日期共享,同日重跑时上一场的 `_swing_seat.json` 还在盘上。这一场
+    席位生成失败 → 旧文件必须先被删掉,否则 brief ⑦ 读到旧的「3 只」而 summary §12 写
+    「未生成」—— 两处说法打架,`brief_lint` 读的也是同一份旧文件,照样绿。"""
+    from autoresearch.scan import brief, swing_seat as ss
+
+    d = _scan(tmp_path)
+    ss.write_swing_seat(d, {"schema_version": 1, "rows": [{"code": "600001"}] * 3, "n": 3})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("seat build failed")
+
+    monkeypatch.setattr(ss, "build_swing_seat", boom)
+    summary, _appendix, model = _render(d)
+    assert model.swing_seat == {}
+    assert "未生成" in ss.section_text(summary)
+    assert not (d / ss.SEAT_FILENAME).exists()
+    assert ss.load_swing_seat(d) is None
+    assert brief.collect_facts(d, analysis_date=_D)["swing_seat"] is None

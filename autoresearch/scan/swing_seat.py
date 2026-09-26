@@ -147,6 +147,25 @@ def write_swing_seat(scan_dir: Path | str, seat: dict) -> Path:
     return path
 
 
+def refresh_swing_seat(scan_dir: Path | str) -> dict:
+    """L5 的唯一入口:**先删**上一场留下的 `_swing_seat.json`,再算、再落盘。
+
+    staging 按日期共享,同日重跑时旧文件还在盘上;这一场算挂了若不先删,brief ⑦ 会读到
+    旧的「N 只」而 summary §12 写「未生成」(复审 M2)。任何一步失败 → 返回 `{}` 且盘上
+    没有文件,两处都读成「未生成」。影子面绝不挡发布:异常一律吞在这里。
+    """
+    path = Path(scan_dir) / SEAT_FILENAME
+    try:
+        path.unlink(missing_ok=True)
+        seat = build_swing_seat(scan_dir)
+        write_swing_seat(scan_dir, seat)
+    except Exception:  # noqa: BLE001 — 影子面坏了只落「未生成」,不挡发布
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return {}
+    return seat
+
+
 def load_swing_seat(scan_dir: Path | str) -> dict | None:
     """落盘的席位;缺/坏 → None(「未生成」,不是「没有」)。"""
     with contextlib.suppress(OSError, ValueError):
