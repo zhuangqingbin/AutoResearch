@@ -71,10 +71,22 @@
 | R2 | 每个推理任务都要 transcript 绑定才算证据完整 | host 模式:`mailbox complete --context-ref <agentId>` 自动推导 `<session>/subagents/agent-<id>.jsonl`,runner 绑定;推导不到 → `completeness_ok=false`;**复核任务缺绑定 → EVIDENCE_MISSING → 同 L12** | 待 Task 6 真跑验证 |
 | R3 | 超时后迟到结果 | 只认本 attempt 的 result 文件,迟到结果永不被接收;但超时的 subagent 不会被杀,可能迟到覆写同一产物文件 | 降级可接受(超时给得宽;README 写明) |
 | R4 | host_profile 能力声明 | review 需 `independent_context=true`,intel 需 `web_search/web_fetch=true`;声明不足 → claim 期 HostCapabilityError → runner 以 CLAIM_ERROR 释放 → 同 L9 | 非阻断(begin 时一次性声明对即可) |
+| R5 | 确定性车道与图读取并发 | execute 先落 expansion 文件、后同步 artifact/store;loop 线程在窗口内读图会看到 store 不认识的 READY 任务(合成 FULL 扫描首跑即崩)| **已修**(Task 5:车道忙时不读图 + 未同步任务跳过本轮;同步失败 → STALLED 并保留根因)|
 
 ## 5. 结论与处置
 
-**阻断(1 项)**:S4 校验器 —— `validation._macro_brief` 要求 6 节全部加粗,而 macro-brief agent 模板第 6 节不加粗。
+**合成全链(Task 5 新增)**:`tests/session_agent/test_scan_runner_full.py` 用真实 `build_scan_plan`、真实展开/
+artifact 登记/任务簿 ticket/生产输出校验器,只把确定性操作(假 operation runner 按登记路径写产物)和模型
+(假 executor)换成替身,由 runner 从 `begin` 一路跑到 `finish`:FULL(Hold 卡)与分支版(intel 开 + L3 修补 +
+📌 SELL 独立复核回执)各一场。**此前没有任何测试经 service 走过扫描图**,首跑即暴露下面第 2 条阻断。
+
+**阻断 2**:`scan.l4.taskbook`(`_l4_tasks.json`)被声明为 `scan.l4.prepare` 的输出、每个 ticket 的输入,但
+`register_scan_expansion_artifacts` 故意不登记它(它是任务簿 owner 的**可变状态**,每次 preflight/success 都改写,
+不能做 hash 冻结的 artifact)→ `service.execute("scan.l4.prepare")` 在绑定输出时 `KeyError` → **所有带 L4 票的
+模式(FULL/FORCED_FULL/SENTINEL_PINNED)真跑必在 L4-prep 停住**。Task 5 已修:从冻结图的 artifact 清单里拿掉
+任务簿(ticket 的认领证据本来就是冻结的 preflight 回执),合成全链先红后绿;变异(放回输出清单)即红。
+
+**阻断 1**:S4 校验器 —— `validation._macro_brief` 要求 6 节全部加粗,而 macro-brief agent 模板第 6 节不加粗。
 可合成复现、改动局部(只动 session_v1 校验器,不碰 legacy 路径与评级)→ **Task 5 已修**:
 `validation.market_view_complete` 按模板形状判(1–5 节带加粗标题 + 第 6 节免责行),合成 run 测试
 `tests/session_agent/test_scan_runner_gaps.py` 先红后绿,回放 13/13 真实 market_view 通过。
@@ -91,6 +103,10 @@ BLOCKED/STALLED,操作者可切回 `LEGACY_ORCHESTRATION_FALLBACK`(默认入口�
 S1/S2/S4(agent 失败)同理:fail-closed,不修。
 
 **降级可接受**:S3/S7/S9/S13/S15/S17、L4/L14、R1/R3 —— 记账,Task 6 真跑时对照。
+
+**计划 Task 5 预列候选的去向**:① intel 三次瞬时重试 + `intel_resume` → L5/L4(非阻断,open);② `intel_guard`
+REJECTED 后卡仍派 → L7(已等价);③ ow/sell 双复核触发与同档早止 → L10/L11(已等价,合成分支版覆盖 sell_review
+早止);④ slim 的 tushare K 槽信号量 → R1(`prepare_slim` 内仍生效,runner 串行更保守)。
 
 **Task 6 前置检查**(给用户):`host_profile` 声明 `independent_context/web_search/web_fetch=true` 并附证据;
 `mailbox complete` 传 subagent 的 agentId;观察一场里是否出现任一单票终失败(出现即按上表判定为已知缺口,

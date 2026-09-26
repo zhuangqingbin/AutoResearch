@@ -425,7 +425,9 @@ def l4_retry_expansion(
             prefix,
             "DETERMINISTIC",
             dependencies=["scan.l4.prepare"],
-            inputs=["scan.l4.taskbook", "scan.l4.source.bundle", ids["prompt"]],
+            # The taskbook (_l4_tasks.json) is the ticket owner's mutable state, not a
+            # hash-frozen artifact: the claim freezes the preflight receipt instead.
+            inputs=["scan.l4.source.bundle", ids["prompt"]],
             outputs=[ids["ticket"]],
             contract="scan.l4.ticket.v1",
             operation="scan.l4.ticket",
@@ -553,7 +555,6 @@ def l4_expansion(
             ],
             outputs=[
                 "scan.l4.plan",
-                "scan.l4.taskbook",
                 "scan.l4.source.bundle",
                 *prompt_ids,
             ],
@@ -571,7 +572,8 @@ def l4_expansion(
                 f"l4.{code}.a1",
                 "DETERMINISTIC",
                 dependencies=["scan.l4.prepare"],
-                inputs=["scan.l4.taskbook", "scan.l4.source.bundle", ids["prompt"]],
+                # Taskbook = owner state, not an artifact (see l4_retry_expansion).
+                inputs=["scan.l4.source.bundle", ids["prompt"]],
                 outputs=[ids["ticket"]],
                 contract="scan.l4.ticket.v1",
                 operation="scan.l4.ticket",

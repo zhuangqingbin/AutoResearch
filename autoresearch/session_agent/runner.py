@@ -256,6 +256,13 @@ class Runner:
             while rounds < self.max_rounds:
                 rounds += 1
                 progressed = self._harvest()
+                if self._det_busy():
+                    # A deterministic execute may be mid-expansion (expansion file on disk,
+                    # store/artifacts not yet synced): read the graph only between executes.
+                    self._beat()
+                    if not progressed:
+                        self._sleep(self.poll_seconds)
+                    continue
                 progressed |= self._run_l4_retries()
                 state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
                 status = state["state"]
@@ -352,7 +359,11 @@ class Runner:
             if task["owner"] == "L4_TASKBOOK":
                 launched |= self._claim_ticket(task)
             elif self._can_start(task):
-                launched |= self._start(task, self._entry(task_id)["attempt"] + 1)
+                try:
+                    attempt = self._entry(task_id)["attempt"] + 1
+                except KeyError:          # expansion visible before its store sync
+                    continue
+                launched |= self._start(task, attempt)
         return launched
 
     def _can_start(self, task: dict) -> bool:
@@ -574,8 +585,9 @@ class Runner:
         try:
             service.fail(self.run_id, task["task_id"], attempt, error_class, message[:2000],
                          handle_loader=self.hooks.handle_loader)
-        except Exception as exc:  # noqa: BLE001
-            self._error(task["task_id"], f"could not record failure: {exc}")
+        except Exception as exc:  # noqa: BLE001 - keep the root cause, not just the refusal
+            self._error(task["task_id"],
+                        f"{error_class}: {message[:1000]} (not recorded as a task failure: {exc})")
             return
         self._record(flight, f"FAILED:{error_class}", result, error_class)
         if error_class not in TASK_ATTEMPT:
