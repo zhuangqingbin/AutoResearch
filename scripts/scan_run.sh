@@ -10,10 +10,18 @@
 #   scripts/scan_run.sh                                   # 等 stk_factor_pro 灌齐再开
 #   scripts/scan_run.sh --date 2026-09-28 --skip-readiness   # 补跑(显式日期须为交易日)
 # 日志:reports_claude/_ops/scan_run_<日>.log(launchd 的 /tmp/scan-run.log 只兜启动前的错)。
+#
+# caffeinate -i(批 4 复审 I4):笔记本用电池时 1 分钟就闲置睡眠,60–180 分钟的一场会在
+# claude -p 中途睡死 → 角色超时 → 整场 FAILED。-i 只挡「闲置睡眠」;合盖(无外接显示器)
+# 照样睡 —— 插电 + 开盖见 docs/ops/scan-ops.md。caffeinate 与 uv 都把 SIGTERM 转给子进程
+# (本机实测),launchctl bootout 仍能让 scan_run 收口。
 set -u
 cd "$(dirname "$0:A")/.." || exit 1
 
 # 引擎显式钉死:launchd 环境里没有 CLAUDECODE,headless 执行器只跑 claude(Codex 不在范围)。
 export AUTORESEARCH_ENGINE=claude
 
+if [[ -x /usr/bin/caffeinate ]]; then
+  exec /usr/bin/caffeinate -i uv run --no-sync python -m autoresearch.scan.scan_run "$@"
+fi
 exec uv run --no-sync python -m autoresearch.scan.scan_run "$@"

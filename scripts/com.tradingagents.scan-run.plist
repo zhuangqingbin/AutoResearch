@@ -15,8 +15,11 @@
   或直接 scripts/scan_run.sh。
 
   一晚只跑一次、有界:没有 KeepAlive / RunAtLoad。非交易日(节假日)脚本自己静默退出;
-  湖没灌齐等到 22:30 仍不齐 → 推送「未开」;另一场在跑(锁)→ 推送「未开」并退出。
-  与 19:30/21:00 的 prewarm 不冲突(预热先跑完灌湖);nightly-close 挪到 23:30,避开同一账本。
+  湖没灌齐等到 22:30 仍不齐 → 推送「未开」;另一场在跑(锁)→ 推送「未开」并退出;
+  本机睡眠/关机后 launchd 在窗口(21:10–22:30)外补触发 → 推「错过」退出,不在早上开扫。
+  与 19:30/21:00 的 prewarm 不冲突(预热先跑完灌湖);nightly-close 挪到 23:30 且会等扫描锁。
+  ExitTimeOut 120:bootout / kickstart -k 发 SIGTERM 后,scan_run 要停 runner 进程组与在飞
+  claude -p、finalize FAILED、推送 —— launchd 缺省 20 秒就 SIGKILL,收口做不完。
   凭证不进本文件:BARK_TOKEN / TUSHARE_TOKEN 在 .env 与登录 profile(zsh -l)。
 -->
 <plist version="1.0"><dict>
@@ -34,6 +37,7 @@
     <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
   </array>
+  <key>ExitTimeOut</key><integer>120</integer>
   <key>StandardOutPath</key><string>/tmp/scan-run.log</string>
   <key>StandardErrorPath</key><string>/tmp/scan-run.err.log</string>
 </dict></plist>

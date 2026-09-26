@@ -35,8 +35,33 @@ export AUTORESEARCH_ENGINE
 
 rc=0
 
+# 扫描锁(批 4 复审 M2):无人值守扫描(scripts/scan_run.sh)慢的一晚能跑过 23:30,而前四步
+# 与扫描的 prelude(outcome_fill / ledger_views)写同一批账本。锁被占(run_lock check 退出 3)
+# → 每 NIGHTLY_SCAN_POLL_S 秒(缺省 60)再看一次,最多 NIGHTLY_SCAN_WAIT_MIN 分钟(缺省 150;
+# 扫描自己的夜间硬截止是 01:00);仍被占 → 跳过四个 scan.* 账本步并记一行,analyze ledger
+# (stock-research 独立账本)照跑。锁在 context_<engine>/:codex 引擎这里恒空闲。
+scan_busy=0
+poll_s=${NIGHTLY_SCAN_POLL_S:-60}
+max_polls=$(( ${NIGHTLY_SCAN_WAIT_MIN:-150} * 60 / (poll_s > 0 ? poll_s : 1) ))
+polls=0
+while true; do
+  uv run --no-sync python -m autoresearch.scan.run_lock check >/dev/null 2>&1
+  [[ $? -eq 3 ]] || break
+  if (( polls >= max_polls )); then
+    scan_busy=1
+    break
+  fi
+  (( polls == 0 )) && print -r -- "[nightly-close] $(date '+%F %T') · 扫描锁被占,等它结束(最多 ${NIGHTLY_SCAN_WAIT_MIN:-150} 分钟)"
+  sleep ${poll_s}
+  (( polls += 1 ))
+done
+
 step() {
   local name="$1"; shift
+  if (( scan_busy )) && [[ "$1" == autoresearch.scan.* ]]; then
+    print -r -- "[nightly-close] $(date '+%F %T') · 跳过 · ${name} · 无人值守扫描仍持锁(与扫描写同一账本)" >&2
+    return 0
+  fi
   print -r -- "[nightly-close] $(date '+%F %T') · start · ${name} · engine=${AUTORESEARCH_ENGINE}"
   uv run --no-sync python -m "$@"
   local code=$?
