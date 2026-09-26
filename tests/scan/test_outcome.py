@@ -794,3 +794,32 @@ def test_a_crashing_swing_revisit_is_isolated_and_newer_runs_still_fill(
     assert "20260911_2100" in res["runs"]
     doc = json.loads(outcome.outcome_path("20260911_2100", root).read_text(encoding="utf-8"))
     assert doc["outcome_status"] == outcome.MATURE
+
+
+def test_swing_stamp_needs_most_rows_scored_else_it_stays_missing_and_is_revisited(
+        tmp_path, monkeypatch, tmp_lake_10_sessions):
+    """复审 M6:T+10 分区「存在」不等于「灌完了」。夜间撞上半截分区时,本 run 的票多数拿不到
+    `fwd_10_oc` —— 这时盖 `MATURE_10` 会让这些票永久缺值(`_is_swing_settled` 从此跳过)。
+    判据与主尺 `complete` 同一个「多数」:算得出的行不够 → 保持 `MISSING_MARKET_DATA`,
+    下一晚分区灌完再回访,补齐后才盖章。"""
+    monkeypatch.chdir(tmp_path)
+    _run(tmp_path, "20260910_2100", "2026-09-10")
+    root = tmp_path / ws.reports_root() / "scan"
+    outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-15")
+
+    # 半截的 T+10 分区(09-24,i=17):只灌进了一只与本 run 无关的票。
+    px = 10.0 + 0.1 * 17
+    pd.DataFrame([{"ts_code": "000001.SZ", "open": px, "high": px * 1.05, "low": px * 0.95,
+                   "close": px * 1.01, "pct_chg": 1.0, "amount": 1.0e8}]
+                 ).to_parquet(tmp_lake_10_sessions / "20260924.parquet", index=False)
+    partial = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-30")
+    doc = json.loads(outcome.outcome_path("20260910_2100", root).read_text(encoding="utf-8"))
+    assert doc["outcome_status_swing"] == outcome.MISSING_MARKET_DATA, partial
+    assert not outcome._is_swing_settled(doc)
+
+    _write_swing_day(tmp_lake_10_sessions, "2026-09-24", 17)     # 分区灌完
+    healed = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-10-01")
+    assert healed["runs"] == ["20260910_2100"]
+    rows = {r["code"]: r for r in outcome.load_ledger(root)}
+    assert rows["603317"]["outcome_status_swing"] == outcome.MATURE_10
+    assert rows["603317"]["fwd_10_oc"] != ""
