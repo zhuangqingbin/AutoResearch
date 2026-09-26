@@ -11,7 +11,8 @@ from autoresearch.session_agent import artifacts, service
 from tests.session_agent.test_service import _handle, _request
 
 
-def _inference_plan(request, handle, *, independent=False, role="stock.card"):
+def _inference_plan(request, handle, *, independent=False, role="stock.card",
+                    subject="600519.SS"):
     from autoresearch.session_agent.roles import get_role
 
     task = {
@@ -24,7 +25,7 @@ def _inference_plan(request, handle, *, independent=False, role="stock.card"):
         "output_artifact_ids": ["inference.output"],
         "expected_output_contract": get_role(role)["output_contract"],
         "owner": "SESSION",
-        "subject": "600519.SS",
+        "subject": subject,
         "independent_context": independent,
         "parent_task": None,
     }
@@ -50,7 +51,7 @@ def _inference_plan(request, handle, *, independent=False, role="stock.card"):
     return value
 
 
-def _running_case(tmp_path, *, independent=False, role="stock.card"):
+def _running_case(tmp_path, *, independent=False, role="stock.card", subject="600519.SS"):
     handle = _handle(tmp_path)
     request = _request()
     if role == "stock.news":
@@ -75,7 +76,7 @@ def _running_case(tmp_path, *, independent=False, role="stock.card"):
         request,
         begin_capsule=lambda unused: handle,
         planner=lambda current, unused: _inference_plan(
-            current, unused, independent=independent, role=role
+            current, unused, independent=independent, role=role, subject=subject
         ),
         artifact_registrar=register,
     )
@@ -183,6 +184,75 @@ def test_bound_task_segment_enters_the_same_evidence_closure(tmp_path):
     )
     blob_path(handle.capsule, captured["payload_hash"]).unlink()
     assert evaluate_closure(handle.capsule)["completeness_ok"] is False
+
+
+def test_display_name_subject_binds_under_its_derived_ascii_key(tmp_path, monkeypatch):
+    """N1: a sector brief's subject is the industry name (食品饮料); the capsule's
+    transcript binding only accepts ASCII identifiers, so the host binding maps the
+    display name to the key its agent events already carry (the capsule validation is
+    not loosened) — before, every scan ended with TRANSCRIPT_MISSING for the briefs."""
+    from autoresearch.common import workspace as ws
+    from autoresearch.session_agent.evidence import materialize_evidence
+    from autoresearch.session_agent.host_evidence import bind_task_transcript
+    from autoresearch.trace.capsule import subject_key
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    handle, output, claimed = _running_case(tmp_path, subject="食品饮料")
+    bound = bind_task_transcript(
+        handle.run_id,
+        "inference.one",
+        1,
+        _rollout(tmp_path),
+        context_ref="agent-brief",
+        parent_context_ref="session-main",
+        session_ref="session-main",
+        start_ordinal=0,
+        end_ordinal=13,
+        context_source="SUBAGENT",
+        handle_loader=lambda unused: handle,
+    )
+
+    assert bound["subject"] == "食品饮料"            # the task's own subject, verbatim
+    rows = [
+        json.loads(line)
+        for line in (handle.capsule / "agents/bindings.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["subject"] for row in rows] == [subject_key("食品饮料")]
+    receipt = {
+        "schema_version": 1,
+        "engine": "codex",
+        "session_ref": "session-main",
+        "context_ref": "agent-brief",
+        "parent_context_ref": "session-main",
+        "task_id": "inference.one",
+        "attempt": 1,
+        "completed": True,
+        "evidence_refs": [bound["evidence_ref"]],
+    }
+    service.submit(
+        handle.run_id,
+        _submission(
+            claimed,
+            output,
+            handle,
+            host_receipt_id=sha256_bytes(canonical_json(receipt).encode("utf-8")),
+        ),
+        host_receipt=receipt,
+        handle_loader=lambda unused: handle,
+        validator=lambda value, task: None,
+        event_recorder=lambda *args, **kwargs: None,
+    )
+    closure = materialize_evidence(handle)
+
+    assert not [item for item in closure["missing"] if item.startswith("TRANSCRIPT_")]
+    task = json.loads(
+        (handle.capsule / "evidence/tasks/inference.one/a1/evidence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [ref["status"] for ref in task["transcript_refs"]] == ["PRESENT"]
 
 
 def test_host_receipt_cannot_cite_a_nonexistent_binding(tmp_path):

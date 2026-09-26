@@ -211,6 +211,10 @@ def build_request(
         artifact_id: str(artifacts.artifact_path(handle, artifact_id))
         for artifact_id in task["output_artifact_ids"]
     }
+    for path in outputs.values():
+        # Attempt-scoped outputs (session_attempts/<code>/a<n>/…) live in sub-directories
+        # the agent should not have to create before its first write.
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
     table = {**DEFAULT_TIMEOUTS, **dict(timeouts or {})}
     return DispatchRequest(
         run_id=handle.run_id,

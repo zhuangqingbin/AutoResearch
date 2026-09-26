@@ -1095,8 +1095,13 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 "slim": staging
                 / "_external_inputs"
                 / f"{normalize_symbol(code)}_{handle.analysis_date}_slim.md",
-                "intel": staging / f"_l4_intel_{code}.md",
-                "intel_status": staging / f"_l4_intel_status_{code}.json",
+                # N2: the bound intel is the agent's own bytes, kept apart like a retry's;
+                # `_l4_intel_<code>.md` (what the card reads) is the legacy working copy
+                # intel_status derives from it and the guard trims/normalizes in place.
+                "intel": staging / "session_attempts" / code / "a1" / "intel.md",
+                # Same for the status: a retry's intel_status rewrites the canonical
+                # `_l4_intel_status_<code>.json` (the report reads the last attempt's).
+                "intel_status": staging / "session_attempts" / code / "a1" / "intel_status.json",
                 "intel_bundle": staging
                 / "session_outputs"
                 / "intel_bundles"

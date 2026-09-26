@@ -601,11 +601,10 @@ def _promote_l4_retry_output(handle, task: dict) -> None:
         return
     code, attempt_text, kind = match.groups()
     if kind == "intel":
-        # Review I4: `_l4_intel_<code>.md` is the *bound* a1 intel artifact; a raw
-        # replace destroyed a1's evidence.  The a2 intel keeps its own registered copy
-        # (session_attempts/<code>/a<n>/intel.md) — the one its intel_status and card
-        # consume — and the legacy canonical file is written by the intel_status /
-        # finalize operations, as in the legacy flow.
+        # Review I4 / N2: every attempt's intel (a1 included) is bound at its own
+        # session_attempts/<code>/a<n>/intel.md and never rewritten; the legacy canonical
+        # `_l4_intel_<code>.md` (what the card reads) is derived from it by the
+        # intel_status / finalize operations, as in the legacy flow.
         return
     with artifacts.open_artifact(handle, task["output_artifact_ids"][0]) as stream:
         content = stream.read()

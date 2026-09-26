@@ -195,6 +195,12 @@ uv run --no-sync python -m autoresearch.session_agent calculate \
 
 任务 request、plan 和 receipt 只是控制面证据。只有宿主 transcript 经过既有 `trace.capsule.bind_transcript` 绑定后，才计入模型执行和 token usage。没有 transcript 时完整性明确缺失，usage 保持未知；系统不会用输出文件反推 token。
 
+`evidence_plan.json` 的 task key 在证据腿与「kind/状态」默认规则不同时带可选 `evidence_kind`：
+`OWNER_TICKET`（L4 任务簿票 `l4.<code>.a<n>` 是协调记录，只 claim 不执行不 accept，只要求冻结 claim
+与输入快照，其余腿由子任务自己的证据承担）；`STALE_ORPHAN`（运维对确定性孤儿 `fail --error-class
+STALE_TASK` 且命令从未完成，免 `command_capture`/`source_receipts`，冻结的 `failure.json` 随证据落盘）。
+中文显示名主体（行业 brief）绑定 transcript 时用与 agent 事件相同的 `subject_key` 派生键。
+
 `RunProfile.role_stages` 只在 `session_v1` profile 中记录逻辑角色到既有领域阶段的映射。历史 profile 缺少该字段时继续使用旧全局角色表，因此新旧 capsule 可以同时验证。
 
 每次供应商返回和宿主外部工具返回都写入 `capsule/lineage/source_receipts.jsonl`。

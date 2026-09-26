@@ -15,6 +15,8 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from autoresearch.common import workspace as ws
 from autoresearch.session_agent import artifacts, legacy_scan, runner, service
 from autoresearch.session_agent.executors.base import DispatchResult
@@ -139,7 +141,10 @@ class _FakeScanModels:
         }[request.role]
         for path in request.output_paths.values():
             _write(Path(path), text)
-        evidence = (("host-binding:" + "1" * 64,) if request.independent_context else ())
+        # Without host transcripts an independent task gets a stand-in ref (and the test
+        # patches the receipt resolver); with them the runner binds the real transcript.
+        evidence = (("host-binding:" + "1" * 64,)
+                    if request.independent_context and self.transcripts is None else ())
         transcript = None
         if self.transcripts is not None:
             transcript = self.transcripts / f"{request.task_id}.a{request.attempt}.jsonl"
@@ -354,6 +359,24 @@ def _baseline_missing(tmp_path, monkeypatch, *, branchy=False, host=None, user_c
     return missing
 
 
+def test_l4_owner_ticket_is_evidenced_by_its_frozen_claim_only(tmp_path, monkeypatch):
+    """N3 ruling: ``l4.<code>.a<n>`` is a coordination record — claimed, never executed
+    or accepted — so its key needs the frozen claim (handoff + input snapshots) and
+    relies on the child tasks' own evidence; the plan says why (OWNER_TICKET)."""
+    missing = _baseline_missing(tmp_path, monkeypatch)
+    handle_capsule = tmp_path / "baseline/context_codex/scan_runs" / RUN_ID / "capsule"
+    plan = json.loads((handle_capsule / "evidence/evidence_plan.json").read_text("utf-8"))
+    tickets = [key for key in plan["task_keys"] if key["owner"] == "L4_TASKBOOK"]
+    assert [(key["task_id"], key["evidence_kind"], key["requirements"]) for key in tickets] == [
+        (f"l4.{CODE}.a1", "OWNER_TICKET", ["claim", "input_snapshot"])]
+    assert not [item for item in missing if f"l4.{CODE}.a1:" in item
+                or f"session-l4-{CODE}-a1-a1" in item], missing
+    evidence = json.loads((handle_capsule / f"evidence/tasks/l4.{CODE}.a1/a1/evidence.json")
+                          .read_text("utf-8"))
+    assert evidence["status"] == "PRESENT" and evidence["claim_ref"] is not None
+    assert evidence["command_ref"] is None and evidence["reasons"] == []
+
+
 def _abandonment(handle, task_id: str, attempt: int) -> dict:
     path = (Path(handle.capsule) / "evidence/attempt_records" / task_id / f"a{attempt}"
             / "abandoned.json")
@@ -430,6 +453,197 @@ def test_l4_card_timeout_with_intel_keeps_the_bound_a1_intel_intact(tmp_path, mo
         assert f"l4.{CODE}.a1.intel" in stream.read().decode("utf-8")   # a1 bytes untouched
     missing = _closure_missing(handle)
     assert _attempt_agnostic(missing) - _attempt_agnostic(baseline) == set(), missing
+
+
+#: Over the hard cap (网查 45 > 30) with 12 event rows: the real guard trims it in place
+#: (stamp + the two 背景 rows cut) — the canonical file the card reads changes.
+OVER_CAP_INTEL = (
+    "## 事件段\n| 日期 | 窗 | 事件 | 来源 |\n|---|---|---|---|\n"
+    + "".join(f"| 2026-09-{day:02d} | T0 | 公告第 {day} 条 | 交易所 |\n" for day in range(1, 11))
+    + "| 2026-08-01 | 背景 | 旧闻一 | 媒体 |\n| 2026-08-02 | 背景 | 旧闻二 | 媒体 |\n"
+    + "## 声明行\n网查 45 条\n"
+)
+
+
+class _RealIntelOperations(_FakeScanOperations):
+    """The fake operations, except the two real domain ops that rewrite ``_l4_intel_<code>.md``."""
+
+    def __call__(self, handle, stage, argv, invocation_id, attempt, subject, *, task_id):
+        from autoresearch.session_agent import domain_ops
+
+        task = service._task(self.handle, task_id)
+        real = {"scan.l4.intel.status": domain_ops.scan_l4_intel_status,
+                "scan.l4.finalize": domain_ops.scan_l4_finalize}.get(task["operation"])
+        if real is None:
+            result = super().__call__(handle, stage, argv, invocation_id, attempt, subject,
+                                      task_id=task_id)
+            if task["operation"] == "scan.l4.slim":        # the taskbook's success check
+                slim = artifacts.artifact_path(self.handle, task["output_artifact_ids"][0])
+                _write(slim, "\n".join(["## Verified market snapshot",
+                                        "### Latest verified OHLCV row", "| Close | 12.34 |",
+                                        "## Market context", "## Fundamentals overview",
+                                        "x" * 5000]))
+            return result
+        self.calls.append(task["operation"])
+        real(self.handle, code=task["subject"])
+        return SimpleNamespace(exit_code=0, invocation={"status": "COMPLETED"})
+
+
+def test_real_intel_ops_keep_the_bound_a1_intel_and_the_card_input(tmp_path, monkeypatch):
+    """N2: the real intel_status (guard trim + normalisation) and finalize (rewrite from the
+    bundle) used to rewrite the bound a1 intel in place / with a new inode, so at finish
+    ``open_artifact(scan.l4.<code>.a1.intel)`` failed → OUTPUTS/INPUT_SNAPSHOT_MISSING on
+    every intel-enabled scan.  The bound bytes must survive, and the canonical file the card
+    reads must hold exactly what the in-place guard pipeline makes of them (freeze window)."""
+    from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
+    from autoresearch.session_agent import domain_ops, host_evidence
+
+    host = profile(independent_context=True, web_search=True)
+    handle = _scan_run(tmp_path, monkeypatch, host=host,
+                       user_config={"l4_intel": {"enabled": True}})
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda current, task, receipt: [receipt])
+    models = _FakeScanModels(branchy=True, transcripts=tmp_path / "host_transcripts")
+    original = models.dispatch
+    parents_ready = []
+
+    def dispatch(request):
+        if request.role == "scan.l4.intel":         # the agent is told a sub-directory path
+            parents_ready.append(all(Path(path).parent.is_dir()
+                                     for path in request.output_paths.values()))
+        result = original(request)
+        if request.role == "scan.l4.intel":
+            for path in request.output_paths.values():
+                _write(Path(path), OVER_CAP_INTEL)
+        return result
+
+    models.dispatch = dispatch
+    operations = _RealIntelOperations(handle, branchy=True)
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=_plain_hooks(handle, operations))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    assert {"scan.l4.intel.status", "scan.l4.finalize"} <= set(operations.calls)
+    assert parents_ready == [True]
+
+    with artifacts.open_artifact(handle, f"scan.l4.{CODE}.a1.intel") as stream:
+        assert stream.read().decode("utf-8") == OVER_CAP_INTEL      # the agent's bytes
+    legacy = tmp_path / "legacy/2026-09-13"
+    legacy.mkdir(parents=True)
+    (legacy / f"_l4_intel_{CODE}.md").write_text(OVER_CAP_INTEL, encoding="utf-8")
+    guard_intel(legacy, CODE, soft_cap=configured_soft_cap())
+    domain_ops._normalize_intel(legacy, CODE)
+    expected = (legacy / f"_l4_intel_{CODE}.md").read_bytes()
+    canonical = (Path(handle.staging) / f"_l4_intel_{CODE}.md").read_bytes()
+    assert canonical.decode("utf-8").startswith("〔已裁剪")
+    assert canonical == expected                  # the card reads what it read before
+    missing = _closure_missing(handle)
+    assert not [item for item in missing if ".intel" in item
+                and not item.startswith(("COMMAND_CAPTURE_MISSING", "SOURCE_RECEIPTS_MISSING"))
+                ], missing
+
+
+def test_real_intel_ops_across_an_l4_retry_keep_both_bound_intels(tmp_path, monkeypatch):
+    """N2 retry leg: a2's intel_status used to ``copyfile`` the a2 intel over the bound a1
+    file.  Both attempts' bound intels must open at finish; the card input is a2's."""
+    from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
+    from autoresearch.session_agent import domain_ops, host_evidence
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    host = profile(independent_context=True, web_search=True)
+    handle = _scan_run(tmp_path, monkeypatch, host=host,
+                       user_config={"l4_intel": {"enabled": True}})
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda current, task, receipt: [receipt])
+    models = _FakeScanModels(branchy=True, transcripts=tmp_path / "host_transcripts")
+    original = models.dispatch
+    written = {}
+
+    def dispatch(request):
+        if request.task_id == f"l4.{CODE}.a1.card":
+            raise ExecutorTimeout(f"等待 {request.task_id} 的结果文件超时")
+        result = original(request)
+        if request.role == "scan.l4.intel":
+            written[request.task_id] = OVER_CAP_INTEL.replace("公告第 1 条", request.task_id)
+            for path in request.output_paths.values():
+                _write(Path(path), written[request.task_id])
+        return result
+
+    models.dispatch = dispatch
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, _RealIntelOperations(handle, branchy=True)))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    assert sorted(written) == [f"l4.{CODE}.a1.intel", f"l4.{CODE}.a2.intel"]
+    for attempt in (1, 2):
+        with artifacts.open_artifact(handle, f"scan.l4.{CODE}.a{attempt}.intel") as stream:
+            assert stream.read().decode("utf-8") == written[f"l4.{CODE}.a{attempt}.intel"]
+        # a2's intel_status rewrites `_l4_intel_status_<code>.json` for the report; the
+        # bound a1 status (a1 card input) must not be that file either.
+        with artifacts.open_artifact(handle, f"scan.l4.{CODE}.a{attempt}.intel_status") as stream:
+            assert json.loads(stream.read())["code"] == CODE
+    final_status = json.loads((Path(handle.staging) / f"_l4_intel_status_{CODE}.json")
+                              .read_text("utf-8"))
+    with artifacts.open_artifact(handle, f"scan.l4.{CODE}.a2.intel_status") as stream:
+        assert json.loads(stream.read()) == final_status      # the report reads the last one
+    legacy = tmp_path / "legacy/2026-09-13"
+    legacy.mkdir(parents=True)
+    (legacy / f"_l4_intel_{CODE}.md").write_text(written[f"l4.{CODE}.a2.intel"], encoding="utf-8")
+    guard_intel(legacy, CODE, soft_cap=configured_soft_cap())
+    domain_ops._normalize_intel(legacy, CODE)
+    assert (Path(handle.staging) / f"_l4_intel_{CODE}.md").read_bytes() == (
+        legacy / f"_l4_intel_{CODE}.md").read_bytes()
+    missing = _closure_missing(handle)
+    assert not [item for item in missing if ".intel" in item
+                and not item.startswith(("COMMAND_CAPTURE_MISSING", "SOURCE_RECEIPTS_MISSING"))
+                ], missing
+
+
+def _harness_only_gaps(capsule: Path) -> set[str]:
+    """The closure gaps this harness cannot close, enumerated from the frozen plan.
+
+    Both come from ``_FakeScanOperations`` standing in for the ``domain_ops`` subprocesses:
+    it bypasses ``exec_capture`` (no ``events/invocations.json`` → every deterministic
+    SESSION attempt lacks its command capture) and the providers' source receipts.  A real
+    run captures both; nothing else may be missing (N1/N2/N3 proof).
+    """
+    plan = json.loads((capsule / "evidence/evidence_plan.json").read_text("utf-8"))
+    gaps = set()
+    for key in plan["task_keys"]:
+        if key["owner"] != "SESSION" or "command_capture" not in key["requirements"]:
+            continue                        # inference keys and taskbook tickets: nothing faked
+        identity = f"{key['task_id']}:a{key['attempt']}"
+        safe = re.sub(r"[^A-Za-z0-9_-]", "-", key["task_id"])
+        gaps |= {f"COMMAND_CAPTURE_MISSING:{identity}",
+                 f"COMMAND_CAPTURE_MISSING:session-{safe}-a{key['attempt']}:FileNotFoundError"}
+        if "source_receipts" in key["requirements"]:
+            gaps.add(f"SOURCE_RECEIPTS_MISSING:{identity}")
+    return gaps
+
+
+@pytest.mark.parametrize("branchy", [False, True], ids=["plain", "intel-repair-review"])
+def test_full_scan_evidence_closure_has_only_harness_gaps(tmp_path, monkeypatch, branchy):
+    """The completeness delivery gate on a synthetic FULL scan: with transcripts bound the
+    way the runner binds them (no fabricated host-binding refs, no patched receipt
+    resolver) and the real intel_status/finalize ops, the closure's ``missing`` list is
+    exactly the harness-only gaps — no TRANSCRIPT_MISSING for sector briefs (N1), no
+    OUTPUTS/INPUT_SNAPSHOT_MISSING for intel (N2), no ticket capture/receipt legs (N3)."""
+    host = profile(independent_context=True, web_search=True) if branchy else None
+    handle = _scan_run(tmp_path, monkeypatch, host=host,
+                       user_config={"l4_intel": {"enabled": True}} if branchy else None)
+    models = _FakeScanModels(branchy=branchy, transcripts=tmp_path / "host_transcripts")
+    operations = _RealIntelOperations(handle, branchy=branchy)
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=_plain_hooks(handle, operations))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    assert final["errors"] == []                  # no transcript binding refused (N1)
+    roles = {request.role for request in models.requests}
+    assert {"sector.brief", "scan.l4.card"} <= roles
+    if branchy:
+        assert {"scan.l4.intel", "scan.l4.review", "scan.l3.repair"} <= roles
+        assert "scan.l4.intel.status" in operations.calls
+    missing = set(_closure_missing(handle))
+    harness_only = _harness_only_gaps(Path(handle.capsule))
+    assert missing == harness_only, sorted(missing - harness_only)
+    assert not [item for item in harness_only if f"l4.{CODE}.a1:" in item]   # tickets (N3)
 
 
 def test_session_task_timeout_retry_adds_no_evidence_gap(tmp_path, monkeypatch):
