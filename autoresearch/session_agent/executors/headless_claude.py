@@ -45,6 +45,8 @@ from autoresearch.session_agent.executors.base import (
     DispatchResult,
     ExecutorTimeout,
 )
+from autoresearch.trace import process_probe
+from autoresearch.trace.process_probe import owns_group, stop_group
 
 #: Sub-directory of ``<staging>/_dispatch/`` holding one record per headless call.
 HEADLESS_DIR = "headless"
@@ -186,49 +188,6 @@ _TRANSIENT_API = re.compile(
     re.I)
 
 
-def _group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    return True
-
-
-def stop_group(pgid: int, grace: float) -> bool:
-    """SIGTERM a process group, wait up to ``grace`` s, SIGKILL what is left.
-
-    Returns whether the group existed.  Never raises for a vanished group.
-    """
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        return False
-    deadline = time.monotonic() + max(0.0, grace)
-    while time.monotonic() < deadline:
-        if not _group_alive(pgid):
-            return True
-        time.sleep(0.05)
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGKILL)
-    return True
-
-
-def owns_group(record: Mapping) -> bool:
-    """Is the process group named by a call record still *that* ``claude -p``?
-
-    Leader alive → the recorded start token must match (a pid twin is never signalled);
-    leader gone but group alive → our leftovers (a pgid is not recycled while its group
-    exists).
-    """
-    from autoresearch.trace import process_probe
-
-    pid = record.get("pid")
-    if type(pid) is not int or pid <= 1:
-        return False
-    if process_probe.pid_exists(pid):
-        recorded = record.get("process_started_at")
-        return recorded is None or process_probe.started_at(pid) == recorded
-    return _group_alive(pid)
 
 
 def _excerpt(text: str | None) -> str:
@@ -370,8 +329,6 @@ class HeadlessClaudeExecutor:
             atomic_write_json(folder / f"{stem}.json", record)
             return DispatchResult(ok=False, error_class="AGENT_ERROR",
                                   error=f"cannot start {self.claude_bin}: {exc}")
-        from autoresearch.trace import process_probe
-
         record.update(state="RUNNING", pid=proc.pid,
                       process_started_at=process_probe.started_at(proc.pid))
         atomic_write_json(folder / f"{stem}.json", record)

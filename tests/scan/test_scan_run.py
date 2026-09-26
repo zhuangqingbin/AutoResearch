@@ -49,8 +49,22 @@ class _Steps:
         self.verification = changes.pop("verification", {
             "report_covered": True, "publication_ok": True, "orchestration_verified": True,
             "completeness_ok": True})
+        self.delivery = changes.pop("delivery", {"channel": "bark", "status": "SENT"})
         self.compat = tmp_path / "reports_claude" / "scan" / "20260928-0928_2120"
+        # the wall clock: 21:20 on the scan day (inside the 21:10–22:30 window) unless changed;
+        # ``after_ready`` = the clock once the readiness wait returns.
+        self.clock = changes.pop("now", datetime(2026, 9, 28, 21, 20))
+        self.after_ready = changes.pop("after_ready", None)
+        self.missed = changes.pop("missed", DATE)
+        self.channel = changes.pop("channel", "bark")
+        self.raises = changes.pop("raises", {})          # step name -> exception to raise
+        self.swept: list[str] = []
+        self.run_timeouts: list[float] = []
         assert not changes, changes
+
+    def _maybe_raise(self, name: str) -> None:
+        if name in self.raises:
+            raise self.raises[name]
 
     def as_steps(self) -> scan_run.Steps:
         def resolve_date(explicit):
@@ -63,6 +77,9 @@ class _Steps:
 
         def wait_ready(date, deadline):
             self.calls.append("wait_ready")
+            self._maybe_raise("wait_ready")
+            if self.after_ready is not None:
+                self.clock = self.after_ready
             return self.ready
 
         def begin(request_path):
@@ -72,12 +89,15 @@ class _Steps:
                 raise RuntimeError(self.begin_error)
             return RUN_ID
 
-        def run(run_id):
+        def run(run_id, timeout_s):
             self.calls.append("run")
+            self.run_timeouts.append(timeout_s)
+            self._maybe_raise("run")
             return self.outcome
 
         def verify(canonical, run_id):
             self.calls.append("verify")
+            self._maybe_raise("verify")
             return self.verification
 
         def locate_brief(run_id, canonical):
@@ -89,7 +109,7 @@ class _Steps:
         def deliver(brief, **kwargs):
             self.calls.append("deliver")
             self.delivered.append({"brief": brief, **kwargs})
-            return {"status": "SENT"}
+            return dict(self.delivery)
 
         def finalize_failed(run_id, error):
             self.calls.append("finalize_failed")
@@ -100,10 +120,17 @@ class _Steps:
             self.notified.append((title, body))
             return {"status": "SENT"}
 
+        def sweep(run_id):
+            self.calls.append("sweep")
+            self.swept.append(run_id)
+            return [4242]
+
         return scan_run.Steps(
             resolve_date=resolve_date, live_runs=live_runs, wait_ready=wait_ready, begin=begin,
             run=run, verify=verify, locate_brief=locate_brief, deliver=deliver,
-            finalize_failed=finalize_failed, notify=notify)
+            finalize_failed=finalize_failed, notify=notify, sweep=sweep,
+            now=lambda: self.clock, missed_date=lambda now: self.missed,
+            channel=lambda: self.channel)
 
 
 def _args(**changes):
@@ -130,9 +157,224 @@ def test_success_runs_begin_runner_verify_and_delivers_the_compat_brief(roots):
     assert sent["run_id"] == RUN_ID and DATE in sent["title"] and "✓" in sent["title"]
     assert sent["report_path"] == str(steps.compat)
     assert steps.notified == [] and steps.finalized == []
-    summary = json.loads((roots / "reports_claude" / "_ops" / f"scan_run_{DATE}.json")
-                         .read_text(encoding="utf-8"))
-    assert summary["run_id"] == RUN_ID and summary["result"] == "DELIVERED"
+    summary = _summary(roots)
+    assert summary["run_id"] == RUN_ID and summary["result"] == "FINISHED"
+    assert summary["delivery"]["status"] == "SENT"
+
+
+def _summary(roots, date: str = DATE) -> dict:
+    return json.loads((roots / "reports_claude" / "_ops" / f"scan_run_{date}.json")
+                      .read_text(encoding="utf-8"))
+
+
+def _log_text(roots) -> str:
+    return (roots / "reports_claude" / "_ops" / "scan_run_test.log").read_text(encoding="utf-8")
+
+
+# ── the summary never claims a delivery that did not happen (review M6) ────────────
+
+@pytest.mark.parametrize("status", ["SKIPPED", "FAILED"])
+def test_finished_run_without_delivery_is_not_reported_as_delivered(roots, status):
+    steps = _Steps(roots, delivery={"channel": "none", "status": status})
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    summary = _summary(roots)
+    assert summary["result"] == "FINISHED" and summary["delivery"]["status"] == status
+    assert "DELIVERED" not in json.dumps(summary)
+
+
+# ── channel none is announced, not silent (review M8) ──────────────────────────────
+
+def test_channel_none_is_announced_at_start_and_in_the_summary(roots):
+    steps = _Steps(roots, channel="none", delivery={"channel": "none", "status": "SKIPPED"})
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    text = _log_text(roots)
+    assert text.count("送达渠道 = none") >= 2            # start line + end line
+    first = text.splitlines()
+    assert "送达渠道 = none" in first[1]                  # right after "start"
+    summary = _summary(roots)
+    assert summary["delivery_channel"] == "none"
+    assert any("none" in warning for warning in summary["warnings"])
+
+
+def test_a_real_channel_prints_no_warning(roots):
+    assert _run(roots, _Steps(roots)) == scan_run.EXIT_OK
+    assert "送达渠道 = none" not in _log_text(roots)
+    assert _summary(roots)["delivery_channel"] == "bark"
+
+
+# ── late / missed fires on a laptop (review I4) ───────────────────────────────────
+
+def test_fire_the_next_morning_is_reported_as_a_missed_night(roots):
+    steps = _Steps(roots, now=datetime(2026, 9, 29, 8, 0), missed=DATE)
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    assert "resolve_date" not in steps.calls and "wait_ready" not in steps.calls
+    [(title, body)] = steps.notified
+    assert title == f"扫描 {DATE} 错过" and "睡眠" in body and "--date" in body
+    assert _summary(roots)["result"] == "MISSED"
+
+
+def test_fire_after_the_deadline_is_a_missed_night_for_today(roots):
+    steps = _Steps(roots, now=datetime(2026, 9, 28, 22, 45), missed=DATE)
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    assert steps.notified[0][0] == f"扫描 {DATE} 错过" and "begin" not in steps.calls
+
+
+def test_a_night_that_already_has_a_summary_is_not_reported_again(roots):
+    ops = roots / "reports_claude" / "_ops"
+    ops.mkdir(parents=True)
+    (ops / f"scan_run_{DATE}.json").write_text(json.dumps({"result": "FINISHED"}),
+                                               encoding="utf-8")
+    steps = _Steps(roots, now=datetime(2026, 9, 29, 8, 0), missed=DATE)
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    assert steps.notified == [] and _summary(roots) == {"result": "FINISHED"}
+
+
+def test_an_early_manual_trigger_before_the_window_is_not_a_miss(roots):
+    steps = _Steps(roots, now=datetime(2026, 9, 28, 20, 0), missed=DATE)
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    assert steps.notified == [] and "begin" not in steps.calls
+    assert not (roots / "reports_claude" / "_ops" / f"scan_run_{DATE}.json").exists()
+
+
+def test_explicit_date_bypasses_the_window(roots):
+    steps = _Steps(roots, now=datetime(2026, 9, 29, 8, 0), date="2026-09-25")
+    assert _run(roots, steps, date="2026-09-25", skip_readiness=True) == scan_run.EXIT_OK
+    assert "begin" in steps.calls and steps.notified == []
+
+
+def test_window_edges():
+    assert scan_run.in_window(datetime(2026, 9, 28, 21, 10), "22:30")
+    assert scan_run.in_window(datetime(2026, 9, 28, 22, 30), "22:30")
+    assert not scan_run.in_window(datetime(2026, 9, 28, 21, 9, 59), "22:30")
+    assert not scan_run.in_window(datetime(2026, 9, 28, 22, 31), "22:30")
+
+
+def test_default_missed_date_is_the_latest_settled_trading_day(roots, monkeypatch):
+    from autoresearch.scan import trade_date
+
+    seen = []
+    monkeypatch.setattr(trade_date, "resolve_scan_date",
+                        lambda date, now=None: seen.append((date, now)) or DATE)
+    stamp = datetime(2026, 9, 29, 8, 0)
+    assert scan_run.default_steps(_args(), log=None).missed_date(stamp) == DATE
+    assert seen == [(None, stamp)]
+
+
+# ── absolute end-of-night deadline (review M2) ─────────────────────────────────────
+
+def test_runner_budget_is_capped_by_the_hard_stop(roots):
+    steps = _Steps(roots, after_ready=datetime(2026, 9, 28, 23, 30))
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    assert steps.run_timeouts == [90 * 60]            # 23:30 → 01:00, below the 180-min cap
+
+
+def test_runner_budget_is_the_run_cap_on_an_ordinary_night(roots):
+    steps = _Steps(roots)
+    assert _run(roots, steps) == scan_run.EXIT_OK
+    assert steps.run_timeouts == [scan_run.RUN_TIMEOUT_MINUTES * 60]
+
+
+def test_past_the_hard_stop_the_run_never_begins(roots):
+    steps = _Steps(roots, after_ready=datetime(2026, 9, 29, 7, 0))   # the lid was closed
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    assert "begin" not in steps.calls and "run" not in steps.calls
+    assert "未开" in steps.notified[0][0] and "01:00" in steps.notified[0][1]
+
+
+def test_explicit_date_replay_is_not_capped_by_the_hard_stop(roots):
+    steps = _Steps(roots, now=datetime(2026, 9, 29, 0, 50), date="2026-09-25")
+    assert _run(roots, steps, date="2026-09-25", skip_readiness=True) == scan_run.EXIT_OK
+    assert steps.run_timeouts == [scan_run.RUN_TIMEOUT_MINUTES * 60]
+
+
+# ── nothing is left behind: sweep, signals, exceptions (review M1 / M7) ─────────────
+
+def test_unfinished_runner_sweeps_inflight_sessions_before_finalizing(roots):
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": "BLOCKED", "errors": [],
+                                   "dispatches": []})
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    assert steps.swept == [RUN_ID]
+    assert steps.calls.index("sweep") < steps.calls.index("finalize_failed")
+
+
+def test_signal_during_the_runner_stops_everything_finalizes_and_notifies(roots):
+    import signal
+
+    steps = _Steps(roots, raises={"run": scan_run.ScanRunInterrupted(signal.SIGTERM)})
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    assert steps.swept == [RUN_ID]
+    [(run_id, error)] = steps.finalized
+    assert run_id == RUN_ID and error["stop_reason"] == "SIGNAL"
+    title, body = steps.notified[0]
+    assert "FAILED" in title and "SIGTERM" in body and RUN_ID in body
+    assert _summary(roots)["result"] == "INTERRUPTED"
+
+
+def test_signal_before_begin_notifies_without_a_run_to_finalize(roots):
+    import signal
+
+    steps = _Steps(roots, raises={"wait_ready": scan_run.ScanRunInterrupted(signal.SIGHUP)})
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    assert steps.finalized == [] and steps.swept == []
+    assert "SIGHUP" in steps.notified[0][1] and _summary(roots)["result"] == "INTERRUPTED"
+
+
+def test_unexpected_exception_after_begin_is_finalized_and_notified(roots):
+    steps = _Steps(roots, raises={"verify": RuntimeError("verify-report exploded")})
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    [(run_id, error)] = steps.finalized
+    assert run_id == RUN_ID and error["stage"] == "verify"
+    assert "verify-report exploded" in steps.notified[0][1]
+    summary = _summary(roots)
+    assert summary["result"] == "FAILED" and summary["stage"] == "verify"
+
+
+def test_interrupt_handlers_raise_once_then_let_the_cleanup_finish():
+    import signal
+
+    previous = scan_run.install_interrupt_handlers()
+    try:
+        with pytest.raises(scan_run.ScanRunInterrupted) as caught:
+            os.kill(os.getpid(), signal.SIGTERM)
+            for _ in range(100):          # the handler runs between bytecodes
+                pass
+        assert caught.value.name == "SIGTERM"
+        os.kill(os.getpid(), signal.SIGHUP)       # second signal during cleanup: ignored
+        for _ in range(100):
+            pass
+    finally:
+        scan_run.restore_handlers(previous)
+    assert signal.getsignal(signal.SIGTERM) == previous[signal.SIGTERM]
+
+
+def test_call_kills_its_child_group_when_the_orchestrator_is_interrupted(tmp_path):
+    import signal
+    import time
+
+    pidfile = tmp_path / "child.pid"
+
+    def boom(signum, frame):
+        raise scan_run.ScanRunInterrupted(signal.SIGTERM)
+
+    previous = signal.signal(signal.SIGALRM, boom)
+    signal.setitimer(signal.ITIMER_REAL, 0.5)
+    try:
+        with pytest.raises(scan_run.ScanRunInterrupted):
+            scan_run._call(["/bin/sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"],
+                           env={"PATH": "/usr/bin:/bin"}, timeout=20)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    pid = int(pidfile.read_text(encoding="utf-8").strip())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the runner's group survived an interrupted scan_run")
 
 
 def test_unverified_report_is_still_delivered_but_flagged_in_the_title(roots):
@@ -315,7 +557,7 @@ def test_default_begin_and_run_call_the_session_agent_cli(roots, monkeypatch):
     monkeypatch.setattr(scan_run, "_call", fake_call)
     steps = scan_run.default_steps(_args(claude_bin="/opt/claude", max_parallel=6), log=None)
     assert steps.begin(roots / "req.json") == RUN_ID
-    assert steps.run(RUN_ID) == {"finished": False}
+    assert steps.run(RUN_ID, 600.0) == {"finished": False}
     (begin_argv, begin_env), (run_argv, run_env) = calls
     assert begin_argv[:3] == [sys.executable, "-m", "autoresearch.session_agent"]
     # scan_run holds the scan lock itself, so its own begin must pass the explicit override
@@ -346,9 +588,10 @@ def test_default_runner_timeout_is_a_failed_outcome_not_a_hang(roots, monkeypatc
     killed = []
     monkeypatch.setattr(scan_run, "_terminate_inflight_headless",
                         lambda run_id: killed.append(run_id) or [111, 222])
-    outcome = scan_run.default_steps(_args(run_timeout_minutes=1), log=None).run(RUN_ID)
+    outcome = scan_run.default_steps(_args(), log=None).run(RUN_ID, 60.0)
     assert outcome["finished"] is False and outcome["stop_reason"] == "RUN_TIMEOUT"
     assert killed == [RUN_ID] and "2 个在飞" in outcome["errors"][0]["message"]
+    assert "1 分钟" in outcome["errors"][0]["message"]
 
 
 def test_terminate_inflight_kills_running_claude_groups_from_the_records(tmp_path):
@@ -374,6 +617,42 @@ def test_terminate_inflight_kills_running_claude_groups_from_the_records(tmp_pat
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+def test_terminate_inflight_escalates_to_sigkill_for_a_group_ignoring_sigterm(tmp_path):
+    """review M1b: TERM only left a group that traps TERM running."""
+    import subprocess
+
+    folder = tmp_path / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    stubborn = subprocess.Popen(["/bin/sh", "-c", "trap '' TERM; sleep 30"],
+                                start_new_session=True)
+    (folder / "a.a1.json").write_text(json.dumps(
+        {"task_id": "a", "state": "RUNNING", "pid": stubborn.pid}), encoding="utf-8")
+    try:
+        assert scan_run.terminate_inflight(folder, grace=0.5) == [stubborn.pid]
+        assert stubborn.wait(timeout=10) is not None
+    finally:
+        if stubborn.poll() is None:
+            stubborn.kill()
+            stubborn.wait()
+
+
+def test_terminate_inflight_never_signals_a_pid_twin(tmp_path):
+    import subprocess
+
+    folder = tmp_path / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    twin = subprocess.Popen(["/bin/sh", "-c", "sleep 30"], start_new_session=True)
+    (folder / "a.a1.json").write_text(json.dumps(
+        {"task_id": "a", "state": "RUNNING", "pid": twin.pid,
+         "process_started_at": "Thu Jan  1 00:00:00 1970"}), encoding="utf-8")
+    try:
+        assert scan_run.terminate_inflight(folder, grace=0.2) == []
+        assert twin.poll() is None
+    finally:
+        twin.kill()
+        twin.wait()
 
 
 def test_inflight_records_are_found_under_the_registered_path(roots, monkeypatch):
@@ -429,6 +708,26 @@ def test_main_refuses_when_the_lock_is_held(roots, monkeypatch, capsys):
         assert told and f"pid {os.getpid()}" in told[0]
     finally:
         held.release()
+
+
+def test_main_turns_termination_signals_into_a_clean_abort(roots, monkeypatch):
+    """review M1d: while the scan runs, SIGTERM/SIGHUP/SIGINT are ours (→ abort path), and
+    the previous handlers come back afterwards."""
+    import signal
+
+    seen = {}
+
+    def fake_run_once(args, steps, *, log):
+        seen.update({sig: signal.getsignal(sig) for sig in scan_run.INTERRUPT_SIGNALS})
+        return 0
+
+    monkeypatch.setattr(scan_run, "run_once", fake_run_once)
+    monkeypatch.setattr(scan_run, "default_steps", lambda args, log: None)
+    before = {sig: signal.getsignal(sig) for sig in scan_run.INTERRUPT_SIGNALS}
+    assert scan_run.main([]) == 0
+    for sig in scan_run.INTERRUPT_SIGNALS:
+        assert callable(seen[sig]) and seen[sig] is not before[sig], sig
+        assert signal.getsignal(sig) == before[sig]
 
 
 def test_main_refuses_a_codex_engine(roots, monkeypatch, capsys):
