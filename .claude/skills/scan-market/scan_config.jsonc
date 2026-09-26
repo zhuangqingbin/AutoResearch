@@ -237,14 +237,13 @@
   },
 
   // ── L3 · 精排(两遍法:pass1 确定性分诊 + pass2 holistic 深比较)────────────
-  // 【生效点】scan/l3/prompt.py prepare_l3_table(two_pass/pass1_target)、
-  //   scan/l3/merge.py write_finalists(finalist_max,cap=min(finalist_max, 当日 l4_budget))。
+  // 【生效点】scan/l3/prompt.py prepare_l3_table(two_pass/pass1_target)。finalist tier 上限
+  //   不在本块:由下方 l4.max_cards 决定(原 finalist_max 已退役,写了即报错)。
   //   本块是**回滚杆**非 opt-in:two_pass 改 false / 删块 = 回「单遍读全表」旧行为。
   "l3": {
     "two_pass": true,
     "pass1_target": 40,        // 60→40(2026-07-18 线A:影子回放 20 日 mandatory 0 漏、delta 无赢家
                                // 富集);回滚=改回 60 或 two_pass=false;被切的落影子 _l3_pass1_cut.csv
-    "finalist_max": 10,        // finalist tier 上限
     // ── composite 证据席(2026-08-26 §3 路A · 守卫⑨)────────────────────────────
     // 【生效点】scan/l3/merge.composite_seat_cfg → ① write_finalists 的
     //   inject_composite_seats(把当日 L2 菜单 composite 最高的 m 只强制送进 finalists,
@@ -280,6 +279,19 @@
       "pass1_cap": 8              // pass1 强留上限(保护 40 席预算)
     }
   },
+
+  // ── L4 · 卡数(2026-09-26 用户需求:最终进入 L4 卡的个数可配置、且真实生效)──────
+  // 【生效点】scan/l4/card_count.effective_caps(唯一算法)→ ① gates.gate1 回显 l3cap/max_cards
+  //   (scan-market.js 与 session_agent 都只读 GATE1 结果;原 JS 写死的 Math.min(10, …) 已删;
+  //   l3cap 进 L3 prompt 的 finalist 区间,max_cards 做 GATE2 预算)
+  //   ② l3/merge.write_finalists 守卫⑩:非 📌 行(含 composite 席位)总数 ≤ max_cards,超出按
+  //   「席位优先、再按 conviction」截尾进 bench(guard="max_cards")③ self_review.l4_card_count_lint
+  //   发布前对账:任务簿非 📌 票数 > max_cards → warn「L4 卡数·超配置上限」。
+  // 语义:max_cards = 非 📌 卡上限;📌 持仓恒出卡不占额。finalist 名额 = max_cards − composite m;
+  //   budget_flags=true 再与 menu.l4_budget(五面旗只降不升)取小;false 忽略旗恒按 max_cards。
+  // 默认 13 = 原 finalist_max 10 + composite m 3(逐字 parity)。改小立刻生效;改大时 L3 候选
+  //   (pass1_target 40)与当日够格票数才是上限 —— 卡数 = min(max_cards, 够格 finalist + 席位)。
+  "l4": { "max_cards": 13, "budget_flags": true },
 
   // ── L4 · 活体情报站(sonnet 盲搜 ∥ slim 预取)──────────────────────────────
   // 【生效点】.claude/workflows/l4-stock.js(intelOn/maxQ;**缺块=intel 关**)+

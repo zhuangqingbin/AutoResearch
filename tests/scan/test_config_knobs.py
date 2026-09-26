@@ -66,7 +66,9 @@ def test_new_blocks_whitelisted(tmp_path):
            # 入场门 + A/R 分级总开关(2026-09-24 可买性对齐 §2.6,v4.0)——白名单只负责
            # 「开关存在且类型对」,解析+默认值兜底留在消费侧
            # `relative_buy.configured_tiering()`(见该函数自己的测试)。
-           "relative_buy": {"tiering": True}}
+           "relative_buy": {"tiering": True},
+           # L4 卡数(2026-09-26 用户需求):唯一算法 scan/l4/card_count.effective_caps
+           "l4": {"max_cards": 13, "budget_flags": True}}
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps(raw), encoding="utf-8")
     assert load_user_config(p) == raw
@@ -141,6 +143,8 @@ def test_new_blocks_unknown_subkey_raises(tmp_path, block, bad):
     {"funnel": {"recall_n": 0}},
     {"sector": {"reuse_ttl_days": -1}},
     {"l2": {"sector_cap": True}},        # bool 不是 number
+    {"l4": {"max_cards": 0}},            # 卡数须正整数
+    {"l4": {"budget_flags": "yes"}},
 ])
 def test_knob_type_violations_raise(tmp_path, raw):
     p = tmp_path / "scan_config.jsonc"
@@ -362,3 +366,11 @@ def test_production_config_index_rebalance_knobs_on():
     cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
     assert cfg["calendar"]["index_rebalance"] is True
     assert cfg["relative_buy"]["rebalance_gate"] is True
+
+
+def test_retired_finalist_max_is_rejected_with_pointer(tmp_path):
+    """两个键管一个数 = 漂移源:l3.finalist_max 退役,写了要当场指路到 l4.max_cards。"""
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": {"finalist_max": 10}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="l4.max_cards"):
+        load_user_config(p)

@@ -119,7 +119,8 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
             "web_fetch": 4,
             "web_search": 4,
         },
-        "l3_finalist_max": 10,
+        # 2026-09-26:l3.finalist_max 退役 → 卡数只由 l4.max_cards 决定(scan/l4/card_count)。
+        "l4_max_cards": 13,
         "min_real_scans": 10,
         "pinned_cap": 5,
         "pinned_ttl_days": 10,

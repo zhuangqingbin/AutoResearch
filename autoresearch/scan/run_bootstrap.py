@@ -16,6 +16,7 @@ from autoresearch.common import workspace as ws
 from autoresearch.scan import user_config as config_module
 from autoresearch.scan.artifacts import artifact_schema_versions
 from autoresearch.scan.budget import normalize_budgets
+from autoresearch.scan.l4.card_count import DEFAULT_MAX_CARDS
 from autoresearch.scan.run_contract import RunContract, sha256_json
 from autoresearch.scan.user_config import (
     knob,
@@ -124,7 +125,6 @@ def prepare_scan_run(
     pinned_config = user_config.get("pinned") or {}
     pinned_cap = int(pinned_config.get("cap", 5))
     pinned_ttl = int(pinned_config.get("ttl_days", 10))
-    l3_config = user_config.get("l3") or {}
     pinned = load_pinned(
         resolved_date,
         cap=pinned_cap,
@@ -132,7 +132,8 @@ def prepare_scan_run(
     )
     budgets = {
         **normalize_budgets(user_config.get("budgets")),
-        "l3_finalist_max": int(l3_config.get("finalist_max", 10)),
+        # 2026-09-26:l3.finalist_max 退役,卡数只由 l4.max_cards 决定(scan/l4/card_count)。
+        "l4_max_cards": int((user_config.get("l4") or {}).get("max_cards", DEFAULT_MAX_CARDS)),
         "pinned_cap": pinned_cap,
         "pinned_ttl_days": pinned_ttl,
     }
