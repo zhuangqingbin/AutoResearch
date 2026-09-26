@@ -62,6 +62,68 @@ uv run --no-sync python -m autoresearch.session_agent verify-report \
 
 完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。
 
+## 扫描 runner + mailbox 宿主循环(host 模式,PILOT,opt-in)
+
+上面的环由 runner 自动转圈:确定性任务(frame / prelude / GATE1 / 行业 pack / L3 prepare+lint+merge /
+GATE2 / L4 prep+任务簿+slim+intel 状态 / 复核决策 / finalize / assemble / GATE4 / usage / observe)在
+runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 general-purpose 壳);只有 7 种
+判断角色(macro-brief、sector-brief、l3-rank(+repair)、l4-intel、l4-card、l4-card 复核)交给宿主会话。
+**默认入口仍是 scan-market SKILL 的 legacy Workflow**;本循环在真实验收(批 2–3 Task 6)通过前只作显式试跑。
+已知缺口(单票终失败会让整场停在 BLOCKED/STALLED,legacy 则降级为盲卡)见
+`docs/research/2026-09-26-session-plan-vs-workflow-audit.md`。
+
+1. **begin**:同上 `begin --orchestration session_v1 --kind scan-market --mode AUTO`,请求用
+   `examples/scan.request.json`;`host_profile.session_ref` 必须是本会话真实 session id(transcript 定位与
+   计量都靠它),且如实声明 `independent_context/web_search/web_fetch=true` 并附证据(复核要独立上下文,
+   intel 要联网)。
+2. **起 runner(后台,脱离壳进程树)**:
+
+   ```bash
+   uv run --no-sync python -m autoresearch.trace.detach --run-id "$RUN_ID" --key session-runner \
+     --wait-seconds 5 --shell "AUTORESEARCH_ENGINE=claude uv run --no-sync python -m autoresearch.session_agent run --run-id $RUN_ID --executor mailbox --max-parallel 8"
+   ```
+
+   即 `session_agent run --executor mailbox`;`--max-parallel` 缺省取冻结配置的
+   `budgets.concurrency.l4_stock`(生产 64,交互会话建议显式给 8);超帽任务留在 READY、不认领。
+   同一命令重跑是幂等的:runner 重启后对已认领未提交的 attempt **重新挂接同一请求**,不重复派发。
+3. **宿主循环**(重复直到 `RUNNER_EXITED`):
+
+   ```bash
+   uv run --no-sync python -m autoresearch.session_agent mailbox wait --run-id "$RUN_ID" --timeout 540
+   ```
+
+   - `kind=REQUEST`:原样执行 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`。model/effort 已由
+     runner 经 `resolve_agent_bundle` 解释并写在请求里(`model`/`effort`/`agent_spec`),不要改 prompt、
+     不要另加指令。agent 返回后:
+
+     ```bash
+     uv run --no-sync python -m autoresearch.session_agent mailbox complete --run-id "$RUN_ID" \
+       --task-id <task_id> --attempt <attempt> --context-ref <subagent 的 agentId>
+     ```
+
+     `--session-ref` / `--parent-context-ref` 缺省为本会话;transcript 自动推导为
+     `<session>/subagents/agent-<agentId>.jsonl`(找不到就显式传 `--transcript-path`),runner 把它绑定进
+     capsule —— 复核任务没有绑定会被判 `EVIDENCE_MISSING`。agent 报错时改传
+     `--error "<原文>" [--error-class TIMEOUT|CONNECTION|RATE_LIMIT]`(瞬时类会被重试一次)。
+   - **并行**:`wait` 一次只交出一个请求且每个请求只交一次;连续 `wait` 数次、在一条消息里同时派出多个
+     Agent,再逐个 `complete`。
+   - `kind=IDLE`:再调 `wait`;`taken_unanswered` 列出已领未答的请求(会话重启后用 `--include-taken` 重新领)。
+   - `kind=RUNNER_EXITED`:读 `runner.outcome`(`finished`、`stop_reason`、`finish.canonical_path`)。
+   - CP0–CP7 播报不变(素材路径同 SKILL;CP5 可读 `status --run-id` 的 `l4` 计数)。
+4. **收尾**:`finished=true` 时对 `finish.canonical_path` 跑 `verify-report --level full`(上一节命令)。
+   `stop_reason=BLOCKED|STALLED` 时 outcome 列出 `errors/orphans/skipped`:修复后重跑第 2 步同一命令;
+   或换新 run_id 走 legacy Workflow(`LEGACY_ORCHESTRATION_FALLBACK`,记录原因)。runner 不替失败 run
+   冻结 capsule,需要时显式 `python -m autoresearch.trace.capsule finalize <RUN_ID> --business-status FAILED`。
+
+**邮箱协议**(`<staging>/_dispatch/`,已登记为 run 内产物;驱动器只认 result 文件):
+`<task_id>.a<attempt>.request.json`(runner 写,`DispatchRequest`)· `.taken`(`wait` 排他领取)·
+`.result.json`(`complete` 写)· `runner.json`(RUNNING/EXITED + outcome)· `ledger.jsonl`(每次结算一行)。
+全部 tmp+rename 原子写,request/result 在 fcntl 锁下只写一次;runner 只读自己签发的那个 attempt 的
+result 且正文 task/attempt 必须对得上。超时(按角色,macro 15m / sector 10m / L3 40m / repair 10m /
+intel 15m / card·复核 30m)记 `TIMEOUT`、以**新 attempt** 重试一次,旧 attempt 迟到的结果永远不被接收
+(但超时的 subagent 不会被杀,别手动留着它继续写)。执行器协议(批 4 headless 复用)见
+`autoresearch/session_agent/executors/base.py`。
+
 ## 为什么可能省 token
 
 收益来自更小且冻结的任务输入、确定性步骤不进模型上下文、LITE 早停、L3 只修失败行、同档复核早止，以及状态轮询不要求模型复述历史。任务图本身会增加少量 JSON、回执和控制提示，因此简单单股任务未必省 token。项目只按真实 transcript 和 usage 记录比较；样本不足时保持“观察中”，不承诺固定百分比。

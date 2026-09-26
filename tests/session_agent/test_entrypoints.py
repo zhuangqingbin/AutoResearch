@@ -37,3 +37,20 @@ def test_dossier_agent_and_stock_legacy_entry_are_explicitly_labeled():
         encoding="utf-8"
     )
     assert "--legacy-reason" in stock
+
+
+def test_scan_runner_host_loop_is_documented_once_as_an_opt_in_pilot():
+    """批 2–3 Task 4(控制器裁定):runner + mailbox 宿主循环只写在 README 一处;
+    scan-market SKILL 默认仍是 legacy Workflow,只留一行 PILOT 指针,Task 6 真跑通过前不切换。"""
+    readme = (ROOT / "docs/session-agent/README.md").read_text(encoding="utf-8")
+    for anchor in ("session_agent run --executor mailbox", "mailbox wait", "mailbox complete",
+                   "_dispatch/", "RUNNER_EXITED", "verify-report"):
+        assert anchor in readme, f"README 缺 host 循环锚「{anchor}」"
+    skill = (ROOT / ".claude/skills/scan-market/SKILL.md").read_text(encoding="utf-8")
+    pointer = [line for line in skill.splitlines()
+               if "session_agent run --executor mailbox" in line]
+    assert len(pointer) == 1, "SKILL.md 应恰好一行 runner PILOT 指针"
+    assert "PILOT" in pointer[0] and "docs/session-agent/README.md" in pointer[0]
+    assert "mailbox complete" not in skill, "host 循环正文不得抄进 SKILL.md"
+    assert any("Workflow({scriptPath" in line for line in skill.splitlines()), (
+        "legacy Workflow 派发必须仍是 SKILL 默认流程(真跑验收前)")
