@@ -126,3 +126,55 @@ def test_swing_family_directional_hypotheses_are_falsifiable_and_h4_stays_descri
     assert h4["expected_direction"] == "two_sided" and "描述性" in h4["rejection_condition"]
     assert "不追加第五个假设" in spec["stop_rule"] and "新 experiment_id" in spec["stop_rule"]
     assert "只展示不推" in spec["stop_rule"]
+
+
+# ─────────── 10 日尺家族 v2(2026-09-26 批 5 复审 I1:判读检验重新登记)───────────
+
+SWING_V2 = SPEC.with_name("2026-09-26-swing-ruler-family-v2.spec.json")
+
+
+def test_swing_v2_is_a_new_frozen_experiment_that_supersedes_v1():
+    """复审 I1:旧 id 的判读检验在 40 天/块长 10 上假阳 ~20%/格;旧 id 从未在生产上读过,
+    所以**换 id 重新登记**(不改旧文件 —— 沿革留着),代码出处钉在校准检验落地的那个提交。"""
+    v1 = json.loads(SWING.read_text(encoding="utf-8"))
+    spec = rx.validate_spec(json.loads(SWING_V2.read_text(encoding="utf-8")))
+    assert spec["experiment_id"] == "FAM_SWING_RULER_V2_20260926" != v1["experiment_id"]
+    assert spec["experiment_family"] == v1["experiment_family"] == "swing-ruler"
+    assert [h["hypothesis_id"] for h in spec["hypotheses"]] == [
+        h["hypothesis_id"] for h in v1["hypotheses"]]
+    for new, old in zip(spec["hypotheses"], v1["hypotheses"], strict=True):
+        for key in ("mechanism", "expected_direction", "metric_definition", "population", "label"):
+            assert new[key] == old[key], key             # 只换检验,不动假设与人口
+    assert len(spec["code_sha"]) == 40 and spec["code_sha"] != v1["code_sha"]
+    assert "FAM_SWING_RULER_20260926" in spec["stop_rule"] and "取代" in spec["stop_rule"]
+
+
+def test_swing_v2_registers_the_calibrated_decision_test_with_the_module_constants():
+    """登记的旋钮与判读模块的常量逐项相等;样本门就是尺寸校准测试用的判读样本量。"""
+    from autoresearch.research import swing_ruler_decision as dec
+    from autoresearch.research.registration import parse_maturity_policy
+    from tests.research.test_swing_ruler_decision import DECISION_N
+
+    spec = json.loads(SWING_V2.read_text(encoding="utf-8"))
+    rule = spec["selection_rule"]
+    assert rule["decision_test"] == dec.DECISION_TEST
+    assert rule["hac_lag"] == dec.HAC_LAG == 9
+    assert rule["null_reps"] == dec.NULL_REPS and rule["null_seed"] == dec.NULL_SEED
+    assert "decision_block" not in rule and rule["block_lengths"] == [1, 5, 10]
+    assert rule["fdr_alpha"] == 0.05 and rule["ci_level"] == 0.95
+    assert parse_maturity_policy(spec["maturity_policy"]) == DECISION_N == 40
+    for h in spec["hypotheses"][:3]:
+        assert "CI" in h["rejection_condition"] and "不等于" in h["rejection_condition"]
+        assert "MA(9)" in h["rejection_condition"] and "40" in h["rejection_condition"]
+    assert "hac_bartlett_overlap_null" in spec["multiplicity"]
+    # 为什么选它、尺寸与功效都写进登记文本(不是只在提交说明里)
+    assert "10–12%" in spec["purge_rule"] and "4.8%" in spec["purge_rule"]
+    assert "16%" in spec["purge_rule"]
+
+
+def test_swing_v2_provenance_roots_leave_out_the_ledger_writer():
+    """复审 M5:普查读的是账本**数据**;`scan/outcome.py` 不重算已写的 fwd_10_oc,钉它什么也
+    保护不了,反而让任何无关的 outcome 修补逼出新 experiment_id。输入 sha256 进 manifest。"""
+    spec = json.loads(SWING_V2.read_text(encoding="utf-8"))
+    assert "swing_ruler_decision" in spec["quality_constraints"]
+    assert "不含 scan/outcome.py" in spec["quality_constraints"]
