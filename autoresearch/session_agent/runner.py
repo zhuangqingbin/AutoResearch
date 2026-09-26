@@ -617,11 +617,9 @@ class Runner:
             try:
                 service.retry_l4(self.run_id, code, attempt,
                                  handle_loader=self.hooks.handle_loader)
-            except RuntimeError as exc:
-                if "quiescent" in str(exc):
-                    continue
-                self._error(f"l4.{code}", f"L4 retry refused: {exc}")
-            except (KeyError, ValueError) as exc:
+            except (RuntimeError, KeyError, ValueError) as exc:
+                # No child of this ticket is in flight here (checked above), so a
+                # "not quiescent" refusal means a child is RUNNING without a live owner.
                 self._error(f"l4.{code}", f"L4 retry refused: {exc}")
             else:
                 self._event("L4_RETRY_EXPANDED", code=code, attempt=attempt)

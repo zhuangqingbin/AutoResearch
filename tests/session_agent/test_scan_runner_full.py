@@ -370,3 +370,33 @@ def test_failed_l3_repair_degrades_to_the_original_judged_and_finishes(tmp_path,
     assert "scan.l3.repair.apply" not in operations.calls
     repair = json.loads((Path(handle.staging) / "session_outputs/l3.repair.json").read_text("utf-8"))
     assert repair["status"] == "DEGRADED" and repair["preserved_original"] is True
+
+
+def test_unresolvable_l4_retry_stops_the_run_instead_of_spinning(tmp_path, monkeypatch):
+    """retry-l4 refused as 'not quiescent' while none of that ticket's children is in
+    flight here means a child is RUNNING without a live owner: report, do not spin."""
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    models = _FakeScanModels()
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.task_id == f"l4.{CODE}.a1.card":
+            raise ExecutorTimeout("timed out")
+        return original(request)
+
+    models.dispatch = dispatch
+
+    def refuse(run_id, code, attempt, **kwargs):
+        raise RuntimeError("L4 retry requires every previous child to be quiescent")
+
+    monkeypatch.setattr(service, "retry_l4", refuse)
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=_FakeScanOperations(handle),
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=400, hooks=hooks)
+    assert final["stop_reason"] == "BLOCKED"
+    assert any("quiescent" in str(error.get("message")) for error in final["errors"])
