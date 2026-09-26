@@ -623,15 +623,22 @@ def test_terminate_inflight_escalates_to_sigkill_for_a_group_ignoring_sigterm(tm
     """review M1b: TERM only left a group that traps TERM running."""
     import subprocess
 
+    import time
+
     folder = tmp_path / "_dispatch" / "headless"
     folder.mkdir(parents=True)
-    stubborn = subprocess.Popen(["/bin/sh", "-c", "trap '' TERM; sleep 30"],
+    ready = tmp_path / "trap.ready"
+    stubborn = subprocess.Popen(["/bin/sh", "-c", f"trap '' TERM; touch {ready}; sleep 30"],
                                 start_new_session=True)
+    deadline = time.monotonic() + 10
+    while not ready.exists():                 # TERM before the trap is set would just kill it
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
     (folder / "a.a1.json").write_text(json.dumps(
         {"task_id": "a", "state": "RUNNING", "pid": stubborn.pid}), encoding="utf-8")
     try:
         assert scan_run.terminate_inflight(folder, grace=0.5) == [stubborn.pid]
-        assert stubborn.wait(timeout=10) is not None
+        assert stubborn.wait(timeout=5) is not None
     finally:
         if stubborn.poll() is None:
             stubborn.kill()
