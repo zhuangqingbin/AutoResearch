@@ -765,3 +765,32 @@ def test_legacy_main_settled_docs_are_backfilled_as_swing_incomplete(
     legacy = rows[("20260801_2100", "000002")]
     assert legacy["outcome_status_swing"] == "" and legacy["t10"] == ""
     assert legacy["outcome_status"] == "MATURE"
+
+
+# ─────────── 2026-09-26 复审修补(批 5 review fix pass)───────────
+
+
+def test_a_crashing_swing_revisit_is_isolated_and_newer_runs_still_fill(
+        tmp_path, monkeypatch, tmp_lake_10_sessions):
+    """复审 M1:swing 回访是影子数据,它在某个历史 run 上崩了**绝不能**挡住更新 run 的主尺
+    回填(`fill` 按目录序逐 run 走,09-17 那次停摆 9 天就是这个形状)。崩掉的 run 记
+    `swing_revisit:error:<异常类名>` 进 `skip_reasons`,循环继续。"""
+    monkeypatch.chdir(tmp_path)
+    _run(tmp_path, "20260910_2100", "2026-09-10")
+    root = tmp_path / ws.reports_root() / "scan"
+    outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-15")
+    _run(tmp_path, "20260911_2100", "2026-09-11")          # 更新的 run:主尺还没算过
+
+    real = outcome._swing_supplement
+
+    def boom(run, existing, **kw):
+        if run.name == "20260910_2100":
+            raise RuntimeError("shadow recompute blew up")
+        return real(run, existing, **kw)
+
+    monkeypatch.setattr(outcome, "_swing_supplement", boom)
+    res = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-30")
+    assert res["skip_reasons"]["20260910_2100"] == "swing_revisit:error:RuntimeError"
+    assert "20260911_2100" in res["runs"]
+    doc = json.loads(outcome.outcome_path("20260911_2100", root).read_text(encoding="utf-8"))
+    assert doc["outcome_status"] == outcome.MATURE

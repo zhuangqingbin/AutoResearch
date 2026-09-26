@@ -1450,8 +1450,13 @@ def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | No
                 skipped += 1
                 skip_reasons[run.name] = "already_verified_complete"
                 continue
-            merged, why = _swing_supplement(run, existing, lake_daily=lake_daily,
-                                            calendar=calendar, today=today, now=now)
+            # 复审 M1(2026-09-26):swing 列是影子数据 —— 某个历史 run 的回访崩了只记原因、
+            # 继续走下一个 run,绝不让它挡住更新 run 的主尺回填(09-17 停摆 9 天同一形状)。
+            try:
+                merged, why = _swing_supplement(run, existing, lake_daily=lake_daily,
+                                                calendar=calendar, today=today, now=now)
+            except Exception as exc:  # noqa: BLE001 — 影子回访失败必须隔离,原因进 skip_reasons
+                merged, why = None, f"swing_revisit:error:{type(exc).__name__}"
             if merged is None:
                 skipped += 1
                 skip_reasons[run.name] = why
