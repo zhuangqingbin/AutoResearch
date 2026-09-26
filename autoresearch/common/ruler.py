@@ -54,6 +54,17 @@ REL_GAP_RULER = "gap_c1_o2"      # 字面量,REL_MARKET/REL_SECTOR 的唯一口�
 
 _LEGACY_ENTRY_FLAG = "buyable"   # fwd_2_oc(D+1 开盘买腿)对应旗;换尺前一直如此,不改名
 
+# 2026-09-26 用户裁定(daily-engine-consolidation §5 B0):新增**第二把一等尺**,不替换主尺。
+# 隔夜尺管 T+1 尾盘入场 / T+2 开盘退出与 E6 BUY;10 日尺管「观察席」与持仓周级判断。
+# 冻结窗内只影子 + 预注册普查;是否换 MAIN_RULER 留 B4 由用户裁,这里不预设。
+# 口径与 research.edge_census.RULERS 同一实现(D+1 开盘买 → D+10 收盘卖),不另造定义。
+SWING_RULER = "fwd_10_oc"
+
+
+def swing_entry_flag() -> str:
+    """10 日尺的入场旗列(D+1 开盘可买):沿用 fwd_*_oc 家族的 `buyable`。"""
+    return _LEGACY_ENTRY_FLAG
+
 
 def entry_flag_for(ruler_name: str | None = None) -> str:
     """主尺 → 入场旗列名(资格过滤的**唯一**选旗点;2026-08-08 final-review C1 修复)。
