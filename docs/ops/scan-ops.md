@@ -61,7 +61,7 @@ launchctl list | grep nightly-close        # 只应剩 …nightly-close.claude(�
     > ~/Library/LaunchAgents/com.tradingagents.scan-run.plist \
     && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-run.plist
   launchctl list | grep scan-run                                   # 验证
-  launchctl kickstart gui/$(id -u)/com.tradingagents.scan-run      # 手动触发(= scripts/scan_run.sh)
+  launchctl kickstart gui/$(id -u)/com.tradingagents.scan-run      # 手动触发(= scripts/scan_run.sh;只在 21:10–22:30 内有意义,窗口外它按「错过」处理 —— 白天补跑用 scripts/scan_run.sh --date <日> --skip-readiness)
   launchctl bootout gui/$(id -u)/com.tradingagents.scan-run        # 卸载
   ```
 
