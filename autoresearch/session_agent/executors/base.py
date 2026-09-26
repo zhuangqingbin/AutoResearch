@@ -64,8 +64,11 @@ ROLE_DISPATCH: Mapping[str, tuple[str, str | None]] = MappingProxyType({
     "sector.intel": ("sector-intel", None),
 })
 
-#: Seconds without a result before ``ExecutorTimeout`` (host mode; the clock starts when
-#: the request is issued).  Generous on purpose: a timed-out subagent is not killed.
+#: Seconds without a result before ``ExecutorTimeout``.  Host mode (mailbox): the clock
+#: starts when the host *takes* the request; an untaken request waits
+#: ``mailbox.NEVER_TAKEN_FACTOR`` × this.  Generous on purpose: a timed-out subagent is not
+#: killed.  An executor that raises ``ExecutorTimeout`` must make that attempt's late
+#: result unacceptable (mailbox: ``<stem>.abandoned``, written atomically with the decision).
 DEFAULT_TIMEOUTS: Mapping[str, float] = MappingProxyType({
     "macro.brief": 900.0,
     "sector.brief": 600.0,

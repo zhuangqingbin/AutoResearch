@@ -464,3 +464,141 @@ def test_l4_review_prompt_is_the_legacy_wording(scan_handle):
                           f"ensemble/600519.run{run_index}.md"}, subject="600519")
         assert prompt == _fill(_js_template("l4-stock.js", "(不知道其它 run 结论)"),
                                {"SD": sd, "code": "600519", "i": run_index})
+
+
+# ── I1 (review 2026-09-26): host-mode timing is measured from ``.taken`` ────────────
+
+class _FakeTime:
+    """Single-threaded fake clock: ``sleep`` advances time and runs due host actions."""
+
+    def __init__(self):
+        self.now = 1_000.0
+        self.events: list[tuple[float, object]] = []
+
+    def at(self, when: float, action) -> None:
+        self.events.append((self.now + when, action))
+        self.events.sort(key=lambda item: item[0])
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        while self.events and self.events[0][0] <= self.now:
+            _, action = self.events.pop(0)
+            action()
+
+
+def _fake_executor(tmp_path, fake: _FakeTime) -> mailbox.MailboxExecutor:
+    return mailbox.MailboxExecutor(tmp_path, poll_seconds=0.5, clock=fake.clock,
+                                   sleep=fake.sleep, wall=fake.clock)
+
+
+def _host_take(tmp_path, fake: _FakeTime, task_id="scan.l4.card.600000"):
+    def take():
+        doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0, wall=fake.clock)
+        assert doc["kind"] == "REQUEST" and doc["task_id"] == task_id
+    return take
+
+
+def _host_complete(tmp_path, task_id="scan.l4.card.600000", attempt=1):
+    def complete():
+        mailbox.write_result(tmp_path, task_id, attempt, ok=True, session_ref="s",
+                             context_ref="agent-late", parent_context_ref="s",
+                             transcript_path="/t/agent-late.jsonl")
+    return complete
+
+
+def test_timeout_counts_from_taken_not_from_issue(tmp_path):
+    """A request that waited in the queue longer than its role timeout is not failed:
+    the per-role budget starts when the host takes it."""
+    fake = _FakeTime()
+    fake.at(30.0, _host_take(tmp_path, fake))          # queued 3× the role timeout
+    fake.at(38.0, _host_complete(tmp_path))            # agent took 8 s of its 10 s
+    result = _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=10.0))
+    assert result.ok and result.context_ref == "agent-late"
+
+
+def test_taken_request_times_out_on_the_role_budget_after_taken(tmp_path):
+    fake = _FakeTime()
+    fake.at(30.0, _host_take(tmp_path, fake))
+    with pytest.raises(ExecutorTimeout, match="taken"):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=10.0))
+    assert 40.0 <= fake.now - 1_000.0 < 42.0
+
+
+def test_never_taken_request_times_out_only_after_the_generous_limit(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout, match="never taken"):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=10.0))
+    waited = fake.now - 1_000.0
+    assert mailbox.NEVER_TAKEN_FACTOR * 10.0 <= waited < mailbox.NEVER_TAKEN_FACTOR * 10.0 + 1
+
+
+def test_timed_out_attempt_is_abandoned_and_never_handed_out_again(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
+    assert mailbox.is_abandoned(tmp_path, "scan.l4.card.600000", 1)
+    assert mailbox.pending_requests(tmp_path, include_taken=True) == []
+    mailbox.issue_request(tmp_path, _request(tmp_path, attempt=2))
+    doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+    assert (doc["kind"], doc["attempt"]) == ("REQUEST", 2)          # a2, never the dead a1
+    idle = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+    assert idle["kind"] == "IDLE" and idle["taken_unanswered"] == ["scan.l4.card.600000.a2"]
+
+
+def test_late_result_of_an_abandoned_attempt_is_refused_but_kept_as_evidence(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
+    with pytest.raises(mailbox.MailboxAbandoned) as refused:
+        _host_complete(tmp_path)()
+    assert "ABANDONED" in str(refused.value)
+    late = mailbox.read_late_result(tmp_path, "scan.l4.card.600000", 1)
+    assert late["transcript_path"] == "/t/agent-late.jsonl"
+    # A reattach (runner restart) never resurrects an abandoned attempt.
+    with pytest.raises(ExecutorTimeout, match="abandoned"):
+        mailbox.MailboxExecutor(tmp_path, poll_seconds=0.01).dispatch(
+            _request(tmp_path, timeout=5.0))
+
+
+def test_a_result_written_before_the_timeout_decision_wins(tmp_path):
+    mailbox.issue_request(tmp_path, _request(tmp_path))
+    _host_complete(tmp_path)()
+    assert mailbox.abandon_request(tmp_path, "scan.l4.card.600000", 1, reason="t") is False
+    assert not mailbox.is_abandoned(tmp_path, "scan.l4.card.600000", 1)
+
+
+def test_runner_exited_is_reported_even_with_abandoned_or_taken_requests(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
+    mailbox.issue_request(tmp_path, _request(tmp_path, task_id="t.taken"))
+    assert mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)["task_id"] == "t.taken"
+    (tmp_path / "_dispatch/runner.json").write_text(json.dumps(
+        {"state": "EXITED", "outcome": {"stop_reason": "BLOCKED"}}), encoding="utf-8")
+    doc = mailbox.wait_request(tmp_path, timeout=5, poll_seconds=0.01)
+    assert doc["kind"] == "RUNNER_EXITED"
+    assert doc["unanswered"] == ["t.taken.a1"]
+
+
+def test_cli_complete_of_an_abandoned_attempt_says_ABANDONED(tmp_path, monkeypatch, capsys):
+    from autoresearch.session_agent import __main__ as cli
+
+    run = _cli_run(tmp_path, monkeypatch)
+    staging = Path(run.handle.staging)
+    mailbox.issue_request(staging, _request(staging, task_id="synthetic.inference"))
+    assert mailbox.abandon_request(staging, "synthetic.inference", 1, reason="TIMEOUT") is True
+    assert cli.main(["mailbox", "complete", "--run-id", run.run_id, "--task-id",
+                     "synthetic.inference", "--attempt", "1", "--context-ref", "agent-1"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["kind"] == "ABANDONED"
+    assert "discarded" in doc["message"]
+
+
+def test_cli_wait_default_stays_under_the_host_bash_timeout():
+    from autoresearch.session_agent import __main__ as cli
+
+    args = cli._parser().parse_args(["mailbox", "wait", "--run-id", "x"])
+    assert args.timeout <= 100
