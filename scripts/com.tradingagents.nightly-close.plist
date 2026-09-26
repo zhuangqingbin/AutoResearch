@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   夜间收盘后确定性欠账补跑(outcome fill + ledger_views build)。
+  交易日 23:30(2026-09-26 批 4 起;原 20:45):排在 21:20 无人值守扫描(scan-run plist)之后,
+  两者不读写同一账本。已装旧版的,按下方循环 bootout 后重装一次新模板即可。
 
   **模板,装之前要替换两个占位**(prewarm plist 只有 __REPO__,这里多一个 __ENGINE__):
 
@@ -32,11 +34,11 @@
     <key>AUTORESEARCH_ENGINE</key><string>__ENGINE__</string>
   </dict>
   <key>StartCalendarInterval</key><array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
   </array>
   <!-- 日志按引擎分文件:两个引擎写同一个 /tmp 文件的话,谁死了都看不出来。 -->
   <key>StandardOutPath</key><string>/tmp/nightly-close.__ENGINE__.log</string>

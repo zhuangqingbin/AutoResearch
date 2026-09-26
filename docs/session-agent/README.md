@@ -126,6 +126,20 @@ intel 15m / card·复核 30m)记 `TIMEOUT`、以**新 attempt** 重试一次,旧
 (但超时的 subagent 不会被杀,别手动留着它继续写)。执行器协议(批 4 headless 复用)见
 `autoresearch/session_agent/executors/base.py`。
 
+## headless 执行器(批 4,无人值守,PILOT)
+
+`session_agent run --run-id <RUN_ID> --executor headless [--claude-bin <path>]`:同一个 runner,推理任务不交
+宿主会话,而是每个 attempt 起一个 `claude -p --agent <agent_type> --output-format json --permission-mode
+bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]` 子进程(独立顶级会话 = 独立上下文;
+项目 agent 定义与 hook 照常装载,见 `docs/research/2026-09-26-headless-driver-probes.md`)。只接 claude 引擎的
+run。超时按角色(intel 12m / card·复核 25m / L3 30m)杀整个进程组;结果 JSON 非法、`is_error`、或退出 0 但
+声明的输出文件不在 = 该 attempt 失败。每次调用落 `<staging>/_dispatch/headless/<task>.a<n>.json`(argv 脱敏、
+usage、`total_cost_usd`、session id、transcript 路径)。runner 把 `~/.claude/projects/<slug>/<session-id>.jsonl`
+整份绑定为 `host-binding` 证据(复核的独立上下文由进程边界满足),`usage_harvest` 按调用记录计量
+(`dispatcher=headless`)。执行器不能重挂在飞的 `claude -p`:runner 崩了之后已认领的 attempt 报 orphan
+(STALLED)。无人值守整场(锁、交易日、湖就绪、begin、送达、FAILED 通知、launchd)见
+`docs/ops/scan-ops.md`「无人值守扫描」节;begin 请求由 `autoresearch.scan.scan_run.build_headless_request` 生成。
+
 ## 为什么可能省 token
 
 收益来自更小且冻结的任务输入、确定性步骤不进模型上下文、LITE 早停、L3 只修失败行、同档复核早止，以及状态轮询不要求模型复述历史。任务图本身会增加少量 JSON、回执和控制提示，因此简单单股任务未必省 token。项目只按真实 transcript 和 usage 记录比较；样本不足时保持“观察中”，不承诺固定百分比。

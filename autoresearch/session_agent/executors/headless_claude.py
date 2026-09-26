@@ -335,7 +335,31 @@ class HeadlessClaudeExecutor:
             return
 
 
+def terminate_inflight(records_dir: Path | str, sig: int = signal.SIGTERM) -> list[int]:
+    """Signal every call still recorded as STARTING/RUNNING (its own process group).
+
+    Used when the runner itself is killed (``scan.scan_run`` wall clock): the
+    ``claude -p`` sessions it started live in their own sessions and would otherwise
+    keep running.  Returns the process-group ids that were signalled.
+    """
+    killed = []
+    for path in sorted(Path(records_dir).glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        pid = record.get("pid") if isinstance(record, dict) else None
+        if record.get("state") not in {"STARTING", "RUNNING"} or type(pid) is not int or pid <= 1:
+            continue
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            continue
+        killed.append(pid)
+    return killed
+
+
 __all__ = [
     "DEFAULT_MAX_TURNS", "HEADLESS_DIR", "HEADLESS_TIMEOUTS", "HeadlessClaudeExecutor",
-    "MAX_TURNS", "TIER_MAX_TURNS", "project_slug", "resolve_claude_bin",
+    "MAX_TURNS", "TIER_MAX_TURNS", "project_slug", "resolve_claude_bin", "terminate_inflight",
 ]
