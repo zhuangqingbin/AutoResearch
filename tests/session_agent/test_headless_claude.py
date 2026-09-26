@@ -422,3 +422,61 @@ def test_cli_run_headless_refuses_a_codex_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(runner, "run_loop", lambda *a, **k: pytest.fail("must not run"))
     assert cli.main(["run", "--run-id", run.run_id, "--executor", "headless"]) == 2
     assert "claude" in json.loads(capsys.readouterr().out)["errors"][0]["message"]
+
+
+# ── child environment: no auth routing, no project secrets (review I2) ─────────
+
+_ROUTING_AND_SECRETS = {
+    "ANTHROPIC_API_KEY": "sk-ant-api-SECRET-VALUE-1",
+    "ANTHROPIC_AUTH_TOKEN": "SECRET-VALUE-2",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.example/anthropic",
+    "ANTHROPIC_MODEL": "deepseek-chat-model-x",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-reasoner-model-x",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-chat-model-y",
+    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-chat-model-z",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-subagent-model",
+    "CLAUDE_CODE_EFFORT_LEVEL": "low-effort-override",
+    "CLAUDE_CODE_USE_BEDROCK": "bedrock-on",
+    "CLAUDE_CODE_USE_VERTEX": "vertex-on",
+    "BARK_TOKEN": "SECRET-VALUE-3",
+    "DELIVERY_MAIL_TO": "someone@example.invalid",
+    "TUSHARE_TOKEN": "SECRET-VALUE-4",
+    "FRED_API_KEY": "SECRET-VALUE-5",
+    "OPENAI_API_KEY": "SECRET-VALUE-6",
+    "GITHUB_TOKEN": "SECRET-VALUE-7",
+}
+
+
+def test_child_env_drops_auth_routing_and_secrets_and_records_only_names(tmp_path, monkeypatch):
+    """`claude -p` must bill the subscription login: an API key / base URL / model override
+    inherited from `.env` or a `cc-ds` shell would silently move the nightly scan."""
+    for key, value in _ROUTING_AND_SECRETS.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "subscription-oauth-value")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    body = f"""\
+        env > "{tmp_path / 'child_env.txt'}"
+        """ + _success_body(tmp_path)
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body))
+    assert ex.dispatch(_request(tmp_path)).ok is True
+    seen = dict(line.split("=", 1) for line in
+                (tmp_path / "child_env.txt").read_text(encoding="utf-8").splitlines()
+                if "=" in line)
+    leaked = sorted(set(_ROUTING_AND_SECRETS) & set(seen))
+    assert leaked == [], f"leaked into claude -p: {leaked}"
+    for kept in ("HOME", "PATH", "LANG", "CLAUDE_CODE_OAUTH_TOKEN"):
+        assert kept in seen, kept
+    rec = _record(tmp_path)
+    assert set(_ROUTING_AND_SECRETS) <= set(rec["env_stripped"])
+    text = json.dumps(rec, ensure_ascii=False)
+    for value in (*_ROUTING_AND_SECRETS.values(), "subscription-oauth-value"):
+        assert value not in text, "a stripped value reached the call record"
+
+
+def test_child_env_keeps_the_login_basics():
+    env, stripped = hc.child_env({"HOME": "/h", "PATH": "/p", "USER": "u", "TMPDIR": "/t",
+                                  "LANG": "C", "CLAUDE_CONFIG_DIR": "/c",
+                                  "AUTORESEARCH_ENGINE": "claude", "ANTHROPIC_API_KEY": "x"})
+    assert env == {"HOME": "/h", "PATH": "/p", "USER": "u", "TMPDIR": "/t", "LANG": "C",
+                   "CLAUDE_CONFIG_DIR": "/c", "AUTORESEARCH_ENGINE": "claude"}
+    assert stripped == ["ANTHROPIC_API_KEY"]

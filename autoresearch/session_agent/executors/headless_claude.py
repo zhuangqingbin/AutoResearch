@@ -12,6 +12,10 @@ from the :class:`DispatchRequest` verbatim.  The executor's own checks are about
 JSON must parse and must not be an error, and every declared output file must exist after
 a clean exit — an agent saying "I wrote it" is not a file.
 
+The child gets an explicit environment (:func:`child_env`): no ``ANTHROPIC_*`` / routing
+switches / project secrets, so a key in ``.env`` or a proxy shell can never move the run off
+the subscription login; the call record lists the dropped NAMES, never values.
+
 Every call leaves ``<staging>/_dispatch/headless/<task_id>.a<attempt>.json`` (argv with the
 prompt redacted, pid, exit code, usage, cost, session id, transcript path) plus the raw
 ``.stdout`` / ``.stderr`` streams; ``trace.usage_harvest`` meters headless runs from the
@@ -76,6 +80,38 @@ TIER_MAX_TURNS: Mapping[str, int] = MappingProxyType({
 })
 DEFAULT_MAX_TURNS = 60
 EXCERPT_CHARS = 500
+
+#: Environment never handed to ``claude -p`` (review I2).  The project rule is zero paid
+#: LLM API: every ``ANTHROPIC_*`` variable (API key, auth token, base URL, model overrides)
+#: and the CLI's own routing switches would silently move the run off the subscription
+#: login (``.env`` from the retired paid framework, a ``cc-ds`` shell).  Project secrets
+#: (``*_API_KEY`` / ``*_TOKEN`` / ``*_SECRET``: tushare, Bark, FRED, …) are not the agents'
+#: business either.  ``CLAUDECODE`` / ``CLAUDE_CODE_ENTRYPOINT`` belong to a parent Claude
+#: session (a manual trigger from inside one); the child sets its own.
+_ENV_DROP_PREFIXES = ("ANTHROPIC_",)
+_ENV_DROP_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET")
+_ENV_DROP_NAMES = frozenset({
+    "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "DELIVERY_MAIL_TO",
+    "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+})
+#: ``claude setup-token`` subscription login for non-interactive use — the opposite of
+#: moving billing, so it is kept.
+_ENV_KEEP_NAMES = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
+
+
+def _drops(name: str) -> bool:
+    if name in _ENV_KEEP_NAMES:
+        return False
+    return (name in _ENV_DROP_NAMES or name.startswith(_ENV_DROP_PREFIXES)
+            or name.endswith(_ENV_DROP_SUFFIXES))
+
+
+def child_env(parent: Mapping[str, str] | None = None) -> tuple[dict[str, str], list[str]]:
+    """``(environment for claude -p, sorted NAMES of what was dropped)`` — never values."""
+    source = os.environ if parent is None else parent
+    env = {key: value for key, value in source.items() if not _drops(key)}
+    return env, sorted(key for key in source if _drops(key))
 
 
 def _now() -> str:
@@ -207,6 +243,7 @@ class HeadlessClaudeExecutor:
         stem = f"{request.task_id}.a{request.attempt}"
         folder = self._record_dir()
         stdout_path, stderr_path = folder / f"{stem}.stdout", folder / f"{stem}.stderr"
+        env, env_stripped = child_env()
         record = {
             "schema_version": 1,
             "run_id": request.run_id,
@@ -221,6 +258,7 @@ class HeadlessClaudeExecutor:
             "session_id": None,
             "host_session_ref": request.host_session_ref,
             "cwd": str(self.cwd),
+            "env_stripped": env_stripped,
             "timeout_seconds": request.timeout_seconds,
             "state": "STARTING",
             "pid": None,
@@ -243,7 +281,7 @@ class HeadlessClaudeExecutor:
             with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
                 proc = subprocess.Popen(  # noqa: S603 - argv list, no shell
                     argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                    cwd=str(self.cwd), start_new_session=True)
+                    cwd=str(self.cwd), env=env, start_new_session=True)
         except OSError as exc:
             record.update(state="SPAWN_FAILED", ended_at=_now(),
                           error=f"{type(exc).__name__}: {exc}")
@@ -337,5 +375,5 @@ class HeadlessClaudeExecutor:
 
 __all__ = [
     "DEFAULT_MAX_TURNS", "HEADLESS_DIR", "HEADLESS_TIMEOUTS", "HeadlessClaudeExecutor",
-    "MAX_TURNS", "TIER_MAX_TURNS", "project_slug", "resolve_claude_bin",
+    "MAX_TURNS", "TIER_MAX_TURNS", "child_env", "project_slug", "resolve_claude_bin",
 ]
