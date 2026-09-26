@@ -147,7 +147,11 @@ def claim(
             raise TaskConflict("expected attempt does not match next attempt")
         for dependency in entry["spec"]["dependencies"]:
             dependency_entry = payload["tasks"].get(dependency)
-            if dependency_entry is not None and dependency_entry["state"] != "SUCCEEDED":
+            # Same rule as plan.ready_tasks: SUPERSEDED (retried L4 child replaced by its
+            # verified retry, or a released optional L3 repair) satisfies dependents.
+            if dependency_entry is not None and dependency_entry["state"] not in {
+                "SUCCEEDED", "SUPERSEDED",
+            }:
                 raise TaskConflict(f"dependency has not succeeded: {dependency}")
         receipt = {
             "schema_version": 1,

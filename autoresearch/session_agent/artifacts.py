@@ -257,7 +257,16 @@ def replace_failed_output(
 
 
 def binding_sha256(handle, artifact_id: str) -> str | None:
-    """Return the current binding after verifying it when content is already bound."""
+    """Return the current binding after verifying it when content is already bound.
+
+    A WRITE output that was never bound (e.g. a timed-out attempt wrote nothing) has
+    no file to verify: ``None`` without touching the filesystem.
+    """
+    registry = _read_registry(_registry_path(handle), handle)
+    if artifact_id not in registry["artifacts"]:
+        raise KeyError(f"unregistered artifact: {artifact_id}")
+    if registry["artifacts"][artifact_id]["sha256"] is None:
+        return None
     _, descriptor = _descriptor(handle, artifact_id)
     if descriptor["sha256"] is None:
         return None

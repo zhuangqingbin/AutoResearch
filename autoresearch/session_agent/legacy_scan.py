@@ -109,7 +109,9 @@ def verify_child_handoff(handle, task: dict, envelope: dict) -> dict:
 
     parent = task.get("parent_task")
     authoritative = validate_parent(handle, parent)
-    mapped = {**envelope, "task_id": parent["subject"]}
+    # The child belongs to ticket attempt `parent["attempt"]`; its own session attempt
+    # restarts at 1 in every retry subtree (l4.<code>.a2.card is attempt 1 of a2).
+    mapped = {**envelope, "task_id": parent["subject"], "attempt": parent["attempt"]}
     return verify_handoff(
         mapped,
         engine=handle.engine,

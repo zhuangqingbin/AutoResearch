@@ -47,6 +47,9 @@ class _FakeScanOperations:
         staging = Path(self.handle.staging)
         judged = staging / "_l3_judged.json"
         branchy = self.branchy
+        book = staging / "_l4_tasks.json"
+        ticket_attempt = (json.loads(book.read_text("utf-8"))["tasks"][CODE]["attempt"]
+                          if book.is_file() else 1)
         rating = "Sell" if branchy else "Hold"
         trigger = "sell_review" if branchy else None
         special = {
@@ -65,10 +68,10 @@ class _FakeScanOperations:
                 "dossier_summary": "已知:高端白酒龙头" if branchy else ""}},
                 "intel_enabled": branchy, "intel_max_queries": 20 if branchy else None},
             "scan.review.plan": {"schema_version": 1, "reviews": [
-                {"code": CODE, "attempt": 1, "rating": rating, "pinned": branchy,
+                {"code": CODE, "attempt": ticket_attempt, "rating": rating, "pinned": branchy,
                  "trigger": trigger}]},
             "scan.review.decision": {"schema_version": 1, "decisions": [
-                {"code": CODE, "attempt": 1, "rating": rating, "pinned": branchy,
+                {"code": CODE, "attempt": ticket_attempt, "rating": rating, "pinned": branchy,
                  "trigger": trigger, "review2_rating": rating if branchy else None,
                  "same_tier": True if branchy else None, "review3_required": False}]},
             "scan.l3.effective.judged": judged.read_text("utf-8") if judged.is_file() else "[]",
@@ -301,3 +304,69 @@ def test_synthetic_sentinel_pinned_scan_reviews_holdings_and_finishes(tmp_path, 
     assert final["finished"] is True, (final["stop_reason"], final["errors"])
     assert [request.role for request in models.requests] == ["macro.brief", "scan.l4.card"]
     assert "scan.l3.prepare" not in operations.calls and "scan.gate2.skip" in operations.calls
+
+
+def test_l4_card_timeout_drives_one_taskbook_retry_to_finish(tmp_path, monkeypatch):
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    operations = _FakeScanOperations(handle)
+    models = _FakeScanModels()
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.task_id == f"l4.{CODE}.a1.card":
+            models.requests.append(request)
+            raise ExecutorTimeout(f"等待 {request.task_id} 的结果文件超时")
+        return original(request)
+
+    models.dispatch = dispatch
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=operations,
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=hooks)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    cards = [request.task_id for request in models.requests if request.role == "scan.l4.card"]
+    assert cards == [f"l4.{CODE}.a1.card", f"l4.{CODE}.a2.card"]      # exactly one retry
+    book = json.loads((Path(handle.staging) / "_l4_tasks.json").read_text(encoding="utf-8"))
+    assert book["tasks"][CODE]["attempt"] == 2
+    promoted = (Path(handle.staging) / "details" / f"{CODE}.md").read_text(encoding="utf-8")
+    assert "**Rating**: Hold" in promoted                              # a2 card promoted
+
+
+def test_failed_l3_repair_degrades_to_the_original_judged_and_finishes(tmp_path, monkeypatch):
+    """legacy scan-market.js:519–535: a repair that does not land → continue with the
+    unrepaired judged set.  session_v1 supersedes repair/apply; GATE2 must still claim."""
+    handle = _scan_run(tmp_path, monkeypatch,
+                       host=profile(independent_context=True, web_search=True),
+                       user_config={"l4_intel": {"enabled": True}})
+    from autoresearch.session_agent import host_evidence
+
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda current, task, receipt: [receipt])
+    operations = _FakeScanOperations(handle, branchy=True)
+    models = _FakeScanModels(branchy=True)
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.role == "scan.l3.repair":          # patch rows lack thesis → contract error
+            models.requests.append(request)
+            for path in request.output_paths.values():
+                _write(Path(path), [{"code": CODE}])
+            return DispatchResult(ok=True, session_ref="session-main",
+                                  context_ref="agent-repair", parent_context_ref="session-main")
+        return original(request)
+
+    models.dispatch = dispatch
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=operations,
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=hooks)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    assert "scan.l3.repair.apply" not in operations.calls
+    repair = json.loads((Path(handle.staging) / "session_outputs/l3.repair.json").read_text("utf-8"))
+    assert repair["status"] == "DEGRADED" and repair["preserved_original"] is True

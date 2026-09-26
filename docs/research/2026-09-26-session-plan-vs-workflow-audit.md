@@ -24,7 +24,7 @@
 | S8 | l3cap 守卫(451–456;控制器分支改为 GATE1 回显 `l3cap`/`max_cards`) | `dispatch.l3_bounds`:读冻结 `gate1.json` 的 `l3cap`,缺则 `min(10, l4_budget)`;`l3lo=min(7,l3cap)` | 一致(控制器口径) | 无缺口 |
 | S9 | sector reuse + pack + 待写清单(463–470);brief 派发(478–491) | `scan.sector.prepare`(`select_briefing_sectors(k=sector.max_briefs)` + `find_reusable/apply_reuse` + pack 冻结进 `session_inputs/sectors/`)→ 每个未复用行业一个 `sector.brief` 推理任务 | 选行业口径:legacy = CTX/sector/<date> 下「无 brief 的 pack」;session = `select_briefing_sectors`;brief 读冻结 pack 路径(提示词措辞相同,路径不同) | 降级可接受 |
 | S10 | l3 prepare(478,detached)∥ briefs → l3-rank(492–497) | `scan.l3.prepare` → `scan.l3.rank`(依赖全部 brief) | 一致;prompt 逐字同款(测试锁) | 无缺口 |
-| S11 | lint 失败 → repair-pack → repair agent(失败只记账继续)→ apply(未完成带原 judged 继续)(498–535) | `scan.l3.lint` → `l3_repair_expansion`:通过 → `scan.l3.repair.skip`;未过 → `scan.l3.repair`(推理)→ `scan.l3.repair.apply`;repair/apply 失败 → `_degrade_optional_l3_repair` 置 SUPERSEDED,带原 judged 继续 | 一致(runner 不对 SUPERSEDED 重试) | 无缺口 |
+| S11 | lint 失败 → repair-pack → repair agent(失败只记账继续)→ apply(未完成带原 judged 继续)(498–535) | `scan.l3.lint` → `l3_repair_expansion`:通过 → `scan.l3.repair.skip`;未过 → `scan.l3.repair`(推理)→ `scan.l3.repair.apply`;repair/apply 失败 → `_degrade_optional_l3_repair` 置 SUPERSEDED,带原 judged 继续 | 设计一致,但 `store.claim` 不认 SUPERSEDED 依赖 → GATE2 认领不了(§5 阻断 4 ③,已修) | **阻断**(已修) |
 | S12 | finalists + GATE2(537–549) | `scan.l3.merge`(控制器分支:`write_finalists(l3cap)` + `gate2(max_cards)`) | 一致(控制器负责) | 无缺口 |
 | S13 | L4-prep 四生产者并行 `|| true`(560–571)→ dispatch-plan(574) | `scan.l4.prepare` 串行跑五个可选生产者,各自降级留痕 `producer_status` | 串行(墙钟) | 降级可接受 |
 | S14 | 非流式 GATE3 批量 slim(579–608) | 不实现(只有流式单票 slim) | `performance.streaming_l4=false` 回滚杆在 session_v1 无效 | 无关(生产配置 = true) |
@@ -90,6 +90,17 @@ artifact 登记/任务簿 ticket/生产输出校验器,只把确定性操作(假
 而 `service._state` 要求**全部**模板展开才给 `DONE` → 哨兵日的 session_v1 run 永远停在 `WAITING/EXPANSION_PENDING`。
 Task 5 已修:扫描工作流按冻结的 `run_mode` 声明「本模式不可达的模板」(`workflows.inapplicable_templates`),
 `_state` 不再等它们;合成 SENTINEL_EMPTY / SENTINEL_PINNED 全链先红后绿,变异(去掉声明)即红。
+
+**阻断 4(恢复路径,三处连环)**:session_v1 设计里的两条「失败后继续」路径从没被端到端走通过 ——
+① L4 瞬时失败 → `retry-l4`:a2 子树的子任务 session attempt 从 1 起,`legacy_scan.verify_child_handoff` 却拿它
+比对任务簿的 ticket attempt(2)→ 每个重试子任务提交都「stale or foreign handoff」;修正为比对子任务声明的
+`parent_task.attempt`。② a1 卡超时根本没写文件,`_promote_l4_retry_output` → `artifacts.binding_sha256` 却要求
+该文件存在 → 崩;未绑定的输出现在直接返回 `None`(`replace_failed_output` 本就支持这种情形)。
+③ `plan.ready_tasks` 把 SUPERSEDED 依赖当满足,`store.claim` 却只认 SUCCEEDED → 重试后的 `scan.review.plan`、
+L3 修补降级后的 `scan.gate2` 都 READY 却认领不了 → STALLED;store 与 ready_tasks 统一口径。
+合成全链两条:「a1 卡 TIMEOUT → 自动 retry-l4 → a2 卡提升 → finish」「L3 修补补丁不合契约 → 降级带原 judged →
+finish」均先红后绿,三处各自变异即红。**这意味着 L9/L5/L8 的「瞬时类失败自动重试一次」兜底此前实际上不工作**,
+现在才成立(非瞬时终失败仍是 open 的高风险项)。
 
 **阻断 1**:S4 校验器 —— `validation._macro_brief` 要求 6 节全部加粗,而 macro-brief agent 模板第 6 节不加粗。
 可合成复现、改动局部(只动 session_v1 校验器,不碰 legacy 路径与评级)→ **Task 5 已修**:
