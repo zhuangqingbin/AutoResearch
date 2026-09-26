@@ -55,7 +55,7 @@
 
 | session_v1 契约 | 校验谓词 | 真实产物 | 拒收 |
 |---|---|---|---|
-| `macro.brief.v1`(market_view) | 行首 `N. **` 编号 1–6 齐 | 13 | **12**(第 6 节模板是 `6. 仅供研究,非投资建议。`,**无加粗**;只有 1 场模型多加了粗) |
+| `macro.brief.v1`(market_view) | 行首 `N. **` 编号 1–6 齐 | 13 | **12**(第 6 节模板是 `6. 仅供研究,非投资建议。`,**无加粗**;只有 1 场模型多加了粗)→ Task 5 修复后 **0** |
 | `sector.terrain.v1` | 有地形段且无方向词 | 106 | 0 |
 | `stock.lite.v1`(scan L4 卡) | 严格评级+提案一致+早停/P4+代码在场 | 80 | 0 |
 | `scan.l4.intel.v1` | 含「## 事件段」「## 声明行」 | 93 | 0 |
@@ -75,7 +75,12 @@
 ## 5. 结论与处置
 
 **阻断(1 项)**:S4 校验器 —— `validation._macro_brief` 要求 6 节全部加粗,而 macro-brief agent 模板第 6 节不加粗。
-可合成复现、改动局部(只动 session_v1 校验器,不碰 legacy 路径与评级)→ **Task 5 修**。
+可合成复现、改动局部(只动 session_v1 校验器,不碰 legacy 路径与评级)→ **Task 5 已修**:
+`validation.market_view_complete` 按模板形状判(1–5 节带加粗标题 + 第 6 节免责行),合成 run 测试
+`tests/session_agent/test_scan_runner_gaps.py` 先红后绿,回放 13/13 真实 market_view 通过。
+同一条过严正则还在 macro-research LITE 的 `domain_ops.macro_lite_validate`(`_MARKET_VIEW_SECTION_RE`)里:
+不在扫描 runner 路径上,且位于本批约定只改 `scan_l4_*` 的 domain_ops 区域之外 → **open**(macro LITE
+session_v1 真跑前改成调用 `market_view_complete` 即可)。
 
 **非阻断·高风险(Task 5 不修,留 open;Task 6 前必须知情)**:L9/L12/L1/L5/L8 同源 —— session_v1 的扫描图里
 **一只票的终失败会让整场到不了 L5**,而 legacy 把它降级成盲卡/degraded 继续。修法需要改冻结计划的依赖形状
