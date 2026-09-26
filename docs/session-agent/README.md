@@ -83,14 +83,16 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
      --wait-seconds 5 --shell "AUTORESEARCH_ENGINE=claude uv run --no-sync python -m autoresearch.session_agent run --run-id $RUN_ID --executor mailbox --max-parallel 8"
    ```
 
-   即 `session_agent run --executor mailbox`;`--max-parallel` 缺省取冻结配置的
-   `budgets.concurrency.l4_stock`(生产 64,交互会话建议显式给 8);超帽任务留在 READY、不认领。
-   同一命令重跑是幂等的:runner 重启后对已认领未提交的 attempt **重新挂接同一请求**,不重复派发。
+   即 `session_agent run --executor mailbox`;**永远显式给 `--max-parallel`**(host 模式推荐 8;缺省会取冻结配置的
+   `budgets.concurrency.l4_stock`,生产是 64);超帽任务留在 READY、不认领。
+   runner 重启后对已认领未提交的 attempt **重新挂接同一请求**,不重复派发。
 3. **宿主循环**(重复直到 `RUNNER_EXITED`):
 
    ```bash
-   uv run --no-sync python -m autoresearch.session_agent mailbox wait --run-id "$RUN_ID" --timeout 540
+   uv run --no-sync python -m autoresearch.session_agent mailbox wait --run-id "$RUN_ID" --timeout 90
    ```
+
+   `--timeout` 不超过 100 s(宿主 Bash 默认 120 s 上限),IDLE 就再调;不要一次长等。
 
    - `kind=REQUEST`:原样执行 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`(请求带 `model` 时一并传)。
      model/effort 已由 runner 经 `resolve_agent_bundle` 解释并写在请求里(`model`/`effort`/`agent_spec`),
@@ -107,22 +109,39 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
      `<session>/subagents/agent-<agentId>.jsonl`(找不到就显式传 `--transcript-path`),runner 把它绑定进
      capsule —— 复核任务没有绑定会被判 `EVIDENCE_MISSING`。agent 报错时改传
      `--error "<原文>" [--error-class TIMEOUT|CONNECTION|RATE_LIMIT]`(瞬时类会被重试一次)。
-   - **并行**:`wait` 一次只交出一个请求且每个请求只交一次;连续 `wait` 数次、在一条消息里同时派出多个
-     Agent,再逐个 `complete`。
+   - **Codex 宿主**(`AUTORESEARCH_ENGINE=codex` 的 run):请求里的 `agent_type` 已是 Codex 项目 agent 的
+     `.codex/agents/*.toml` **`name` 字段**(如 `L4 card`、`scan strategist`、`ensemble review`;Codex 按它派发,
+     hook 里的 `agent_type` 也是它),用 `spawn_agent` 按该名字、干净上下文派发,不要换成 Claude 的
+     `l4-card`;`--context-ref` 传子 agent id。transcript 自动推导只认 Claude 布局,Codex 必须显式传
+     `--transcript-path <子 agent rollout jsonl>`。
+   - **并行**:`wait` 一次只交出一个请求且每个请求只交一次;每领到一个就**后台**派出 Agent(不等它),
+     继续 `wait`;哪个 Agent 先返回就立刻 `complete` 哪个 —— **不要攒一批再一起 complete**(整批等最慢的那个,
+     快的也会被判超时)。超时从 `wait` 领取(`.taken`)起算,不从签发起算。
+   - `complete` 返回 `kind=ABANDONED`:该 attempt 已超时被 runner 放弃,agent 的产出作废(结果只留作该
+     attempt 的迟到证据),不要手动重试 —— runner 已按规则开了新 attempt 或停机。
    - `kind=IDLE`:再调 `wait`;`taken_unanswered` 列出已领未答的请求(会话重启后用 `--include-taken` 重新领)。
    - `kind=RUNNER_EXITED`:读 `runner.outcome`(`finished`、`stop_reason`、`finish.canonical_path`)。
+   - `kind=RUNNER_DEAD`:runner.json 仍写 RUNNING,但 pid 已不在或心跳超 6 拍(`reason` 说明)——按第 4 步
+     用**新 detach key** 重启 runner(它会重新挂接未答请求),再继续 `wait`。
    - CP0–CP7 播报不变(素材路径同 SKILL;CP5 可读 `status --run-id` 的 `l4` 计数)。
 4. **收尾**:`finished=true` 时对 `finish.canonical_path` 跑 `verify-report --level full`(上一节命令)。
-   `stop_reason=BLOCKED|STALLED` 时 outcome 列出 `errors/orphans/skipped`:修复后重跑第 2 步同一命令;
+   `stop_reason=BLOCKED|STALLED` 时 outcome 列出 `errors/orphans/skipped`(每个 orphan 带 `hint`:照做
+   `fail --error-class STALE_TASK` 即可让重启后的 runner 重试一次)。**重启 = 第 2 步命令换一个新的
+   `--key`**(如 `session-runner-2`、`-3`…):`trace/detach` 对同一 `(run_id, key)` 只等不重跑,用旧 key
+   什么也不会发生。重试意图从任务表/任务簿的持久状态推导(不靠进程内存),重启后照常补足那一次重试;
+   同一 run 同时只能有一个 runner(`_dispatch/runner.lock`),第二个会带着持锁 pid 直接拒绝启动。
+   `REVIEW_FAILED:<类>`(复核超时/断连)不会重跑 intel+card,整场停在 BLOCKED。
    或换新 run_id 走 legacy Workflow(`LEGACY_ORCHESTRATION_FALLBACK`,记录原因)。runner 不替失败 run
    冻结 capsule,需要时显式 `python -m autoresearch.trace.capsule finalize <RUN_ID> --business-status FAILED`。
 
 **邮箱协议**(`<staging>/_dispatch/`,已登记为 run 内产物;驱动器只认 result 文件):
 `<task_id>.a<attempt>.request.json`(runner 写,`DispatchRequest`)· `.taken`(`wait` 排他领取)·
-`.result.json`(`complete` 写)· `runner.json`(RUNNING/EXITED + outcome)· `ledger.jsonl`(每次结算一行)。
+`.result.json`(`complete` 写)· `.abandoned`(runner 判超时时在同一把锁下写)· `runner.json`(RUNNING/EXITED +
+outcome)· `ledger.jsonl`(每次结算一行)。
 全部 tmp+rename 原子写,request/result 在 fcntl 锁下只写一次;runner 只读自己签发的那个 attempt 的
 result 且正文 task/attempt 必须对得上。超时(按角色,macro 15m / sector 10m / L3 40m / repair 10m /
-intel 15m / card·复核 30m)记 `TIMEOUT`、以**新 attempt** 重试一次,旧 attempt 迟到的结果永远不被接收
+intel 15m / card·复核 30m,**从 `.taken` 起算**;没人领的请求 4× 后才超时)记 `TIMEOUT`、写 `.abandoned`
+(`wait` 不再交出、`complete` 回 `ABANDONED`),以**新 attempt** 重试一次,旧 attempt 迟到的结果永远不被接收
 (但超时的 subagent 不会被杀,别手动留着它继续写)。执行器协议(批 4 headless 复用)见
 `autoresearch/session_agent/executors/base.py`。
 

@@ -28,6 +28,13 @@ Error semantics of ``dispatch``:
   result of the timed-out attempt can never be accepted);
 - any other exception → ``AGENT_ERROR`` (classified by :func:`classify_error`).
 
+On ``ExecutorTimeout`` the runner freezes an ``ABANDONED`` attempt record (the timeout
+message is its reason): the evidence closure then does not demand a transcript / web
+receipts that cannot exist.  An executor that can still observe a *late* result of such an
+attempt may expose ``late_results() -> list[tuple[DispatchRequest, DispatchResult]]``
+(mailbox does): the runner binds that transcript to the abandoned attempt as evidence only
+(never a submission), each round and once more right before ``finish``.
+
 Batch 4 (headless ``claude -p`` executor) implements the same protocol; see
 ``DispatchRequest.max_turns`` / ``tier`` and ``DispatchResult.usage``.
 """
@@ -64,8 +71,36 @@ ROLE_DISPATCH: Mapping[str, tuple[str, str | None]] = MappingProxyType({
     "sector.intel": ("sector-intel", None),
 })
 
-#: Seconds without a result before ``ExecutorTimeout`` (host mode; the clock starts when
-#: the request is issued).  Generous on purpose: a timed-out subagent is not killed.
+#: Codex project agents (``.codex/agents/<config_role>.toml``) by scan_config role.  Codex
+#: dispatches a project agent by — and its hooks report ``agent_type`` as — the toml
+#: ``name`` field, not the file stem; a parity test re-reads the toml files.
+CODEX_AGENT_NAMES: Mapping[str, str] = MappingProxyType({
+    "strategist": "scan strategist",
+    "sector_brief": "sector brief",
+    "l3_rank": "L3 rank",
+    "l3_repair": "L3 repair",
+    "l4_intel": "L4 intel",
+    "l4_card": "L4 card",
+    "ens_review": "ensemble review",
+    "dossier_init": "dossier init",
+})
+
+
+def agent_type_for(role_id: str, engine: str) -> str:
+    """The project agent a host of ``engine`` dispatches for one session role."""
+    agent_type, config_role = ROLE_DISPATCH[role_id]
+    if engine != "codex":
+        return agent_type
+    if config_role is None or config_role not in CODEX_AGENT_NAMES:
+        raise KeyError(f"no Codex project agent for session role {role_id}")
+    return CODEX_AGENT_NAMES[config_role]
+
+
+#: Seconds without a result before ``ExecutorTimeout``.  Host mode (mailbox): the clock
+#: starts when the host *takes* the request; an untaken request waits
+#: ``mailbox.NEVER_TAKEN_FACTOR`` × this.  Generous on purpose: a timed-out subagent is not
+#: killed.  An executor that raises ``ExecutorTimeout`` must make that attempt's late
+#: result unacceptable (mailbox: ``<stem>.abandoned``, written atomically with the decision).
 DEFAULT_TIMEOUTS: Mapping[str, float] = MappingProxyType({
     "macro.brief": 900.0,
     "sector.brief": 600.0,
@@ -99,7 +134,8 @@ class DispatchRequest:
     task_id: str
     attempt: int                      # session attempt (retries get a new number)
     role: str                         # session role id (``roles.py``), e.g. ``scan.l4.card``
-    agent_type: str                   # ``.claude/agents/<agent_type>.md`` / Codex project agent
+    agent_type: str                   # engine-specific: ``.claude/agents/<agent_type>.md`` (claude)
+                                      # / ``.codex/agents/*.toml`` ``name`` (codex, e.g. "L4 card")
     config_role: str | None           # scan_config ``agents`` key, e.g. ``l4_card``
     model: str | None                 # resolved; ``None`` = the agent definition decides
     effort: str | None                # resolved effort (claude) / reasoning_effort (codex)
@@ -213,7 +249,7 @@ def classify_error(message: str | None, declared: str | None = None) -> str:
 
 
 __all__ = [
-    "DEFAULT_TIMEOUTS", "DISPATCH_DIR", "DispatchRequest", "DispatchResult", "ExecutorTimeout",
-    "ExecutorUnavailable", "FALLBACK_TIMEOUT", "InferenceExecutor", "ROLE_DISPATCH",
-    "SCHEMA_VERSION", "classify_error", "supports_reattach",
+    "CODEX_AGENT_NAMES", "DEFAULT_TIMEOUTS", "DISPATCH_DIR", "DispatchRequest", "DispatchResult",
+    "ExecutorTimeout", "ExecutorUnavailable", "FALLBACK_TIMEOUT", "InferenceExecutor",
+    "ROLE_DISPATCH", "SCHEMA_VERSION", "agent_type_for", "classify_error", "supports_reattach",
 ]

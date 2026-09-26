@@ -110,6 +110,20 @@ def _normalized_state(value: str) -> str:
     raise ValueError(f"unsupported owner task state: {value}")
 
 
+#: Legs no evidence can exist for when an attempt was abandoned without ever reporting
+#: back (review I4): its transcript and web receipts.  A late transcript that did arrive
+#: is bound to the attempt and required again (it is then checkable).
+_ABANDONED_EXEMPT = frozenset({"transcript", "tool_results", "source_receipts"})
+
+
+def _owner_attempt(task: dict) -> int | None:
+    """An L4 taskbook ticket carries its attempt in its id (``l4.<code>.a<n>``)."""
+    if task["owner"] != "L4_TASKBOOK":
+        return None
+    match = re.fullmatch(r"l4\.\d{6}\.a(\d+)", task["task_id"])
+    return int(match.group(1)) if match else None
+
+
 def _requirements(task: dict, state: str) -> list[str]:
     if state == "NOT_REACHED":
         return []
@@ -154,8 +168,13 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
     keys = []
     for task in tasks:
         entry = entries.get(task["task_id"], {})
-        current_attempt = max(1, int(entry.get("attempt") or 0))
-        attempts = range(1, current_attempt + 1)
+        owner_attempt = _owner_attempt(task)
+        if owner_attempt is not None:
+            # Tickets have no store entry; the claim is frozen under the ticket attempt.
+            current_attempt, attempts = owner_attempt, [owner_attempt]
+        else:
+            current_attempt = max(1, int(entry.get("attempt") or 0))
+            attempts = range(1, current_attempt + 1)
         for attempt in attempts:
             if attempt < current_attempt:
                 state = "SUPERSEDED"
@@ -164,6 +183,19 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
             superseded_by = _replacement(tasks, task, attempt) if state == "SUPERSEDED" else None
             if state == "SUPERSEDED" and superseded_by is None:
                 state = "CANCELLED"
+            requirements = _requirements(task, state)
+            if (
+                task["kind"] == "INFERENCE"
+                and state != "SUCCEEDED"
+                and read_abandonment(handle, task["task_id"], attempt) is not None
+            ):
+                from autoresearch.session_agent.host_evidence import transcript_refs_for_task
+
+                late = bool(transcript_refs_for_task(handle, task["task_id"], attempt))
+                requirements = [
+                    item for item in requirements
+                    if item not in _ABANDONED_EXEMPT or (late and item == "transcript")
+                ]
             keys.append({
                 "task_id": task["task_id"],
                 "attempt": attempt,
@@ -171,7 +203,7 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
                 "subject": task["subject"],
                 "state": state,
                 "superseded_by": superseded_by,
-                "requirements": _requirements(task, state),
+                "requirements": requirements,
             })
     value = {
         "schema_version": 1,
@@ -289,6 +321,45 @@ def freeze_failure(
             "error": safe,
         },
     )
+
+
+def freeze_abandonment(
+    handle,
+    task: dict,
+    attempt: int,
+    reason: str,
+    *,
+    error_class: str = "TIMEOUT",
+    executor: str | None = None,
+) -> Path:
+    """Record that an inference attempt was abandoned without ever reporting back.
+
+    ``reason`` is the timeout event itself.  The record authorizes a *late* transcript to
+    be bound to this (no longer running) attempt and exempts the attempt from the
+    transcript / web-receipt legs of the evidence closure when none ever arrives.
+    """
+    if task.get("kind") != "INFERENCE":
+        raise ValueError("only an inference attempt can be abandoned")
+    return _freeze_attempt_record(
+        handle,
+        task["task_id"],
+        attempt,
+        "abandoned",
+        {
+            "schema_version": 1,
+            "task_id": task["task_id"],
+            "attempt": attempt,
+            "status": "ABANDONED",
+            "error_class": str(error_class),
+            "reason": str(reason)[:2000],
+            "executor": executor,
+        },
+    )
+
+
+def read_abandonment(handle, task_id: str, attempt: int) -> dict | None:
+    path = _attempt_record_path(handle, task_id, attempt, "abandoned")
+    return _read_json(path) if path.is_file() else None
 
 
 def _captured_ref(
@@ -435,6 +506,10 @@ def _task_evidence(handle, task: dict, key: dict, entry: dict | None) -> dict:
     if reason:
         reasons.append(reason)
 
+    abandonment = read_abandonment(handle, task["task_id"], key["attempt"])
+    if abandonment is not None:                  # the recorded reason travels with it
+        atomic_write_json(root / "abandoned.json", abandonment)
+
     command_ref = None
     if task["kind"] == "DETERMINISTIC" and key["state"] != "NOT_REACHED":
         command_ref, command_reasons = _command_ref(handle, task, key["attempt"], root)
@@ -551,9 +626,11 @@ def materialize_evidence(handle, *, now: datetime | None = None) -> dict:
 __all__ = [
     "build_evidence_plan",
     "evaluate_closure",
+    "freeze_abandonment",
     "freeze_claim",
     "freeze_failure",
     "freeze_operation_request",
     "freeze_receipt",
     "materialize_evidence",
+    "read_abandonment",
 ]

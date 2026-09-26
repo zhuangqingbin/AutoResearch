@@ -464,3 +464,299 @@ def test_l4_review_prompt_is_the_legacy_wording(scan_handle):
                           f"ensemble/600519.run{run_index}.md"}, subject="600519")
         assert prompt == _fill(_js_template("l4-stock.js", "(不知道其它 run 结论)"),
                                {"SD": sd, "code": "600519", "i": run_index})
+
+
+# ── I1 (review 2026-09-26): host-mode timing is measured from ``.taken`` ────────────
+
+class _FakeTime:
+    """Single-threaded fake clock: ``sleep`` advances time and runs due host actions."""
+
+    def __init__(self):
+        self.now = 1_000.0
+        self.events: list[tuple[float, object]] = []
+
+    def at(self, when: float, action) -> None:
+        self.events.append((self.now + when, action))
+        self.events.sort(key=lambda item: item[0])
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        while self.events and self.events[0][0] <= self.now:
+            _, action = self.events.pop(0)
+            action()
+
+
+def _fake_executor(tmp_path, fake: _FakeTime) -> mailbox.MailboxExecutor:
+    return mailbox.MailboxExecutor(tmp_path, poll_seconds=0.5, clock=fake.clock,
+                                   sleep=fake.sleep, wall=fake.clock)
+
+
+def _host_take(tmp_path, fake: _FakeTime, task_id="scan.l4.card.600000"):
+    def take():
+        doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0, wall=fake.clock)
+        assert doc["kind"] == "REQUEST" and doc["task_id"] == task_id
+    return take
+
+
+def _host_complete(tmp_path, task_id="scan.l4.card.600000", attempt=1):
+    def complete():
+        mailbox.write_result(tmp_path, task_id, attempt, ok=True, session_ref="s",
+                             context_ref="agent-late", parent_context_ref="s",
+                             transcript_path="/t/agent-late.jsonl")
+    return complete
+
+
+def test_timeout_counts_from_taken_not_from_issue(tmp_path):
+    """A request that waited in the queue longer than its role timeout is not failed:
+    the per-role budget starts when the host takes it."""
+    fake = _FakeTime()
+    fake.at(30.0, _host_take(tmp_path, fake))          # queued 3× the role timeout
+    fake.at(38.0, _host_complete(tmp_path))            # agent took 8 s of its 10 s
+    result = _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=10.0))
+    assert result.ok and result.context_ref == "agent-late"
+
+
+def test_taken_request_times_out_on_the_role_budget_after_taken(tmp_path):
+    fake = _FakeTime()
+    fake.at(30.0, _host_take(tmp_path, fake))
+    with pytest.raises(ExecutorTimeout, match="taken"):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=10.0))
+    assert 40.0 <= fake.now - 1_000.0 < 42.0
+
+
+def test_never_taken_request_times_out_only_after_the_generous_limit(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout, match="never taken"):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=10.0))
+    waited = fake.now - 1_000.0
+    assert mailbox.NEVER_TAKEN_FACTOR * 10.0 <= waited < mailbox.NEVER_TAKEN_FACTOR * 10.0 + 1
+
+
+def test_timed_out_attempt_is_abandoned_and_never_handed_out_again(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
+    assert mailbox.is_abandoned(tmp_path, "scan.l4.card.600000", 1)
+    assert mailbox.pending_requests(tmp_path, include_taken=True) == []
+    mailbox.issue_request(tmp_path, _request(tmp_path, attempt=2))
+    doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+    assert (doc["kind"], doc["attempt"]) == ("REQUEST", 2)          # a2, never the dead a1
+    idle = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+    assert idle["kind"] == "IDLE" and idle["taken_unanswered"] == ["scan.l4.card.600000.a2"]
+
+
+def test_late_result_of_an_abandoned_attempt_is_refused_but_kept_as_evidence(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
+    with pytest.raises(mailbox.MailboxAbandoned) as refused:
+        _host_complete(tmp_path)()
+    assert "ABANDONED" in str(refused.value)
+    late = mailbox.read_late_result(tmp_path, "scan.l4.card.600000", 1)
+    assert late["transcript_path"] == "/t/agent-late.jsonl"
+    # A reattach (runner restart) never resurrects an abandoned attempt.
+    with pytest.raises(ExecutorTimeout, match="abandoned"):
+        mailbox.MailboxExecutor(tmp_path, poll_seconds=0.01).dispatch(
+            _request(tmp_path, timeout=5.0))
+
+
+def test_a_result_written_before_the_timeout_decision_wins(tmp_path):
+    mailbox.issue_request(tmp_path, _request(tmp_path))
+    _host_complete(tmp_path)()
+    assert mailbox.abandon_request(tmp_path, "scan.l4.card.600000", 1, reason="t") is False
+    assert not mailbox.is_abandoned(tmp_path, "scan.l4.card.600000", 1)
+
+
+def test_runner_exited_is_reported_even_with_abandoned_or_taken_requests(tmp_path):
+    fake = _FakeTime()
+    with pytest.raises(ExecutorTimeout):
+        _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
+    mailbox.issue_request(tmp_path, _request(tmp_path, task_id="t.taken"))
+    assert mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)["task_id"] == "t.taken"
+    (tmp_path / "_dispatch/runner.json").write_text(json.dumps(
+        {"state": "EXITED", "outcome": {"stop_reason": "BLOCKED"}}), encoding="utf-8")
+    doc = mailbox.wait_request(tmp_path, timeout=5, poll_seconds=0.01)
+    assert doc["kind"] == "RUNNER_EXITED"
+    assert doc["unanswered"] == ["t.taken.a1"]
+
+
+def test_cli_complete_of_an_abandoned_attempt_says_ABANDONED(tmp_path, monkeypatch, capsys):
+    from autoresearch.session_agent import __main__ as cli
+
+    run = _cli_run(tmp_path, monkeypatch)
+    staging = Path(run.handle.staging)
+    mailbox.issue_request(staging, _request(staging, task_id="synthetic.inference"))
+    assert mailbox.abandon_request(staging, "synthetic.inference", 1, reason="TIMEOUT") is True
+    assert cli.main(["mailbox", "complete", "--run-id", run.run_id, "--task-id",
+                     "synthetic.inference", "--attempt", "1", "--context-ref", "agent-1"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["kind"] == "ABANDONED"
+    assert "discarded" in doc["message"]
+
+
+def _runner_json(tmp_path, **fields):
+    (tmp_path / "_dispatch").mkdir(exist_ok=True)
+    (tmp_path / "_dispatch/runner.json").write_text(json.dumps(
+        {"state": "RUNNING", "heartbeat_seconds": 5.0, **fields}), encoding="utf-8")
+
+
+def _dead_pid() -> int:
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def test_wait_reports_a_dead_runner_process(tmp_path):
+    """Review I3: a SIGKILLed runner leaves runner.json RUNNING; wait must not say IDLE."""
+    _runner_json(tmp_path, pid=_dead_pid(), heartbeat_epoch=time.time())
+    doc = mailbox.wait_request(tmp_path, timeout=5, poll_seconds=0.01)
+    assert doc["kind"] == "RUNNER_DEAD" and "not alive" in doc["reason"]
+
+
+def test_wait_reports_a_stale_heartbeat_only_after_it_stays_stale(tmp_path):
+    import os
+
+    fake = _FakeTime()
+    _runner_json(tmp_path, pid=os.getpid(), heartbeat_epoch=fake.now - 31.0)
+    doc = mailbox.wait_request(tmp_path, timeout=60, poll_seconds=1.0, clock=fake.clock,
+                               sleep=fake.sleep, wall=fake.clock)
+    assert doc["kind"] == "RUNNER_DEAD" and "heartbeat" in doc["reason"]
+    assert fake.now - 1_000.0 >= 5.0                         # one heartbeat of grace first
+
+
+def test_wait_with_a_fresh_heartbeat_is_idle_not_dead(tmp_path):
+    import os
+
+    fake = _FakeTime()
+    _runner_json(tmp_path, pid=os.getpid(), heartbeat_epoch=fake.now - 4.0)
+    doc = mailbox.wait_request(tmp_path, timeout=3, poll_seconds=1.0, clock=fake.clock,
+                               sleep=fake.sleep, wall=fake.clock)
+    assert doc["kind"] == "IDLE" and doc["runner_state"] == "RUNNING"
+
+
+# ── I4 (review 2026-09-26): an abandoned attempt's late transcript is its evidence ──
+
+CLAUDE_TRANSCRIPT = REPO / "tests/trace/fixtures/claude/agent-l4-card.jsonl"
+
+
+def _claude_transcript(folder: Path, name: str) -> str:
+    """A Claude-shaped subagent transcript: JSONL rows carry no ``ordinal``."""
+    path = folder / f"agent-{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(CLAUDE_TRANSCRIPT.read_bytes())
+    assert all("ordinal" not in json.loads(line) for line in path.read_text("utf-8").splitlines())
+    return str(path)
+
+
+def _poll(predicate, seconds=20.0):
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        assert time.monotonic() < deadline, "host simulation timed out"
+        time.sleep(0.01)
+
+
+@pytest.mark.parametrize("late_result_arrives", [True, False])
+def test_abandoned_attempt_evidence_closes_with_or_without_a_late_result(
+        tmp_path, monkeypatch, late_result_arrives):
+    from autoresearch.session_agent import host_evidence
+
+    from . import _runner_support
+
+    monkeypatch.setattr(_runner_support, "ENGINE", "claude")
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    staging = Path(run.handle.staging)
+    transcripts = tmp_path / "host_transcripts"             # outside the run workspace
+    seen = {}
+
+    def next_request():
+        while True:
+            doc = mailbox.wait_request(staging, timeout=0.2, poll_seconds=0.01)
+            if doc["kind"] == "REQUEST":
+                return doc
+            assert doc["kind"] == "IDLE", doc
+
+    def host():
+        first = next_request()                              # a1: taken, then sat on
+        _poll(lambda: mailbox.is_abandoned(staging, first["task_id"], 1))
+        if late_result_arrives:
+            try:
+                mailbox.write_result(staging, first["task_id"], 1, ok=True,
+                                     session_ref="session-main", context_ref="agent-late",
+                                     parent_context_ref="session-main",
+                                     transcript_path=_claude_transcript(transcripts, "late"))
+            except mailbox.MailboxAbandoned:
+                seen["late"] = "ABANDONED"
+        second = next_request()
+        path = _claude_transcript(transcripts, "a2")
+        for output in second["output_paths"].values():
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            Path(output).write_text(CARD_TEXT, encoding="utf-8")
+        mailbox.write_result(staging, second["task_id"], second["attempt"], ok=True,
+                             session_ref="session-main", context_ref="agent-a2",
+                             parent_context_ref="session-main", transcript_path=path)
+        seen["second"] = second["attempt"]
+
+    thread = threading.Thread(target=host)
+    thread.start()
+    try:
+        final = runner.run_loop(run.run_id, mailbox.MailboxExecutor(staging, poll_seconds=0.01),
+                                poll_seconds=0.01, max_rounds=20000, hooks=run.hooks(),
+                                timeouts={"stock.card": 1.0})
+    finally:
+        thread.join(timeout=30)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    assert seen["second"] == 2
+    late_refs = host_evidence.transcript_refs_for_task(run.handle, "synthetic.inference", 1)
+    if late_result_arrives:
+        assert seen["late"] == "ABANDONED"
+        assert late_refs and late_refs[0]["status"] == "PRESENT"      # bound to a1 only
+    else:
+        assert late_refs == []
+    capsule = Path(run.handle.capsule)
+    closure = json.loads((capsule / "verification/evidence_closure.json").read_text("utf-8"))
+    assert closure["missing"] == [] and closure["completeness_ok"] is True, closure["missing"]
+    plan = json.loads((capsule / "evidence/evidence_plan.json").read_text("utf-8"))
+    a1 = next(key for key in plan["task_keys"] if key["attempt"] == 1)
+    assert a1["state"] == "SUPERSEDED"
+    assert ("transcript" in a1["requirements"]) is late_result_arrives
+    record = json.loads((capsule / "evidence/tasks/synthetic.inference/a1/abandoned.json")
+                        .read_text("utf-8"))
+    assert record["status"] == "ABANDONED" and "taken" in record["reason"]
+
+
+# ── M4 (review 2026-09-26): each engine's host dispatches its own project agent ─────
+
+def test_codex_requests_name_the_codex_project_agent():
+    """Codex resolves a project agent by the toml ``name`` field (hook agent_type too);
+    Claude by the ``.claude/agents/<name>.md`` name."""
+    import tomllib
+
+    from autoresearch.session_agent.executors.base import ROLE_DISPATCH, agent_type_for
+
+    for role, (claude_agent, config_role) in ROLE_DISPATCH.items():
+        assert agent_type_for(role, "claude") == claude_agent
+        assert (REPO / ".claude/agents" / f"{claude_agent}.md").is_file()
+        toml_path = REPO / ".codex/agents" / f"{config_role}.toml"
+        if config_role is None or not toml_path.is_file():
+            with pytest.raises(KeyError, match="no Codex project agent"):
+                agent_type_for(role, "codex")
+            continue
+        name = tomllib.loads(toml_path.read_text("utf-8"))["name"]
+        assert agent_type_for(role, "codex") == name, role
+    # The seven scan judgment roles all have a Codex counterpart.
+    for role in ("macro.brief", "sector.brief", "scan.l3", "scan.l3.repair", "scan.l4.intel",
+                 "scan.l4.card", "scan.l4.review"):
+        assert agent_type_for(role, "codex") != ROLE_DISPATCH[role][0]
+
+
+def test_cli_wait_default_stays_under_the_host_bash_timeout():
+    from autoresearch.session_agent import __main__ as cli
+
+    args = cli._parser().parse_args(["mailbox", "wait", "--run-id", "x"])
+    assert args.timeout <= 100

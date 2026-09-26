@@ -102,19 +102,29 @@ def mailbox_command(args) -> dict:
         (service._session_dir(handle) / "host_profile.json").read_text(encoding="utf-8"))
     session_ref = args.session_ref or host_profile["session_ref"]
     transcript = args.transcript_path or _subagent_transcript(session_ref, args.context_ref)
-    path = mailbox.write_result(
-        handle.staging,
-        args.task_id,
-        args.attempt,
-        ok=args.error is None,
-        session_ref=session_ref,
-        context_ref=args.context_ref,
-        parent_context_ref=args.parent_context_ref or session_ref,
-        transcript_path=transcript,
-        evidence_refs=args.evidence_ref or [],
-        error=args.error,
-        error_class=args.error_class,
-    )
+    try:
+        path = mailbox.write_result(
+            handle.staging,
+            args.task_id,
+            args.attempt,
+            ok=args.error is None,
+            session_ref=session_ref,
+            context_ref=args.context_ref,
+            parent_context_ref=args.parent_context_ref or session_ref,
+            transcript_path=transcript,
+            evidence_refs=args.evidence_ref or [],
+            error=args.error,
+            error_class=args.error_class,
+        )
+    except mailbox.MailboxAbandoned as exc:
+        return {
+            "kind": "ABANDONED",
+            "result_path": str(exc.result_path),
+            "transcript_path": transcript,
+            "message": "the runner timed this attempt out before the result arrived; the "
+                       "agent's work is discarded (kept only as late evidence of the "
+                       "abandoned attempt). Do not retry it by hand: the runner decides.",
+        }
     return {
         "kind": "RESULT_WRITTEN",
         "result_path": str(path),
@@ -137,7 +147,7 @@ def add_parsers(subparsers) -> None:
     commands = box.add_subparsers(dest="mailbox_command", required=True)
     wait = commands.add_parser("wait")
     wait.add_argument("--run-id", required=True)
-    wait.add_argument("--timeout", type=float, default=540.0)
+    wait.add_argument("--timeout", type=float, default=90.0)   # < host Bash 120 s cap
     wait.add_argument("--include-taken", action="store_true")
     pending = commands.add_parser("pending")
     pending.add_argument("--run-id", required=True)
