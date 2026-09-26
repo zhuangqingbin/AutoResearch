@@ -29,11 +29,20 @@ def effective_caps(cfg: dict | None, l4_budget: int) -> dict:
             "finalist_cap": finalist_cap, "l3cap": max(1, int(l3cap))}
 
 
+def _gate1_metrics(staging) -> dict:
+    """源 staging 冻结的 GATE1 STAGE_RESULT.metrics;缺/坏 → {}。"""
+    from autoresearch.scan.stage_result import load_stage_result, stage_result_path
+
+    try:
+        return dict(load_stage_result(stage_result_path(staging, "gate1")).metrics or {})
+    except Exception:  # noqa: BLE001 — 回放的补充输入,缺了就走下一级兜底
+        return {}
+
+
 def _day_pinned(staging) -> list[dict]:
     """回放用的当日 📌:源 finalists.csv 的 lane=pinned 行(码 + 当日 pinned_note);缺 → GATE1 冻结的
     run_mode.pinned_codes。不读今天的 pinned.jsonc(那是另一天的持仓)。"""
     import csv
-    import json
     from pathlib import Path
 
     fin = Path(staging) / "finalists.csv"
@@ -41,24 +50,13 @@ def _day_pinned(staging) -> list[dict]:
         with fin.open(encoding="utf-8") as fh:
             return [{"code": str(r["code"]).zfill(6), "note": r.get("pinned_note") or ""}
                     for r in csv.DictReader(fh) if (r.get("lane") or "") == "pinned"]
-    g1 = Path(staging) / "stage_results" / "gate1.json"
-    if g1.is_file():
-        metrics = json.loads(g1.read_text(encoding="utf-8")).get("metrics") or {}
-        return [{"code": str(c).zfill(6), "note": ""}
-                for c in ((metrics.get("run_mode") or {}).get("pinned_codes") or [])]
-    return []
+    run_mode = _gate1_metrics(staging).get("run_mode") or {}
+    return [{"code": str(c).zfill(6), "note": ""} for c in (run_mode.get("pinned_codes") or [])]
 
 
 def _day_l4_budget(staging) -> int:
-    import json
-    from pathlib import Path
-
-    g1 = Path(staging) / "stage_results" / "gate1.json"
-    if g1.is_file():
-        budget = (json.loads(g1.read_text(encoding="utf-8")).get("metrics") or {}).get("l4_budget")
-        if isinstance(budget, int) and budget > 0:
-            return budget
-    return 30
+    budget = _gate1_metrics(staging).get("l4_budget")
+    return budget if isinstance(budget, int) and budget > 0 else 30
 
 
 def main(argv: list[str] | None = None) -> int:
