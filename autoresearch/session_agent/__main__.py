@@ -26,6 +26,7 @@ def _parser():
         default="session_v1",
     )
     begin.add_argument("--legacy-reason")
+    begin.add_argument("--ignore-scan-lock", action="store_true")
     for command in ("status", "next", "resume", "finish"):
         child = subparsers.add_parser(command)
         child.add_argument("--run-id", required=True)
@@ -163,6 +164,12 @@ def main(argv=None):
             for field, expected in assertions.items():
                 if expected is not None and request.get(field) != expected:
                     raise ValueError(f"--{field} conflicts with request file")
+            from autoresearch.common.scan_lock import EXIT_HELD, begin_refusal
+
+            refusal = begin_refusal(request.get("kind"), ignore=args.ignore_scan_lock)
+            if refusal:  # unattended scan_run holds the lock (review I3)
+                _emit(_error(args.command, run_id, "SCAN_LOCK_HELD", refusal))
+                return EXIT_HELD
             from autoresearch.session_agent.origin import begin_via_entry
 
             value = begin_via_entry(

@@ -123,8 +123,8 @@ def _run(tmp_path, steps: _Steps, **arg_changes) -> int:
 def test_success_runs_begin_runner_verify_and_delivers_the_compat_brief(roots):
     steps = _Steps(roots)
     assert _run(roots, steps) == scan_run.EXIT_OK
-    assert steps.calls == ["resolve_date", "live_runs", "wait_ready", "begin", "run", "verify",
-                           "locate_brief", "deliver"]
+    assert steps.calls == ["resolve_date", "live_runs", "wait_ready", "live_runs", "begin", "run",
+                           "verify", "locate_brief", "deliver"]
     [sent] = steps.delivered
     assert sent["brief"] == steps.compat / "brief.md"
     assert sent["run_id"] == RUN_ID and DATE in sent["title"] and "✓" in sent["title"]
@@ -153,6 +153,28 @@ def test_live_manual_scan_run_blocks_the_unattended_run(roots):
     assert _run(roots, steps) == run_lock.EXIT_HELD
     assert "begin" not in steps.calls
     assert steps.notified and "20260928T130000000000Z" in steps.notified[0][1]
+
+
+def test_manual_run_that_appears_during_the_readiness_wait_blocks_begin(roots):
+    """The readiness wait can last 70 minutes: live runs are re-checked right before begin
+    (review I3)."""
+    steps = _Steps(roots)
+    answers = iter([[], [{"run_id": "20260928T134000000000Z", "age_minutes": 1}]])
+    base = steps.as_steps()
+
+    def live_runs():
+        steps.calls.append("live_runs")
+        return next(answers)
+
+    base.live_runs = live_runs
+    log = scan_run.OpsLog(roots / "reports_claude" / "_ops" / "scan_run_test.log")
+    try:
+        code = scan_run.run_once(_args(), base, log=log)
+    finally:
+        log.close()
+    assert code == run_lock.EXIT_HELD
+    assert steps.calls == ["resolve_date", "live_runs", "wait_ready", "live_runs", "notify"]
+    assert "20260928T134000000000Z" in steps.notified[0][1]
 
 
 def test_lake_not_ready_notifies_and_never_begins(roots):
@@ -296,8 +318,9 @@ def test_default_begin_and_run_call_the_session_agent_cli(roots, monkeypatch):
     assert steps.run(RUN_ID) == {"finished": False}
     (begin_argv, begin_env), (run_argv, run_env) = calls
     assert begin_argv[:3] == [sys.executable, "-m", "autoresearch.session_agent"]
+    # scan_run holds the scan lock itself, so its own begin must pass the explicit override
     assert begin_argv[3:] == ["begin", "--orchestration", "session_v1", "--request-file",
-                              str(roots / "req.json")]
+                              str(roots / "req.json"), "--ignore-scan-lock"]
     assert "AUTORESEARCH_RUN_ID" not in begin_env and begin_env["AUTORESEARCH_ENGINE"] == "claude"
     assert run_argv[3:] == ["run", "--run-id", RUN_ID, "--executor", "headless",
                             "--claude-bin", "/opt/claude", "--max-parallel", "6"]

@@ -324,8 +324,10 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         return readiness.wait_and_guard(date, deadline=deadline, log=emit)
 
     def begin(request_path: Path) -> str:
+        # 本进程就是扫描锁的持有者:begin 的锁检查(复审 I3)对它显式放行。
         code, out = _call(_session_agent("begin", "--orchestration", "session_v1",
-                                         "--request-file", str(request_path)),
+                                         "--request-file", str(request_path),
+                                         "--ignore-scan-lock"),
                           env=_env(), timeout=1800, stderr=stream)
         doc = _last_json(out) or {}
         if code != 0 or not doc.get("run_id"):
@@ -421,18 +423,28 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
     summary["date"] = date
     log.line(f"date={date}")
 
-    live = steps.live_runs()
-    if live:
+    def live_manual_run() -> int | None:
+        live = steps.live_runs()
+        if not live:
+            return None
         ids = ", ".join(item["run_id"] for item in live)
         log.line(f"人工会话的扫描 run 仍在跑:{ids}")
         tell(f"扫描 {date} 未开", f"人工会话的扫描 run {ids} 仍在跑 · 日志 {log.path}")
         return finish(run_lock.EXIT_HELD, "LIVE_RUN", live_runs=live)
+
+    held = live_manual_run()
+    if held is not None:
+        return held
 
     deadline = getattr(args, "deadline", readiness.DEADLINE)
     if not getattr(args, "skip_readiness", False) and not steps.wait_ready(date, deadline):
         tell(f"扫描 {date} 未开",
              f"tushare stk_factor_pro 截至 {deadline} 未灌齐 · 日志 {log.path}")
         return finish(EXIT_FAILED, "NOT_READY")
+    # 就绪等待可长达 70 分钟:begin 前再问一次人工场(复审 I3)。
+    held = live_manual_run()
+    if held is not None:
+        return held
 
     request_path = ops_dir() / f"scan_run_{date}.request.json"
     atomic_write_json(request_path, build_headless_request(date))

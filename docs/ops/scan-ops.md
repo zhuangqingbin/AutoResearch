@@ -49,7 +49,7 @@ launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm   # 手动触
   ```
 
 - **送达** = `scan_config.jsonc` 的 `delivery.channel`(默认 `none` = 什么都不发)。Bark:在仓库根 `.env`(已 gitignore)加一行 `BARK_TOKEN=<Bark App 里的 key>`,把 channel 改成 `"bark"`,试发 `scripts/notify.sh "测试"`;正文 = brief 原文(超 3000 字节截断)+ 报告路径。mail:`.env` 加 `DELIVERY_MAIL_TO=<地址>`。file:填 `delivery.file_dir`。每次送达落兼容报告目录的 `_delivery.json`(canonical `runs/<run_id>/p1` 是封存的目录哈希,绝不往里写)。送达失败不改 run 状态。
-- **人工会话**开扫前先 `uv run --no-sync python -m autoresearch.scan.run_lock check`:非 0 = 无人值守场在跑,别再开。
+- **人工会话**开扫:SKILL 步骤 0 的 `run_lock check || { echo …; exit 3; }` 被占即停;不止是建议 —— `capsule begin scan-market` 与 `session_agent begin`(scan 请求)在锁被占时**代码里拒绝**(退出 3,打印持锁 pid),确需并跑才显式加 `--ignore-scan-lock`。反方向:scan_run 开跑前与 begin 前(就绪等待之后)各查一次人工场(ACTIVE 且持有者活着或心跳 90 分钟内)。
 - **失败后**:按推送里的阶段查日志;修代码在另一个会话;补跑 `scripts/scan_run.sh --date <交易日> --skip-readiness`(新 run_id)。
 
 ## user_config 传参铁律
