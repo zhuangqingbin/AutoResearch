@@ -1228,12 +1228,12 @@ def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: 
         overseas_lines = _overseas_lines(scan_dir) or []
 
     # ── §12 10 日观察席(影子,2026-09-26 §5 B3):终评级已落盘之后算一次、落
-    # `_swing_seat.json`(brief ⑦ 读同一份)。影子面坏了绝不挡发布 → 空 dict = 「未生成」。
+    # `_swing_seat.json`(brief ⑦ 读同一份)。影子面坏了绝不挡发布 → 空 dict = 「未生成」;
+    # `refresh_swing_seat` 先删同日上一场的旧文件(复审 M2),失败时两处都读成「未生成」。
     swing_seat: dict = {}
     with _ctx.suppress(Exception):
-        from autoresearch.scan.swing_seat import build_swing_seat, write_swing_seat
-        swing_seat = build_swing_seat(scan_dir)
-        write_swing_seat(scan_dir, swing_seat)
+        from autoresearch.scan.swing_seat import refresh_swing_seat
+        swing_seat = refresh_swing_seat(scan_dir)
 
     # ── self_review 输入冻结(不纯的六条 lint 现在只跑一次)────────────────
     review_ctx = _review_ctx(scan_dir, rows, regime_drift)

@@ -2,7 +2,8 @@
 """10 日尺(`common.ruler.SWING_RULER` = fwd_10_oc)预注册普查 —— H1–H4 读数。
 
 design:       docs/superpowers/specs/2026-09-26-daily-engine-consolidation-design.md §5 B2
-registration: docs/research/2026-09-26-swing-ruler-family.spec.json(先冻后跑)
+registration: docs/research/2026-09-26-swing-ruler-family-v2.spec.json(先冻后跑;v2 取代
+              2026-09-26-swing-ruler-family.spec.json —— 旧 id 的判读检验没校准,拒跑)
 
 只读、零网络、零 LLM、**只记不学**:读 `$RPT/scan/_ledger/recommendations.csv`(批 5 Task 1
 之后带 `outcome_status_swing`/`t10`)与共享湖,读数只落
@@ -18,18 +19,20 @@ registration: docs/research/2026-09-26-swing-ruler-family.spec.json(先冻后跑
 - 描述统计走 `overnight_census.core.cell_stats`(日内等权 → 跨日等权);其 `judge` 的四态作
   对照列 `oc_judge` 照报 —— 它的门(≥60 日且 ≥300 事件、2022–2025 逐年同号)2026 单年账本
   按构造过不了,所以**判读用登记里的规则**,不用它。
-- 显著性只用块 bootstrap:相邻分析日的 fwd_10 窗口重叠 9 个 session,逐日独立的区间窄到
-  假。区间 = `research.robustness.block_sensitivity`(块长 1/5/10 全报不挑,判读取登记的
-  决策块 10),p 值 = `common.stats.block_mean_test`,H1–H3 一族走
-  `common.stats.family_adjustment(dependence="arbitrary")`(BY)。
+- 显著性只用登记的校准检验(`research.swing_ruler_decision`,2026-09-26 复审 I1):相邻分析日
+  的 fwd_10 窗口重叠 9 个 session,逐日独立的区间窄到假;而 40 天 / 块长 10 的块 bootstrap
+  每次重采样只有 4 个块,名义 5% 实际假阳 27–29%。现用 HAC t(Bartlett,滞后 9)配同一 n 上
+  MA(9) 重叠零假设模拟出的临界值;决策区间与 p 值同源(区间不含 0 ⇔ p ≤ α)。H1–H3 一族走
+  `common.stats.family_adjustment(dependence="arbitrary")`(BY)。块长 1/5/10 的块 bootstrap
+  区间(`research.robustness.block_sensitivity`)照报,只作敏感性,未校准,不判读。
 
-预注册纪律:判读旋钮(评级集合、块长、区间水平、FDR 水平、样本门)全部读自冻结的 spec,
+预注册纪律:判读旋钮(评级集合、检验名与滞后/模拟次数/种子、块长、区间水平、FDR 水平、样本门)全部读自冻结的 spec,
 CLI 上只有路径与 `--since`;`--since` 收窄登记窗口时整张表降为 EXPLORATORY。度量原语的
 代码出处按 spec 的 `code_sha` 核验(`registration.verify_code_provenance`),漂移即拒 ——
 改任何口径 = 新 experiment_id。
 
   uv run --no-sync python -m autoresearch.research.swing_ruler_census \\
-      --spec docs/research/2026-09-26-swing-ruler-family.spec.json
+      --spec docs/research/2026-09-26-swing-ruler-family-v2.spec.json
 """
 from __future__ import annotations
 
@@ -48,10 +51,10 @@ import pandas as pd
 
 from autoresearch.common import forward_returns as _fwd, ruler, workspace as ws
 from autoresearch.common.atomic import atomic_write_bytes, atomic_write_json, sha256_file
-from autoresearch.common.stats import DEFAULT_ALPHA, block_mean_test, family_adjustment
+from autoresearch.common.stats import DEFAULT_ALPHA, family_adjustment
 from autoresearch.contracts.research_experiment import validate_spec
 from autoresearch.data import market_panel as _panel
-from autoresearch.research import experiment_io as eio
+from autoresearch.research import experiment_io as eio, swing_ruler_decision as _decision
 from autoresearch.research.edge_census import pinned_codes
 from autoresearch.research.overnight_census.core import cell_stats, judge
 from autoresearch.research.registration import (
@@ -66,7 +69,7 @@ from autoresearch.scan import outcome as _outcome
 from autoresearch.scan.populations import FROZEN_BASES
 
 SCHEMA_VERSION = 1
-RULE_VERSION = "swing_ruler_census.v1"
+RULE_VERSION = "swing_ruler_census.v2"
 SWING = ruler.SWING_RULER
 MAIN = ruler.MAIN_RULER
 
@@ -77,17 +80,24 @@ H4 = "swing_h4_e6_r_tier_sign"
 DIRECTIONAL = (H1, H2, H3)
 HYPOTHESES = (*DIRECTIONAL, H4)
 
-POSITIVE = "POSITIVE"          # 块 CI 下界 > 0 且 BY q ≤ fdr_alpha
-NEGATIVE = "NEGATIVE"          # 块 CI 上界 < 0 且 BY q ≤ fdr_alpha
-UNPROVEN = "UNPROVEN"          # 过了样本门但没量出来 —— **不等于**已证不存在
-INSUFFICIENT = "INSUFFICIENT"  # n_days < 登记的样本门:不判读
-DESCRIPTIVE = "DESCRIPTIVE"    # H4:只报符号一致率
-EXPLORATORY = "EXPLORATORY"    # `--since` 收窄了登记窗口:照算,不判读
+POSITIVE = _decision.POSITIVE          # 校准 CI 下界 > 0 且 BY q ≤ fdr_alpha
+NEGATIVE = _decision.NEGATIVE          # 校准 CI 上界 < 0 且 BY q ≤ fdr_alpha
+UNPROVEN = _decision.UNPROVEN          # 过了样本门但没量出来 —— **不等于**已证不存在
+INSUFFICIENT = _decision.INSUFFICIENT  # n_days < 登记的样本门:不判读
+DESCRIPTIVE = "DESCRIPTIVE"            # H4:只报符号一致率
+EXPLORATORY = _decision.EXPLORATORY    # `--since` 收窄了登记窗口:照算,不判读
+
+#: 被取代的登记 → 取代它的 id(2026-09-26 复审 I1:旧判读检验在 40 天 / 块长 10 上假阳 ~20%/格;
+#: 旧 id 从未在生产上读过)。拿旧 spec 跑一律拒,一个字节都不落盘。
+SUPERSEDED = {"FAM_SWING_RULER_20260926": "FAM_SWING_RULER_V2_20260926"}
 
 EVIDENCE_MODES = {"EOD_PROXY"}
 COST_MODELS = {"none"}
 #: 度量原语 —— 登记冻结时(spec.code_sha)就已存在的实现。它们变了,同一个假设量出来的就
 #: 不再是同一个数,`verify_code_provenance` 逐路径比对、漂移或工作区脏即拒跑。
+#: 2026-09-26 复审 M5:不含 `scan/outcome.py` —— 普查读的是账本**数据**,fwd_10_oc 由写账本时
+#: 的 outcome 版本算出,HEAD 的 outcome 不会重算它;账本与湖分区的 sha256 已逐个落 manifest。
+#: 判读检验本身(`research/swing_ruler_decision.py`)必须钉。
 BEHAVIOR_ROOTS = (
     "autoresearch/common/stats.py",
     "autoresearch/common/ruler.py",
@@ -96,18 +106,20 @@ BEHAVIOR_ROOTS = (
     "autoresearch/research/robustness.py",
     "autoresearch/research/overnight_census/core.py",
     "autoresearch/research/edge_census.py",
+    "autoresearch/research/swing_ruler_decision.py",
     "autoresearch/contracts/research_experiment.py",
-    "autoresearch/scan/outcome.py",
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _RULE_KEYS = frozenset({"ge_hold_ratings", "veto_ratings", "lowturn_lane", "h4_exclude_tiers",
-                        "h4_mode", "decision_block", "block_lengths", "ci_level", "fdr_alpha"})
-#: 一格一行;`ci_lo`/`ci_hi` 是登记决策块(10)的区间,`*_b1`/`*_b5` 是敏感性(全报不挑)。
+                        "h4_mode", "decision_test", "hac_lag", "null_reps", "null_seed",
+                        "block_lengths", "ci_level", "fdr_alpha"})
+#: 一格一行;`ci_lo`/`ci_hi`/`p_value` 来自同一个登记的校准检验(`test`),区间不含 0 ⇔
+#: p ≤ α;`*_b1`/`*_b5`/`*_b10` 是块 bootstrap 敏感性区间(全报不挑,未校准,不判读)。
 CELL_COLUMNS = (
     "hypothesis_id", "expected_direction", "n_rows", "n_days", "mean_pp", "median_pp", "hit",
-    "ci_lo", "ci_hi", "block", "block_status", "p_block", "q_by",
-    "ci_lo_b1", "ci_hi_b1", "ci_lo_b5", "ci_hi_b5", "half1_pp", "half2_pp",
-    "sign_agree", "oc_judge", "verdict", "supports",
+    "ci_lo", "ci_hi", "test", "test_status", "t_hac", "se_hac_pp", "crit", "p_value", "q_by",
+    "ci_lo_b1", "ci_hi_b1", "ci_lo_b5", "ci_hi_b5", "ci_lo_b10", "ci_hi_b10",
+    "half1_pp", "half2_pp", "sign_agree", "oc_judge", "verdict", "supports",
 )
 _FRAME_COLUMNS = ("analysis_date", "code", "excess_pp")
 
@@ -116,6 +128,10 @@ _FRAME_COLUMNS = ("analysis_date", "code", "excess_pp")
 
 def registered_rule(spec: dict) -> dict:
     """判读旋钮只从冻结方案的 `selection_rule` 取;缺键/多键/与原语不相容一律拒。"""
+    superseded_by = SUPERSEDED.get(str(spec.get("experiment_id") or ""))
+    if superseded_by:
+        raise ValueError(f"experiment {spec['experiment_id']} is superseded by {superseded_by} "
+                         "(its decision test was not size-calibrated; review I1 2026-09-26)")
     rule = spec.get("selection_rule")
     if not isinstance(rule, dict):
         raise ValueError("selection_rule must register the census knobs as an object")
@@ -125,9 +141,12 @@ def registered_rule(spec: dict) -> dict:
     blocks = tuple(int(b) for b in rule["block_lengths"])
     if blocks != BLOCK_SENSITIVITY:
         raise ValueError(f"block_lengths must be the preregistered {BLOCK_SENSITIVITY}")
-    decision = int(rule["decision_block"])
-    if decision not in blocks:
-        raise ValueError("decision_block must be one of block_lengths")
+    if rule["decision_test"] != _decision.DECISION_TEST:
+        raise ValueError(f"decision_test must be {_decision.DECISION_TEST!r}")
+    lag, reps, seed = rule["hac_lag"], rule["null_reps"], rule["null_seed"]
+    if type(lag) is not int or lag < 1 or type(reps) is not int or reps < 1000 \
+            or type(seed) is not int:
+        raise ValueError("hac_lag >= 1, null_reps >= 1000 and null_seed must be integers")
     if not math.isclose(float(rule["ci_level"]), 1.0 - DEFAULT_ALPHA):
         raise ValueError(f"block_sensitivity only yields {1.0 - DEFAULT_ALPHA:.2f} intervals")
     fdr = float(rule["fdr_alpha"])
@@ -138,7 +157,7 @@ def registered_rule(spec: dict) -> dict:
             "lowturn_lane": str(rule["lowturn_lane"]),
             "h4_exclude_tiers": frozenset(map(str, rule["h4_exclude_tiers"])),
             "h4_mode": str(rule["h4_mode"]),
-            "decision_block": decision, "blocks": blocks,
+            "hac_lag": lag, "null_reps": reps, "null_seed": seed, "blocks": blocks,
             "ci_level": float(rule["ci_level"]), "fdr_alpha": fdr}
 
 
@@ -310,42 +329,36 @@ def hypothesis_frames(population: list[dict], baselines: dict[str, dict],
 
 def directional_cell(hypothesis_id: str, frame: pd.DataFrame, *, expected: str, rule: dict,
                      seed: int, n_boot: int) -> dict:
-    """一格的描述统计(`cell_stats`)+ 全部登记块长的区间 + 决策块的 p 值。"""
+    """一格的描述统计(`cell_stats`)+ 登记的校准检验(决策区间与 p 值同源)+ 块 bootstrap 敏感性。"""
     stats = cell_stats(frame, value_col="excess_pp", date_col="analysis_date",
                        sample_kind="event", seed=seed)
     daily = (frame.groupby("analysis_date")["excess_pp"].mean().sort_index().to_numpy(dtype=float)
              if len(frame) else np.asarray([], dtype=float))
     blocks = {b["block"]: b for b in block_sensitivity(daily, seed=seed, blocks=rule["blocks"],
                                                         n_boot=n_boot)}
-    decision = blocks[rule["decision_block"]]
-    test = block_mean_test(daily, block=rule["decision_block"], seed=seed, n_boot=n_boot)
+    test = _decision.overlap_test(daily, lag=rule["hac_lag"], reps=rule["null_reps"],
+                                  seed=rule["null_seed"], alpha=1.0 - rule["ci_level"])
     return {
         "hypothesis_id": hypothesis_id, "expected_direction": expected,
         "n_rows": stats["n_events"], "n_days": stats["n_days"], "mean_pp": stats["mean_pp"],
         "median_pp": stats["median_pp"], "hit": stats["hit"],
-        "ci_lo": decision["lo"], "ci_hi": decision["hi"], "block": rule["decision_block"],
-        "block_status": decision["status"], "p_block": test.pvalue, "q_by": None,
+        "ci_lo": test["lo"], "ci_hi": test["hi"], "test": _decision.DECISION_TEST,
+        "test_status": test["status"], "t_hac": test["t"], "se_hac_pp": test["se"],
+        "crit": test["crit"], "p_value": test["p"], "q_by": None, "_test": test,
         "ci_lo_b1": blocks.get(1, {}).get("lo"), "ci_hi_b1": blocks.get(1, {}).get("hi"),
         "ci_lo_b5": blocks.get(5, {}).get("lo"), "ci_hi_b5": blocks.get(5, {}).get("hi"),
+        "ci_lo_b10": blocks.get(10, {}).get("lo"), "ci_hi_b10": blocks.get(10, {}).get("hi"),
         "half1_pp": stats["half1_pp"], "half2_pp": stats["half2_pp"],
         "sign_agree": None, "oc_judge": judge(stats),
     }
 
 
 def verdict(cell: dict, *, min_days: int, fdr_alpha: float, registered: bool) -> str:
-    """登记规则:窗口先判(探索性)、样本门次之,再看块区间与 BY。"""
-    if not registered:
-        return EXPLORATORY
-    if int(cell.get("n_days") or 0) < min_days:
-        return INSUFFICIENT
-    lo, hi, q = cell.get("ci_lo"), cell.get("ci_hi"), cell.get("q_by")
-    if lo is None or hi is None or q is None:
-        return UNPROVEN
-    if q <= fdr_alpha and lo > 0:
-        return POSITIVE
-    if q <= fdr_alpha and hi < 0:
-        return NEGATIVE
-    return UNPROVEN
+    """登记规则(`swing_ruler_decision.decide`,钉在 code_sha):窗口先判(探索性)、样本门次之,
+    再看校准检验是否拒绝(⇔ 决策区间不含 0)与 BY q。"""
+    return _decision.decide(n_days=int(cell.get("n_days") or 0), min_days=min_days,
+                            test=cell.get("_test"), q=cell.get("q_by"), fdr_alpha=fdr_alpha,
+                            registered=registered)
 
 
 def _supports(expected: str, result: str) -> bool | None:
@@ -362,7 +375,7 @@ def build_cells(frames: dict[str, pd.DataFrame], h4: pd.DataFrame, *, spec: dict
     expected = {h["hypothesis_id"]: h["expected_direction"] for h in spec["hypotheses"]}
     cells = {h: directional_cell(h, frames[h], expected=expected[h], rule=rule, seed=seed,
                                  n_boot=n_boot) for h in DIRECTIONAL}
-    pvalues = [cells[h]["p_block"] for h in DIRECTIONAL]
+    pvalues = [cells[h]["p_value"] for h in DIRECTIONAL]
     adjusted = family_adjustment([1.0 if p is None else p for p in pvalues],
                                  dependence="arbitrary", alpha=rule["fdr_alpha"])
     for h, p, adj in zip(DIRECTIONAL, pvalues, adjusted, strict=True):
@@ -420,23 +433,26 @@ def render_readout(spec: dict, cells: list[dict], manifest: dict) -> str:
         f"> 窗口 `[{manifest['test_range'][0]}, {manifest['test_range'][1]})`"
         + (f" ∩ `--since {manifest['since']}`" if manifest.get("since") else "")
         + ("" if manifest["registered_window"] else " —— **收窄了登记窗口,全表只作探索性读数**")
-        + f" · 样本门 n_days ≥ {manifest['min_days']} · 决策区间 = 块长 "
-        f"{rule['decision_block']} 的块 bootstrap {round(rule['ci_level'] * 100)}% · "
+        + f" · 样本门 n_days ≥ {manifest['min_days']} · 决策检验 `{rule['decision_test']}`"
+        f"(HAC t,Bartlett 滞后 {rule['hac_lag']};临界值 = 同一 n 上 MA({rule['hac_lag']}) 重叠零假设"
+        f"模拟分位,R = {rule['null_reps']}、种子 {rule['null_seed']})"
+        f"{round(rule['ci_level'] * 100)}% 区间,与 p 值同源 · "
         f"H1–H3 一族 BY(arbitrary)q ≤ {rule['fdr_alpha']}",
         "",
         "## 判读",
         "",
-        "| 假设 | 预期 | n_days | n_rows | 均值 pp | 块10 CI pp | q_BY | 判读 | 与预期 |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| 假设 | 预期 | n_days | n_rows | 均值 pp | 校准 CI pp | p | q_BY | 判读 | 与预期 |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for h in DIRECTIONAL:
         c = by_id[h]
         ci = ("—" if c["ci_lo"] is None or c["ci_hi"] is None
               else f"[{_pp(c['ci_lo'])}, {_pp(c['ci_hi'])}]")
         q = "—" if c["q_by"] is None else f"{c['q_by']:.3f}"
+        pv = "—" if c["p_value"] is None else f"{c['p_value']:.4f}"
         agree = {True: "同向", False: "**反向证伪**", None: "—"}[c["supports"]]
         lines.append(f"| `{h}` | {c['expected_direction']} | {c['n_days']} | {c['n_rows']} | "
-                     f"{_pp(c['mean_pp'])} | {ci} | {q} | {c['verdict']} | {agree} |")
+                     f"{_pp(c['mean_pp'])} | {ci} | {pv} | {q} | {c['verdict']} | {agree} |")
     h4 = by_id[H4]
     rate = "—" if h4["sign_agree"] is None else f"{100 * h4['sign_agree']:.0f}%"
     lines += [
@@ -444,9 +460,9 @@ def render_readout(spec: dict, cells: list[dict], manifest: dict) -> str:
         f"H4(描述性,不入 BY 族):E6 相对 BUY {h4['n_rows']} 笔 / {h4['n_days']} 天,"
         f"fwd_10_oc 与 gap_c1_o2 符号一致率 {rate} —— {h4['verdict']}。",
         "",
-        "## 块长敏感性(全报不挑)",
+        "## 块 bootstrap 敏感性(全报不挑;未校准,不判读)",
         "",
-        "| 假设 | 块 1 | 块 5 | 块 10(决策) |",
+        "| 假设 | 块 1 | 块 5 | 块 10 |",
         "|---|---|---|---|",
     ]
     for h in DIRECTIONAL:
@@ -456,7 +472,7 @@ def render_readout(spec: dict, cells: list[dict], manifest: dict) -> str:
             return "—" if lo is None or hi is None else f"[{_pp(lo)}, {_pp(hi)}]"
 
         lines.append(f"| `{h}` | {iv(c['ci_lo_b1'], c['ci_hi_b1'])} | "
-                     f"{iv(c['ci_lo_b5'], c['ci_hi_b5'])} | {iv(c['ci_lo'], c['ci_hi'])} |")
+                     f"{iv(c['ci_lo_b5'], c['ci_hi_b5'])} | {iv(c['ci_lo_b10'], c['ci_hi_b10'])} |")
     base = manifest["baselines"]
     lines += [
         "",
@@ -485,11 +501,15 @@ def render_readout(spec: dict, cells: list[dict], manifest: dict) -> str:
         "不构成「评级造成超额」的因果主张。",
         "- H2/H3 的动机读数(08-21 低位转强、09-24 否决价值)与本账本样本重叠:这两格是按登记口径"
         "的稳健性复核,不是独立确认。",
-        "- 块 bootstrap 按观察到的扫描日序列重采样(扫描日有缺口时一个块跨越的交易日更多,重叠"
-        "相关只会被多覆盖)。",
+        "- 决策检验与块 bootstrap 都按观察到的扫描日序列排列(扫描日有缺口时一个观察步跨越的"
+        "交易日更多,重叠相关只会被多估 → 更保守)。",
+        "- 块 bootstrap 区间只作敏感性:40 天 / 块长 10 每次重采样只有 4 个块,MA(9) 零假设下名义 "
+        "95% 的区间只覆盖 0 约 65–70%(2026-09-26 复审 I1)—— 它排除 0 不算证据。",
+        "- 功效低:40 天时真效应 0.5σ 的检出率约 16%(登记 purge_rule 的功效披露)—— 40 天的 "
+        "UNPROVEN 是有真效应时的常见结果。",
         "- `oc_judge` 列 = `overnight_census.core.judge`(≥60 日且 ≥300 事件、2022–2025 逐年同号、"
         "0.15pp 成本门),2026 单年账本按构造过不了,只作对照,不作判读。",
-        "- UNPROVEN **不等于**已证无效;INSUFFICIENT 只说明样本还没攒够(B4 需 ≥40 个交易日)。",
+        "- UNPROVEN **不等于**已证无效;INSUFFICIENT 只说明样本还没攒够(B4 需 ≥40 个扫描日)。",
         "- 停机规则(spec §5 B2):H1 与 H2 同时不成立 → B 线止于「观察席只展示不推」;不追加第五个假设。",
         "",
     ]
@@ -584,6 +604,8 @@ def run_census(*, spec_path: Path | str, since: str | None = None,
         "since": since, "registered_window": registered, "test_range": list(test_range),
         "min_days": min_days, "bootstrap": dict(spec["bootstrap"]),
         "selection_rule": dict(spec["selection_rule"]), "ruler": MAIN, "swing_ruler": SWING,
+        "decision_test": {"name": _decision.DECISION_TEST, "hac_lag": rule["hac_lag"],
+                          "null_reps": rule["null_reps"], "null_seed": rule["null_seed"]},
     }
     out_dir = eio.create_experiment_dir(rpt / "research" / "swing_ruler", spec["experiment_id"])
     eio.freeze_spec(out_dir, spec)

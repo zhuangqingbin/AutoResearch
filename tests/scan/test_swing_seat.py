@@ -66,20 +66,38 @@ def _stage_rulers(tmp_path, *, n_days: int, value: float = 0.0042,
     return path
 
 
+def _built(scan, rulers):
+    """prelude 冻结读数行(`freeze_readout`)→ L5 建席位(`build_swing_seat` 只读冻结副本)。"""
+    ss.freeze_readout(scan, stage_rulers_path=rulers)
+    return ss.build_swing_seat(scan)
+
+
 # ───────────────────────── 席位人口 ─────────────────────────
 
 def test_seat_is_non_pinned_hold_plus_not_prohibited_sorted_by_conviction(tmp_path):
-    seat = ss.build_swing_seat(_scan(tmp_path), stage_rulers_path=tmp_path / "absent.csv")
+    seat = _built(_scan(tmp_path), tmp_path / "absent.csv")
     assert [r["code"] for r in seat["rows"]] == ["600002", "600001", "600006"]
     assert seat["n"] == 3
     entries = {r["code"]: r["entry"] for r in seat["rows"]}
-    assert entries == {"600002": "条件", "600001": "允许", "600006": "未写"}
+    assert entries == {"600002": "条件", "600001": "允许", "600006": "未机读"}
+
+
+def test_caption_states_the_entry_line_is_the_t1_close_leg_and_unknown_is_unread(tmp_path):
+    """复审 M3:卡面 `**入场**` 行回答的是「T+1 尾盘按执行线能否新开仓」(隔夜尺 c1 腿),
+    不是本尺 D+1 开盘那条腿 —— 标题行写的是后者,说明行必须把前者讲明;没有机读入场行的卡
+    (09-25 契约之前的全部历史卡)写「未机读」,不写「未写」冒充卡上真没写。"""
+    seat = _built(_scan(tmp_path), tmp_path / "absent.csv")
+    text = "\n".join(ss.render_section(seat))
+    assert "T+1 尾盘" in text and "c1" in text and "D+1 开盘" in text
+    assert "| 600006 | 己 | Hold | 未机读 | 50 |" in text
+    assert "未写" not in text
+    assert ss.banned_words(text) == []
 
 
 def test_every_seat_number_is_traceable_to_its_source_file(tmp_path):
     """`_src` 同 brief 边表:逐行 field/value/file/locator,且真能在那个文件里找到同一个值。"""
     scan = _scan(tmp_path)
-    seat = ss.build_swing_seat(scan, stage_rulers_path=_stage_rulers(tmp_path, n_days=45))
+    seat = _built(scan, _stage_rulers(tmp_path, n_days=45))
     ratings = json.loads((scan / "_final_ratings.json").read_text(encoding="utf-8"))
     with (scan / "finalists.csv").open(encoding="utf-8") as fh:
         conv = {r["code"]: r["conviction"] for r in csv.DictReader(fh)}
@@ -93,13 +111,15 @@ def test_every_seat_number_is_traceable_to_its_source_file(tmp_path):
         assert conv_src["file"] == "finalists.csv" and conv_src["value"] == conv[code]
         assert by_field[f"seat.{code}.entry"]["file"] == f"details/{code}.md"
     readout_src = by_field["seat.readout"]
-    assert readout_src["file"] == "stage_rulers.csv"
+    assert readout_src["file"] == ss.READOUT_FILENAME          # 冻结副本(复审 M4),不是活视图
     assert ss.READOUT_METRIC in readout_src["locator"]
+    frozen = json.loads((scan / ss.READOUT_FILENAME).read_text(encoding="utf-8"))
+    assert readout_src["value"] == frozen["value"]
 
 
 def test_write_and_load_roundtrip(tmp_path):
     scan = _scan(tmp_path)
-    seat = ss.build_swing_seat(scan, stage_rulers_path=tmp_path / "absent.csv")
+    seat = _built(scan, tmp_path / "absent.csv")
     path = ss.write_swing_seat(scan, seat)
     assert path == scan / ss.SEAT_FILENAME
     assert ss.load_swing_seat(scan) == seat
@@ -110,7 +130,7 @@ def test_write_and_load_roundtrip(tmp_path):
 def test_empty_seat_says_none_and_the_section_never_disappears(tmp_path):
     rows = [r for r in _FINALISTS if r[4] != "Hold" or r[2] == "pinned" or r[5] == "禁止"]
     rows = [r for r in rows if r[4] != "Overweight"]
-    seat = ss.build_swing_seat(_scan(tmp_path, rows), stage_rulers_path=tmp_path / "absent.csv")
+    seat = _built(_scan(tmp_path, rows), tmp_path / "absent.csv")
     assert seat["n"] == 0
     text = "\n".join(ss.render_section(seat))
     assert text.startswith(ss.SECTION_TITLE)
@@ -127,19 +147,19 @@ def test_missing_seat_renders_not_generated_not_none():
 # ───────────────────────── 读数行 ─────────────────────────
 
 def test_readout_below_forty_days_says_thin_without_a_number(tmp_path):
-    seat = ss.build_swing_seat(_scan(tmp_path), stage_rulers_path=_stage_rulers(tmp_path, n_days=36))
+    seat = _built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=36))
     line = ss.render_section(seat)[-1]
     assert "样本不足" in line and "36" in line and "pp" not in line
 
 
 def test_readout_at_forty_days_prints_the_pp_value(tmp_path):
-    seat = ss.build_swing_seat(_scan(tmp_path), stage_rulers_path=_stage_rulers(tmp_path, n_days=45))
+    seat = _built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=45))
     line = ss.render_section(seat)[-1]
     assert "+0.42pp" in line and "45" in line
 
 
 def test_readout_absent_stage_rulers_is_named_not_faked(tmp_path):
-    seat = ss.build_swing_seat(_scan(tmp_path), stage_rulers_path=tmp_path / "absent.csv")
+    seat = _built(_scan(tmp_path), tmp_path / "absent.csv")
     assert seat["readout"]["status"] == "ABSENT"
     assert "stage_rulers" in ss.render_section(seat)[-1]
 
@@ -147,7 +167,7 @@ def test_readout_absent_stage_rulers_is_named_not_faked(tmp_path):
 # ───────────────────────── ⑤ 措辞 ─────────────────────────
 
 def test_seat_wording_never_says_buy(tmp_path):
-    seat = ss.build_swing_seat(_scan(tmp_path), stage_rulers_path=_stage_rulers(tmp_path, n_days=45))
+    seat = _built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=45))
     for text in ("\n".join(ss.render_section(seat)), ss.brief_text(seat),
                  ss.brief_text(seat, compact=True), ss.brief_text(None)):
         assert ss.banned_words(text) == [], text
@@ -202,3 +222,54 @@ def test_brief_lint_flags_a_pointer_without_its_section(tmp_path):
 def test_banned_word_list_is_the_lint_single_source(word):
     """lint 与渲染器读同一张禁词表(`swing_seat.BANNED_WORDS`),不各写一份。"""
     assert word in ss.BANNED_WORDS
+
+
+# ───────────────────────── 复审 M4:读数行冻结 + 改标签 ─────────────────────────
+
+def test_l5_reads_the_frozen_readout_so_a_nightly_rebuild_cannot_change_the_summary(tmp_path):
+    """复审 M4:L5 是重放单元(`trace/replay` 逐字节比 summary.md)。读数行若在 L5 读夜间
+    重建的 `stage_rulers.csv`,重放时要么读不到、要么读到更新的数 —— §12 就与已发布的
+    summary 对不上。prelude 冻结一份进 staging,L5 只读它:活文件事后变了,§12 一字不变。"""
+    scan = _scan(tmp_path)
+    live = _stage_rulers(tmp_path, n_days=45)
+    ss.freeze_readout(scan, stage_rulers_path=live)
+    first = ss.render_section(ss.build_swing_seat(scan))
+    _stage_rulers(tmp_path, n_days=60, value=-0.02)                 # 当晚夜间重建换了数
+    assert ss.render_section(ss.build_swing_seat(scan)) == first
+    assert "+0.42pp" in first[-1]
+
+
+def test_unfrozen_readout_is_named_and_never_read_live(tmp_path, monkeypatch):
+    """prelude 没冻结(跳了 ledger_views 步)→ 读数行照实写「未冻结」,**不**回退去读活文件。"""
+    scan = _scan(tmp_path)
+    live = _stage_rulers(tmp_path, n_days=45)
+    monkeypatch.setattr(ss, "_default_stage_rulers_path", lambda: live)
+    seat = ss.build_swing_seat(scan)
+    assert seat["readout"]["status"] == "NOT_FROZEN"
+    line = ss.render_section(seat)[-1]
+    assert "未冻结" in line and "pp" not in line
+
+
+def test_readout_line_is_labelled_as_the_finalist_vs_bench_cell_not_the_seat_record(tmp_path):
+    """复审 M4:那一格量的是「L3 finalist − bench」(剔 📌/composite、T+1 收盘可买折叠),
+    不是观察席自己的战绩 —— 读者会自然把它读成「这个席位表现如何」,标签必须说清。"""
+    seat = _built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=45))
+    line = ss.render_section(seat)[-1]
+    assert "finalist − bench" in line and "不是本席战绩" in line
+
+
+# ───────────────────── 复审 I1(§12 那一半):簇数 < 10 不印区间 ─────────────────────
+
+def test_readout_never_prints_an_interval_built_from_fewer_than_ten_clusters(tmp_path):
+    """复审 I1:这一格的区间是 10 日一簇的 date-cluster bootstrap。45 天 = 5 簇,重采样只有
+    5 个单元,区间覆盖率远低于名义 95%(复审模拟 ~70%)—— 印出来就是伪精确。点估计照印,
+    区间换成「区间不可信(簇数<10)」。"""
+    line = ss.render_section(_built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=45)))[-1]
+    assert "+0.42pp" in line
+    assert "区间不可信(簇数 5<10)" in line
+    assert "[" not in line and "-0.31" not in line and "+1.15" not in line
+
+
+def test_readout_prints_the_interval_once_there_are_ten_clusters(tmp_path):
+    line = ss.render_section(_built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=100)))[-1]
+    assert "+0.42pp" in line and "[-0.31, +1.15]pp" in line and "区间不可信" not in line

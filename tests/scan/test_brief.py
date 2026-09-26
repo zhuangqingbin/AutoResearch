@@ -1272,3 +1272,16 @@ def test_seat_pointer_sits_after_delta_and_outside_the_dashboard_slice(scan):
     assert lines.index(next(ln for ln in lines if ln.startswith("**⑦"))) == \
         lines.index(next(ln for ln in lines if ln.startswith("**⑥"))) + 1
     assert "⑦" not in brief.dashboard_block(built)
+
+
+def test_seat_pointer_reads_the_registered_file_name_not_a_literal(scan, monkeypatch):
+    """复审 M8:⑦ 的文件名取自登记表(`swing_seat.SEAT_FILENAME` ← `contracts.artifacts`),
+    brief 里不另写一份字面量 —— 改名只改登记表,读点与边表跟着走。"""
+    from autoresearch.scan import swing_seat as ss
+
+    monkeypatch.setattr(ss, "SEAT_FILENAME", "_swing_seat_renamed.json")
+    _write_seat(scan, 2)
+    built = brief.build(scan, run_folder=_RUN)
+    assert "**⑦ 10 日观察席(影子)**:2 只 → summary §12" in built["markdown"]
+    row = next(r for r in built["sources"] if r["field"] == "swing_seat.n")
+    assert row["file"] == "_swing_seat_renamed.json"

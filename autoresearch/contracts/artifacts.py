@@ -102,6 +102,10 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("prelude_summary", "_prelude_summary.md", "staging", "prelude", "prelude", "md", "always"),
     Artifact("l4_rejection_readout", "_l4_rejection_readout.json", "staging", "prelude", "prelude", "json", "gated",
              required_when="有已发布 run 可读(滚动 40 日)"),
+    # 2026-09-26 复审 M4:§12 读数行的冻结副本 —— prelude 的 ledger_views 步(stage_rulers 刚重建
+    # 之后)抄一行进 staging,L5 只读它(夜间重建的活视图不在重放单元里,读它会漂)
+    Artifact("swing_readout", "_swing_readout.json", "staging", "prelude", "prelude", "json", "gated",
+             required_when="prelude 的 ledger_views 步跑过(--skip ledger_views 时缺席,§12 写「未冻结」)"),
     Artifact("prewarm", "_prewarm.json", "staging", "prelude", "prewarm", "json", "gated",
              required_when="夜间预热跑过"),
     Artifact("market_view", "market_view.md", "staging", "prelude", "strategist", "md", "always"),
@@ -488,7 +492,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "w3_grids", "json", "conditional"),
     Artifact("w3_grids_signals", "w3_grids/*/signal_coverage.json", "research_report", "observe",
              "w3_grids", "json", "conditional"),
-    # B2 10 日尺预注册普查(2026-09-26 登记;冻结方案见 docs/research/2026-09-26-swing-ruler-family.spec.json)
+    # B2 10 日尺预注册普查(2026-09-26 登记;冻结方案见 docs/research/2026-09-26-swing-ruler-family-v2.spec.json,
+    # v1 = 同目录 2026-09-26-swing-ruler-family.spec.json 已被取代、拒跑 —— 复审 I1)
     Artifact("swing_ruler_spec", "swing_ruler/*/spec.json", "research_report", "observe",
              "swing_ruler_census", "json", "conditional"),
     Artifact("swing_ruler_cells", "swing_ruler/*/cells.csv", "research_report", "observe",

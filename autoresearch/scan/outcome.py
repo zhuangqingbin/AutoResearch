@@ -733,6 +733,13 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
         "n_rows": len(rows), "n_scored": n_scored,
         "rows": rows,
     })
+    # 复审 M6(2026-09-26):T+10 分区「存在」≠「灌完」。10 日尺算得出的行不够同一个「多数」
+    # (与上面主尺 `complete` 同一表达式)→ 不盖 MATURE_10,保持 MISSING_MARKET_DATA,
+    # 下一晚回访(`_is_swing_settled` 只认 MATURE_10),避免半截分区把缺值永久冻住。
+    n_scored_10 = sum(1 for r in rows.values() if r.get(SWING) is not None)
+    if doc["outcome_status_swing"] == MATURE_10 and not (
+            rows and n_scored_10 >= max(1, len(rows) // 2)):
+        doc["outcome_status_swing"] = MISSING_MARKET_DATA
     return doc
 
 
@@ -1450,8 +1457,13 @@ def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | No
                 skipped += 1
                 skip_reasons[run.name] = "already_verified_complete"
                 continue
-            merged, why = _swing_supplement(run, existing, lake_daily=lake_daily,
-                                            calendar=calendar, today=today, now=now)
+            # 复审 M1(2026-09-26):swing 列是影子数据 —— 某个历史 run 的回访崩了只记原因、
+            # 继续走下一个 run,绝不让它挡住更新 run 的主尺回填(09-17 停摆 9 天同一形状)。
+            try:
+                merged, why = _swing_supplement(run, existing, lake_daily=lake_daily,
+                                                calendar=calendar, today=today, now=now)
+            except Exception as exc:  # noqa: BLE001 — 影子回访失败必须隔离,原因进 skip_reasons
+                merged, why = None, f"swing_revisit:error:{type(exc).__name__}"
             if merged is None:
                 skipped += 1
                 skip_reasons[run.name] = why

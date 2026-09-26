@@ -374,7 +374,8 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
             prev_file = "manifest.json"
             today_codes = {_code6(r.get("code")) for r in finals if r.get("code")}
             n_repeat, n_today = len(prev_codes & today_codes), len(today_codes)
-    seat_doc = _json(scan / "_swing_seat.json")
+    from autoresearch.scan import swing_seat as _swing_seat  # 名字取登记表(复审 M8),不写字面量
+    seat_doc = _json(scan / _swing_seat.SEAT_FILENAME)
     changes: list[dict] = []
     for code in sorted(set(prev_by_code) & set(rating_by_code)):
         if prev_by_code[code] != rating_by_code[code]:
@@ -507,7 +508,7 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int,
     # ⑦ 10 日观察席(影子;只一行指针,正文在 summary §12)
     from autoresearch.scan import swing_seat as _swing_seat
     seat = facts.get("swing_seat")
-    seat_text = _src(src, "swing_seat.n", (seat or {}).get("n"), "_swing_seat.json", "n",
+    seat_text = _src(src, "swing_seat.n", (seat or {}).get("n"), _swing_seat.SEAT_FILENAME, "n",
                      _swing_seat.brief_text(seat, compact=seat_compact))
     out.append(("**⑦** " if seat_compact else "**⑦ 10 日观察席(影子)**:") + seat_text)
 

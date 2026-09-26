@@ -2,8 +2,9 @@
 
 判据围绕 Review Focus 写,不围绕实现写:
 
-① **窗口重叠** —— 相邻分析日的 fwd_10 窗口重叠 9 个 session,显著性只许用块长 10 的
-   块 bootstrap;逐日独立的区间会把 10 天的平台当 10 个独立样本,窄到假;
+① **窗口重叠** —— 相邻分析日的 fwd_10 窗口重叠 9 个 session,显著性只许用登记的校准检验
+   (HAC t + 同一 n 上 MA(9) 重叠零假设的模拟临界值,`research/swing_ruler_decision`);逐日
+   独立的区间会把 10 天的平台当 10 个独立样本,窄到假;区间与 p 值必须同源(复审 I1);
 ② **未成熟行** —— PENDING_10 的行从分母剔除并**计数**,不当 0、不静默参与均值;
 ③ **📌 污染** —— 保送票(账本 lane/role 或冻结 staging 的 pinned_note)进任何一格都是错;
 ④ **样本门** —— n_days < 40 一律 INSUFFICIENT,哪怕区间好看;
@@ -19,6 +20,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -26,7 +28,9 @@ from autoresearch.common import workspace as ws
 from autoresearch.research import swing_ruler_census as sc
 from autoresearch.scan import outcome
 
-SPEC = Path(__file__).resolve().parents[2] / "docs" / "research" / "2026-09-26-swing-ruler-family.spec.json"
+#: 2026-09-26 复审 I1:判读检验重新登记为 v2(旧 id 拒跑,见 `test_superseded_v1_spec_is_refused`)。
+SPEC_V1 = Path(__file__).resolve().parents[2] / "docs" / "research" / "2026-09-26-swing-ruler-family.spec.json"
+SPEC = SPEC_V1.with_name("2026-09-26-swing-ruler-family-v2.spec.json")
 FLAT_CODES = tuple(f"{i:06d}" for i in range(11, 32))      # 21 只平推票 → 市场中位恒 0
 LEDGER_CODES = ("000001", "000002", "000003", "000004", "000005")
 
@@ -174,19 +178,60 @@ def test_below_forty_days_every_directional_cell_is_insufficient(tmp_path):
     assert cells["swing_h2_lowturn_lane"]["verdict"] == "INSUFFICIENT"      # 0 天也是不足
 
 
-# ───────────────────────── ① 窗口重叠:块长 10 ─────────────────────────
+# ───────────────────────── ① 窗口重叠:校准检验 ─────────────────────────
 
-def test_significance_uses_the_length_10_block_bootstrap_not_independent_days(tmp_path):
+def test_significance_uses_the_overlap_calibrated_test_not_independent_days(tmp_path):
     """10 天一个平台(+1.5pp / −1.0pp 交替):逐日独立的区间 [0.15, 0.85] 排除 0,
-    块长 10 的区间跨 0 → 必须是 UNPROVEN。改成按块长 1 判读,这条测试必红。"""
+    登记的校准检验(HAC t + MA(9) 零假设临界值)区间跨 0 → 必须是 UNPROVEN。
+    改成按块长 1 判读,这条测试必红。"""
+    from autoresearch.research import swing_ruler_decision as dec
+
     values = [0.015 if (i // 10) % 2 == 0 else -0.010 for i in range(50)]
     lake, scan_root, rpt = _world(tmp_path, n_days=50, n_pending=0, h1_values=values)
     h1 = _cells(_run(tmp_path, lake, scan_root, rpt))["swing_h1_hold_plus_finalists"]
     assert float(h1["mean_pp"]) == pytest.approx(0.5)
     assert float(h1["ci_lo_b1"]) > 0                     # 逐日独立会误判「显著」
-    assert float(h1["ci_lo"]) < 0 < float(h1["ci_hi"])   # 块长 10:跨 0
-    assert h1["block"] == "10"
+    assert float(h1["ci_lo"]) < 0 < float(h1["ci_hi"])   # 校准区间:跨 0
+    assert h1["test"] == dec.DECISION_TEST
+    assert float(h1["crit"]) == pytest.approx(dec.critical_value(50))
     assert h1["verdict"] == "UNPROVEN"
+
+
+def test_decision_interval_and_p_value_come_from_the_same_method(tmp_path):
+    """复审 I1:旧基线 H1 区间整段在 0 以下而 p = 0.051(区间与 p 值两套方法)。
+    现在 cells.csv 里 CI 不含 0 ⇔ p ≤ 0.05,逐格成立;块 bootstrap 区间只作敏感性。"""
+    rng = np.random.default_rng(3)
+    values = list(0.004 + 0.01 * rng.standard_normal(50))
+    lake, scan_root, rpt = _world(tmp_path, n_days=50, n_pending=0, h1_values=values)
+    cells = _cells(_run(tmp_path, lake, scan_root, rpt))
+    for h in ("swing_h1_hold_plus_finalists", "swing_h3_rejection_negative"):
+        c = cells[h]
+        excludes = float(c["ci_lo"]) > 0 or float(c["ci_hi"]) < 0
+        assert excludes == (float(c["p_value"]) <= 0.05), h
+        assert {"ci_lo_b10", "ci_hi_b10"} <= set(c)
+
+
+def test_superseded_v1_spec_is_refused_before_anything_is_written(tmp_path):
+    """复审 I1:FAM_SWING_RULER_20260926 的判读检验没校准,已被 v2 取代 —— 拿旧 spec 跑必拒,
+    一个字节都不落盘(旧 id 从未在生产上读过,不许补一次)。"""
+    lake, scan_root, rpt = _world(tmp_path, n_days=41, n_pending=0)
+    v1 = json.loads(SPEC_V1.read_text(encoding="utf-8"))
+    v1["engine"] = ws.ENGINE
+    path = tmp_path / "v1.spec.json"
+    path.write_text(json.dumps(v1, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="superseded"):
+        sc.run_census(spec_path=path, scan_root=scan_root, reports_root=rpt, lake_daily=lake)
+    with pytest.raises(ValueError, match="superseded"):
+        sc.census_sizes(spec_path=path, scan_root=scan_root, reports_root=rpt, lake_daily=lake)
+    assert not (rpt / "research").exists()
+
+
+def test_provenance_roots_pin_the_decision_test_but_not_the_ledger_writer():
+    """复审 M5:普查读账本**数据**,`scan/outcome.py` 不重算已写的 fwd_10_oc —— 钉它不保护
+    任何东西,只会让无关的 outcome 修补逼出新 id。判读检验模块必须钉。"""
+    assert "autoresearch/scan/outcome.py" not in sc.BEHAVIOR_ROOTS
+    assert "autoresearch/research/swing_ruler_decision.py" in sc.BEHAVIOR_ROOTS
+    assert "autoresearch/common/stats.py" in sc.BEHAVIOR_ROOTS
 
 
 # ───────────────────────── ③ 📌 污染 ─────────────────────────
