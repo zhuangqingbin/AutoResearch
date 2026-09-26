@@ -107,6 +107,15 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
     return expand(request, handle, plan, task)
 
 
+def inapplicable_templates(plan: dict, handle) -> frozenset[str]:
+    """Templates the run's frozen facts make unreachable (``DONE`` must not wait for them)."""
+    if plan["run_kind"] != "scan-market":
+        return frozenset()
+    from autoresearch.session_agent.workflows.scan import inapplicable_templates as scan
+
+    return scan(handle)
+
+
 def register_expansion_artifacts(request: dict, handle, expansion: dict) -> None:
     if request["kind"] != "scan-market":
         return
@@ -120,6 +129,7 @@ def register_expansion_artifacts(request: dict, handle, expansion: dict) -> None
 __all__ = [
     "build_plan",
     "expansions_after_task",
+    "inapplicable_templates",
     "register_artifacts",
     "register_expansion_artifacts",
     "validate_operation_params",

@@ -78,6 +78,9 @@ def _parser():
     verify_report.add_argument(
         "--level", choices=("integrity", "full"), default="full"
     )
+    from autoresearch.session_agent.mailbox_cli import add_parsers
+
+    add_parsers(subparsers)
     return parser
 
 
@@ -212,6 +215,16 @@ def main(argv=None):
                 expected_run_id=args.expected_run_id,
                 level=args.level,
             )
+        elif args.command == "run":
+            from autoresearch.session_agent.mailbox_cli import run_command
+
+            value, code = run_command(args)
+            _emit(value)
+            return code
+        elif args.command == "mailbox":
+            from autoresearch.session_agent.mailbox_cli import mailbox_command
+
+            value = mailbox_command(args)
         else:
             host_receipt = _load(args.host_receipt_file) if args.host_receipt_file else None
             value = service.submit(

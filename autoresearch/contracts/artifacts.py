@@ -175,6 +175,18 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("l4_cards", "details/*.md", "staging", "l4", "l4-card", "md", "always"),
     Artifact("ensemble", "_ensemble_*.json", "staging", "l4", "l4-ensemble", "json", "conditional",
              required_when="有 ≥OW 卡或 📌 SELL 提案"),
+    # ---- session_v1 runner ↔ 宿主邮箱(2026-09-26 批 2–3,spec §4 A1-1)-------------------
+    # `<staging>/_dispatch/`:runner 写请求、宿主会话(mailbox wait/complete)写结果,驱动器只认
+    # result 文件。一场里的请求横跨 macro/sector/l3/l4 四段派发,按大头登记在 l4;legacy Workflow
+    # 路径不产。scan staging bundle 排除本目录(domain_ops._SCAN_BUNDLE_CONTROL_ROOTS)。
+    Artifact("dispatch_requests", "_dispatch/*.request.json", "staging", "l4", "session_agent.runner",
+             "json", "conditional", required_when="session_v1 runner 以 mailbox 执行器派发推理任务"),
+    Artifact("dispatch_results", "_dispatch/*.result.json", "staging", "l4", "session_agent.mailbox",
+             "json", "conditional", required_when="宿主会话回写了某次派发的结果"),
+    Artifact("dispatch_runner_status", "_dispatch/runner.json", "staging", "l4", "session_agent.runner",
+             "json", "conditional", required_when="session_v1 runner 跑过"),
+    Artifact("dispatch_ledger", "_dispatch/ledger.jsonl", "staging", "l4", "session_agent.runner",
+             "json", "conditional", required_when="session_v1 runner 结清过至少一次派发"),
     # ---- L5 ---------------------------------------------------------------
     Artifact("early_stop", "_early_stop.json", "staging", "l5", "assemble", "json", "always"),
     Artifact("final_ratings", "_final_ratings.json", "staging", "l5", "assemble", "json", "always"),

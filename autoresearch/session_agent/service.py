@@ -358,10 +358,14 @@ def _state(handle) -> tuple[str, list[dict], list[dict]]:
             _read_json(path)["template_id"]
             for path in sorted((_session_dir(handle) / "expansions").glob("*.json"))
         }
+        from autoresearch.session_agent.workflows import inapplicable_templates
+
+        not_applicable = inapplicable_templates(frozen_plan, handle)
         missing = [
             template["template_id"]
             for template in frozen_plan["task_templates"]
             if template["template_id"] not in expanded
+            and template["template_id"] not in not_applicable
         ]
         if not missing:
             return "DONE", [], []

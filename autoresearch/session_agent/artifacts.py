@@ -257,13 +257,32 @@ def replace_failed_output(
 
 
 def binding_sha256(handle, artifact_id: str) -> str | None:
-    """Return the current binding after verifying it when content is already bound."""
+    """Return the current binding after verifying it when content is already bound.
+
+    A WRITE output that was never bound (e.g. a timed-out attempt wrote nothing) has
+    no file to verify: ``None`` without touching the filesystem.
+    """
+    registry = _read_registry(_registry_path(handle), handle)
+    if artifact_id not in registry["artifacts"]:
+        raise KeyError(f"unregistered artifact: {artifact_id}")
+    if registry["artifacts"][artifact_id]["sha256"] is None:
+        return None
     _, descriptor = _descriptor(handle, artifact_id)
     if descriptor["sha256"] is None:
         return None
     with open_artifact(handle, artifact_id):
         pass
     return str(descriptor["sha256"])
+
+
+def artifact_path(handle, artifact_id: str) -> Path:
+    """Registered location of an artifact; the file may not exist yet (WRITE outputs)."""
+    registry = _read_registry(_registry_path(handle), handle)
+    try:
+        descriptor = registry["artifacts"][artifact_id]
+    except KeyError as exc:
+        raise KeyError(f"unregistered artifact: {artifact_id}") from exc
+    return Path(handle.workspace) / descriptor["relative_path"]
 
 
 def snapshot_artifact(handle, artifact_id: str) -> dict:
@@ -279,6 +298,6 @@ def snapshot_artifact(handle, artifact_id: str) -> dict:
 
 
 __all__ = [
-    "ArtifactConflict", "bind_artifact_hash", "binding_sha256", "open_artifact",
+    "ArtifactConflict", "artifact_path", "bind_artifact_hash", "binding_sha256", "open_artifact",
     "register_artifact", "replace_failed_output", "snapshot_artifact",
 ]

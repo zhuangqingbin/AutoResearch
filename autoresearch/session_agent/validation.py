@@ -217,10 +217,20 @@ def _macro_allocation(handle, submission: dict, task: dict) -> None:
             raise DomainValidationError(f"macro allocation lacks confidence: {artifact_id}")
 
 
+def market_view_complete(text: str) -> bool:
+    """Six sections as the macro-brief agent template writes them.
+
+    ``.claude/agents/macro-brief.md``: sections 1–5 carry a bold title, section 6 is the
+    plain disclaimer line ``6. 仅供研究,非投资建议。``.
+    """
+    titled = set(re.findall(r"(?m)^\s*([1-6])[.、]\s*\*\*", text))
+    disclaimer = re.search(r"(?m)^\s*6[.、]\s*\S", text) is not None
+    return {"1", "2", "3", "4", "5"} <= titled and disclaimer
+
+
 def _macro_brief(handle, submission: dict, task: dict) -> None:
     text = next(iter(_open_outputs(handle, submission, task).values()))
-    sections = set(re.findall(r"(?m)^\s*([1-6])[.、]\s*\*\*", text))
-    if sections != {"1", "2", "3", "4", "5", "6"}:
+    if not market_view_complete(text):
         raise DomainValidationError("macro brief requires all six sections")
 
 
@@ -375,6 +385,7 @@ def validate_submission_outputs(
 
 __all__ = [
     "DomainValidationError",
+    "market_view_complete",
     "validate_news_evidence",
     "validate_registered_contract",
     "validate_submission_outputs",

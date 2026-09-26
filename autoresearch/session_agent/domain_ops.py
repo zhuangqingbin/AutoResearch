@@ -1235,7 +1235,9 @@ def dossier_prepare_publication(handle=None) -> dict:
     )
 
 
-_SCAN_BUNDLE_CONTROL_ROOTS = frozenset({"session_outputs"})
+# `_dispatch/` is the runner↔host mailbox: control traffic that is written while
+# deterministic bundles are collected, never scan state (contracts: dispatch_*).
+_SCAN_BUNDLE_CONTROL_ROOTS = frozenset({"session_outputs", "_dispatch"})
 
 
 def collect_scan_staging_bundle(root: Path | str, *, phase: str) -> dict:

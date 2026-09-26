@@ -6,6 +6,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 # scan-market — 全 A股六段漏斗扫描(挖掘个股 + 板块,零付费 API)
 
 > session_v1 编排入口(PILOT,默认仍 legacy):见 `docs/session-agent/README.md`;`finish` 后用 `session_agent verify-report --level full` 的机器结果交付。
+> runner 宿主循环(PILOT,opt-in;真跑验收前默认仍走下方 Workflow):`session_agent run --executor mailbox` + 邮箱 wait/complete,见 `docs/session-agent/README.md`。
 > 本文件 = **怎么跑**;各阶段机制与参数见 `STAGES.md`;运维细节 `docs/ops/scan-ops.md`;负结果与沿革 `docs/research/scan-negative-results.md`。冲突以源码为准。
 
 ## 核心原理
