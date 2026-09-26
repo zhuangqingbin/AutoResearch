@@ -194,7 +194,7 @@ def select_population(rows: list[dict], *, test_range: tuple[str, str], since: s
     last_run: dict[str, str] = {}
     for r in window:
         day, run_id = _compact(r.get("analysis_date")), _s(r.get("run_id"))
-        if run_id > last_run.get(day, ""):
+        if day not in last_run or run_id > last_run[day]:      # 空 run_id 的坏行也算一个 run
             last_run[day] = run_id
     selected = [r for r in window if _s(r.get("run_id")) == last_run[_compact(r.get("analysis_date"))]]
     status = Counter(_s(r.get("outcome_status_swing")) for r in selected)

@@ -256,6 +256,18 @@ def test_one_run_per_analysis_day_keeps_the_last_published_run(tmp_path):
     assert float(h1["mean_pp"]) == pytest.approx(1.0)
 
 
+def test_a_day_whose_rows_lack_a_run_id_does_not_crash_day_selection(tmp_path):
+    """坏行(手改账本 / 旧工具写出的 run_id 空单元格)不许让整次普查 KeyError 崩掉:
+    那一天照样选得出(空串当作它自己的 run),其余天的读数不受影响。"""
+    lake, scan_root, rpt = _world(tmp_path, n_days=41, n_pending=0)
+    path = outcome.ledger_root(scan_root) / outcome.LEDGER_CSV
+    rows = list(csv.DictReader(path.open(encoding="utf-8")))
+    orphan = dict(rows[0], run_id="", analysis_date="2026-08-20", code="000009")
+    _write_ledger(scan_root, [*rows, orphan])
+    h1 = _cells(_run(tmp_path, lake, scan_root, rpt))["swing_h1_hold_plus_finalists"]
+    assert int(h1["n_days"]) == 41 and float(h1["mean_pp"]) == pytest.approx(1.0)
+
+
 def test_every_file_the_census_writes_is_a_registered_artifact(tmp_path):
     """新产物先进 `contracts.artifacts` 再写代码:落盘的每个文件都要对得上登记的
     `swing_ruler/*/<name>`(research_report 根),多写一个没登记的文件这条就红。"""
