@@ -39,7 +39,13 @@ READOUT_METRIC = "l3_finalist_minus_bench_fwd10"
 READOUT_MIN_DAYS = 40
 #: 观察席文案禁词(它是 10 日尺影子,不是决策)。lint 与渲染器共用这一张表。
 BANNED_WORDS = ("BUY", "买入", "可买")
-_STANCE_ZH = {"ALLOWED": "允许", "CONDITIONAL": "条件", "PROHIBITED": "禁止"}
+#: 卡面入场立场 → 表格文字。`UNKNOWN` = 卡里没有机读 `**入场**` 行(09-25 契约 `2fa2d38` 之前的
+#: 卡全是):写「未机读」,不写「未写」冒充卡上真没写(复审 M3)。没有卡(None)→「无卡」。
+_STANCE_ZH = {"ALLOWED": "允许", "CONDITIONAL": "条件", "PROHIBITED": "禁止", "UNKNOWN": "未机读"}
+#: 说明行第二句:入场行管的是哪条腿(复审 M3)。标题写的是本尺 D+1 开盘腿,入场行不是。
+ENTRY_CAPTION = ("_「入场」列读卡面 `**入场**` 行 —— 它回答「T+1 尾盘按执行线能否新开仓」"
+                 "(隔夜尺 c1 腿),不是本尺的 D+1 开盘腿;「未机读」= 卡里没有机读入场行"
+                 "(09-25 之前的卡都没有,这层过滤对它们形同虚设)_")
 
 
 def _s(value: object) -> str:
@@ -119,7 +125,8 @@ def build_swing_seat(scan_dir: Path | str, *, stage_rulers_path: Path | None = N
         if stance == "PROHIBITED":
             continue
         rows.append({"code": code, "name": _s(fin.get("name")), "rating": rating,
-                     "entry": _STANCE_ZH.get(str(stance), "未写"), "entry_stance": stance,
+                     "entry": "无卡" if stance is None else _STANCE_ZH.get(str(stance), "未机读"),
+                     "entry_stance": stance,
                      "conviction": _s(fin.get("conviction"))})
     rows.sort(key=lambda r: (-_conviction_key(r["conviction"]), r["code"]))
     for r in rows:
@@ -194,7 +201,8 @@ def render_section(seat: dict | None) -> list[str]:
     """summary §12 固定模板:标题 + 一行说明 + 表(或「无」/「未生成」)+ 读数行。"""
     out = [SECTION_TITLE,
            f"_影子面:10 日尺 `{SWING}`(D+1 开盘进 → D+10 收盘出);非 📌 finalist ∩ 评级 ≥Hold"
-           " ∩ 入场≠禁止,按 conviction 排;只展示,不进任何门、账本或 prompt_"]
+           " ∩ 入场≠禁止,按 conviction 排;只展示,不进任何门、账本或 prompt_",
+           ENTRY_CAPTION]
     if not seat or not isinstance(seat.get("rows"), list):
         out.append(f"未生成(观察席今天没有产出 —— 这不是「没有票」,见 `{SEAT_FILENAME}`)")
         out.append(_readout_line(None))

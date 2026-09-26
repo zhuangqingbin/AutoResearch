@@ -73,7 +73,19 @@ def test_seat_is_non_pinned_hold_plus_not_prohibited_sorted_by_conviction(tmp_pa
     assert [r["code"] for r in seat["rows"]] == ["600002", "600001", "600006"]
     assert seat["n"] == 3
     entries = {r["code"]: r["entry"] for r in seat["rows"]}
-    assert entries == {"600002": "条件", "600001": "允许", "600006": "未写"}
+    assert entries == {"600002": "条件", "600001": "允许", "600006": "未机读"}
+
+
+def test_caption_states_the_entry_line_is_the_t1_close_leg_and_unknown_is_unread(tmp_path):
+    """复审 M3:卡面 `**入场**` 行回答的是「T+1 尾盘按执行线能否新开仓」(隔夜尺 c1 腿),
+    不是本尺 D+1 开盘那条腿 —— 标题行写的是后者,说明行必须把前者讲明;没有机读入场行的卡
+    (09-25 契约之前的全部历史卡)写「未机读」,不写「未写」冒充卡上真没写。"""
+    seat = ss.build_swing_seat(_scan(tmp_path), stage_rulers_path=tmp_path / "absent.csv")
+    text = "\n".join(ss.render_section(seat))
+    assert "T+1 尾盘" in text and "c1" in text and "D+1 开盘" in text
+    assert "| 600006 | 己 | Hold | 未机读 | 50 |" in text
+    assert "未写" not in text
+    assert ss.banned_words(text) == []
 
 
 def test_every_seat_number_is_traceable_to_its_source_file(tmp_path):

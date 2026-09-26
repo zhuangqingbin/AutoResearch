@@ -37,6 +37,8 @@ uv run --no-sync python -m autoresearch.research.swing_ruler_census \
 
 观察席 = §12(`scan/swing_seat.py`,每场落 `_swing_seat.json`):非 📌 finalist ∩ 卡评级 ≥Hold ∩ 卡面入场 ≠ 禁止。它与 H1 的差别只有「入场 ≠ 禁止」这一层过滤。计算口径(与普查同源,事后一次性脚本即可,不进生产):
 
+> **历史席位实际上没有过滤(2026-09-26 复审 M3)。** 「入场」读的是卡面 `**入场**` 机读行,这条契约 09-25(`2fa2d38`)才上线:之前的卡全部读成 `UNKNOWN`(§12 印「未机读」),「入场 ≠ 禁止」对它们是空操作 —— 09-17 那场的 600150 / 600035 / 002078 卡上散文写着「本次不入场」,仍在席内。所以 09-25 之前各场的席位 ≈ H1 人口(外加 composite 席位口径差),「席位 vs H1」的差只能从 09-25 之后的场里读。另:`**入场**` 行回答的是「T+1 尾盘按执行线能否新开仓」(隔夜尺 c1 腿),不是 10 日尺的 D+1 开盘腿 —— 即便在 09-25 之后,这层过滤也是拿隔夜执行线去筛 10 日尺的票,读数时照此理解。
+
 1. 逐场读 `_swing_seat.json` 的 `rows[].code`(同一分析日多场取 run_id 最大者,同普查);
 2. 与 `recommendations.csv` 的 `outcome_status_swing == MATURE_10` 行按 `(run_id, code)` 对齐,取 `fwd_10_oc`;
 3. 每行减同日全湖 D+1 开盘可买票的 fwd_10_oc 中位(`swing_ruler_census.market_baselines` 同一实现),先日内等权再跨日等权;
