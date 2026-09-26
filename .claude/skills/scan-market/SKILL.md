@@ -117,11 +117,17 @@ run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy
 0. **开场:先领 run_id,再取任何一个数**(2026-08-28 法证 capsule):
    ```bash
    export AUTORESEARCH_ENGINE=codex   # Claude 会话下无需设置
-   RUN_JSON=$(uv run --no-sync python -m autoresearch.trace.capsule begin scan-market <YYYY-MM-DD> \
-     --engine "$AUTORESEARCH_ENGINE" --config-file .claude/skills/scan-market/scan_config.jsonc)
+   DATE=$(uv run --no-sync python -m autoresearch.scan.trade_date)   # 缺省=最近已结算交易日
+   RUN_JSON=$(uv run --no-sync python -m autoresearch.trace.capsule begin scan-market "$DATE" \
+     --engine "$AUTORESEARCH_ENGINE" --config-file .claude/skills/scan-market/scan_config.jsonc \
+     --legacy-reason "<为何走 legacy workflow,如:session_v1 真实宿主验收 INCOMPLETE>")
    RUN_ID=$(printf '%s' "$RUN_JSON" | jq -r .run_id)
    export AUTORESEARCH_RUN_ID="$RUN_ID"
    ```
+   **数据日不手算**:`trade_date` 缺省给最近已结算交易日(周末/节假日自动回退;交易日 19:15 前回退到
+   上一交易日),此后所有 `<date>`/`args.date` 一律用 `$DATE`。显式给日期时它只放行交易日,非交易日
+   非零退出并给建议日期(2026-09-26 中秋:数据日是 09-24,不是当天)。交易日晚间仍按
+   stk_factor_pro ~21:10 灌齐的老规矩先探行数再开扫。`--legacy-reason` 是 `begin` 的必填项。
    `begin` **必须先于任何取数**:它先落 RunContract v3 + 代码/环境/prompt 身份快照,再公布 run 目录 ——
    配置写错的 run 因此不会留下一个无名孤儿。`RUN_ID` 随 `Workflow args.run_id` 传给 `scan-market.js`,
    再由它透传给每个 `l4-stock`;staging 从此按 **run** 分区(`$CTX/scan_runs/<run_id>/staging/<date>/`),

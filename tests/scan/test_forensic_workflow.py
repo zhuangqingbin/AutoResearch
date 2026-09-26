@@ -106,7 +106,13 @@ def test_no_deterministic_python_module_command_bypasses_capture(path):
     ]
     # 判据是「每一条都走捕获」,不是「只准出现一条」—— 失败冻结路是第二个合法调用点。
     assert raw_modules, "工作流里一条确定性模块命令都没有?定位假设失效"
-    assert set(raw_modules) == {"python -m autoresearch.trace.exec_capture"}
+    # detach(2026-09-26)是和 exec_capture 同层的控制面:它只负责让命令脱离中继壳活下去,
+    # 它跑的每条业务命令仍是 `${PY(...)}` 捕获过的 —— 下面逐个 detached( 调用点核这一条。
+    assert set(raw_modules) <= {"python -m autoresearch.trace.exec_capture",
+                                "python -m autoresearch.trace.detach"}
+    assert "python -m autoresearch.trace.exec_capture" in set(raw_modules)
+    for call in re.finditer(r"\bdetached\(\s*[`'][^`']+[`'],\s*(?://[^\n]*\n\s*)*`([^`]*)`", source):
+        assert "${PY(" in call.group(1), call.group(0)[:160]
     assert "${R}" not in source
 
 
@@ -267,6 +273,9 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
         const agent = async (prompt) => {
           if (/autoresearch\.trace\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
           // RUN(不是 BLOCKED):中继不再发边界事件,只有走到 l4-card 才有 ACK 可校验。
+          // detach 中继(长命令脱离壳):回终态 + 命令自己打印的最后一行 JSON。
+          if (/autoresearch\.trace\.detach/.test(prompt)) return {state: 'COMPLETED', exit_code: 0, tail: '',
+            key: 'k', result: {ok: true, action: 'RUN', attempt: 1, reason: 'fixture'}};
           return {ok: true, action: 'RUN', attempt: 1, reason: 'fixture'};
         };
         const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
@@ -332,6 +341,9 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
         if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
           const label = (options && options.label) || '';
           if (fail && label.indexOf('card:') === 0) throw new Error('BUSINESS_AGENT_FAILED');
+          // detach 中继(长命令脱离壳):回终态 + 命令自己打印的最后一行 JSON。
+          if (/autoresearch\\.trace\\.detach/.test(prompt)) return {state: 'COMPLETED', exit_code: 0, tail: '',
+            key: 'k', result: {ok: true, action: 'RUN', attempt: 1, reason: 'fixture'}};
           return {ok: true, action: 'RUN', attempt: 1, reason: 'fixture'};
         };
         const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);

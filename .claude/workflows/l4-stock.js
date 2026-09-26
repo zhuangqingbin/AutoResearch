@@ -224,8 +224,8 @@ const taskGate = (subcommand, schema, label) => tracedAgent(
   `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
   '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
-  '⏳ 这条命令可能跑数分钟(单票取数)。**绝对不许 kill / pkill / 中断 / 重启**它 —— ' +
-  '它没卡住,它在取数;被 harness 转后台就安静等完成通知。拿不到退出码就如实回报,不要自己"修"。',
+  '秒级命令,**前台执行**:Bash 调用不要设 run_in_background —— 后台任务会在你交卷时被 harness ' +
+  '连进程树杀掉。**绝对不许 kill / pkill / 中断 / 重启**它。拿不到退出码就如实回报,不要自己"修"。',
   { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
 // 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
 const gpJson = (cmd, label, schema) => tracedAgent(
@@ -243,11 +243,44 @@ const bash = (cmd, label, phaseName) => tracedAgent(
   '在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。' +
   '不要做别的、不要判断、不要解释。\n' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
-  '⏳ 命令可能跑数分钟。**绝对不许 kill / pkill / 中断 / 重启**它(2026-08-05 事故:' +
-  '壳 pkill 了生产作业两次,整条流水线被毙)。被转后台就安静等完成通知。\n\n' +
+  '**前台执行**:Bash 调用不要设 run_in_background —— 后台任务会在你交卷时被 harness 连进程树杀掉' +
+  '(2026-09-26 事故)。**绝对不许 kill / pkill / 中断 / 重启**它(2026-08-05 事故:' +
+  '壳 pkill 了生产作业两次,整条流水线被毙)。\n\n' +
   `\`\`\`\n${cmd}\n\`\`\``,
   { agentType: 'general-purpose', ...AG('gp_shell'), label,
     ...(phaseName ? { phase: phaseName } : {}) })
+// 🚨 2026-09-26 事故(scan-market prelude;09-15 slim 同族):壳用 run_in_background 跑长命令后交卷,
+// harness 按**进程树**杀掉后台任务 —— 09-15 两只假 BLOCKED + 一张盲卡,09-17 002444 同样没等就交卷。
+// slim prepare(09-17 实测均 82s / 峰 149s)走 detach:命令双 fork 脱离壳的进程树,壳只跑 ≤100s 的
+// 有界前台等待,这里循环到终态;同 key 再调只等不重跑(`autoresearch/trace/detach.py`)。
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+// state 用枚举、禁多余字段:09-26 真壳冒烟里壳自编 state="done" 并把整行包进同名字段。
+const DETACHED = { type: 'object', required: ['state', 'key'], additionalProperties: false,
+  properties: { state: { type: 'string', enum: ['RUNNING', 'COMPLETED', 'FAILED', 'LOST'] },
+    key: { type: 'string' }, exit_code: { type: ['integer', 'null'] }, tail: { type: 'string' },
+    stderr_tail: { type: 'string' }, result: {},
+    expect_file: { type: ['boolean', 'null'] }, reason: { type: 'string' } } }
+const DETACH_TERMINAL = ['COMPLETED', 'FAILED', 'LOST']
+async function detached(key, cmd, label, phaseName, maxRounds = 20) {
+  const call = `AUTORESEARCH_ENGINE=${ENGINE} uv run --no-sync python -m autoresearch.trace.detach ` +
+    `--run-id ${RUN_ID} --key ${key} --wait-seconds 100 --shell ${shq(cmd)}`
+  let misses = 0
+  // Workflow 运行时禁用 Date.now()(破坏 resume;09-26 探针实测)→ 用轮数封顶,每轮 ≤~100s 有界等待。
+  for (let i = 1; i <= maxRounds; i++) {
+    const res = await tracedAgent(
+      `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}${i > 1 ? `-w${i}` : ''}`, 'gp-shell',
+      '执行下面这条命令。它只打印一行 JSON 对象:把**这个对象本身**逐字段照抄作为结构化返回 —— 不要包一层、不要改写 state 的值、不要添加字段。不要判断、不要解释、不要重试或改写命令。\n' +
+      '**前台执行**:Bash 调用不要设 run_in_background(它最多约 100 秒就返回;真正的长任务已在后台独立运行)。\n' +
+      `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n\n\`\`\`\n${call}\n\`\`\``,
+      { agentType: 'general-purpose', ...AG('gp_shell_json'), label: i > 1 ? `${label}#${i}` : label,
+        schema: DETACHED, ...(phaseName ? { phase: phaseName } : {}) })
+      .catch(() => null)
+    if (res && DETACH_TERMINAL.includes(res.state)) return res
+    misses = (res && typeof res.state === 'string') ? 0 : misses + 1   // 形状不对 = 没回报
+    if (misses >= 3) return { state: 'LOST', key, exit_code: null, tail: '', reason: '中继壳连续 3 次无有效回报' }
+  }
+  return { state: 'TIMEOUT', key, exit_code: null, tail: '', reason: `${maxRounds} 轮有界等待内未到终态` }
+}
 const INTEL_GUARD = { type: 'object', required: ['ok', 'code', 'action'],
   properties: { ok: { type: 'boolean' }, code: { type: 'string' }, action: { type: 'string' },
     claimed: {}, hard_cap: { type: 'integer' }, kept_as: { type: 'string' },
@@ -351,12 +384,19 @@ async function intelLeg() {
   }
   return null
 }
+let slimRun = null
 await parallel([
-  () => taskGate(
-    `${PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
-      `autoresearch.scan.l4_tasks prepare ${code} ${date}`,
-    TASK_RESULT, `slim:${code}`)
-    .then((r) => { slimResult = r; return r }),
+  // 结果取 prepare 自己打印的最后一行 JSON(detach 从 stdout 读,不经壳转述);语义同原 taskGate。
+  () => detached(`slim-${code}-attempt-${taskAttempt}`,
+    `if test -s ${TASK_BOOK}; then ${PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+      `autoresearch.scan.l4_tasks prepare ${code} ${date}; else echo '{"ok":true,"action":"LEGACY"}'; fi`,
+    `slim:${code}`, 'Intel')
+    .then((r) => {
+      slimRun = r
+      slimResult = ['COMPLETED', 'FAILED'].includes(r.state) && r.result && typeof r.result === 'object'
+        ? r.result : null
+      return r
+    }),
   ...(intelOn && !intelResume ? [() => intelLeg().then((r) => { intelResult = r; return r })] : []),
 ])
 if (!intelOn) {
@@ -400,6 +440,13 @@ if (!intelOn) {
     `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
     `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
     `intel-status:${code}`, 'Intel').catch(() => null)
+}
+// 命令本体失联/超时 = 基础设施事件,归可重试的 TIMEOUT,不归 DATA_INTEGRITY(09-15 假 BLOCKED 连坐 data_a 的教训)。
+if (slimRun && ['LOST', 'TIMEOUT'].includes(slimRun.state)) {
+  await taskFailure('TIMEOUT')
+  await recordL4(`slim_${slimRun.state.toLowerCase()}`)
+  return { code, name, rating: null, final: null,
+    error: `slim 准备 ${slimRun.state}(可重试):${slimRun.reason || ''}` }
 }
 if (slimResult && slimResult.action !== 'LEGACY' && !slimResult.ok) {
   await taskFailure('DATA_INTEGRITY')

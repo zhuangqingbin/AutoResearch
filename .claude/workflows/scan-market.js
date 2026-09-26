@@ -101,13 +101,47 @@ function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 p
     `若命令的 stdout 已被重定向,回报改用:退出码 + stderr 末 15 行。\n` +
     `(2026-07-28 事故第一因:壳擅自把 \`frame --json > market_pack.json\` 改成 \`... 2>&1\`,` +
     `stderr 日志灌进产物,门判据被骗过。)\n\n` +
-    `⏳ **这条命令可能跑 5–30 分钟**(全市场取数)。铁律:\n` +
-    `- **绝对不许 kill / pkill / 中断它**,也不许"重启一次试试"。它没卡住,它在取数。\n` +
-    `- 若 harness 把它转成后台任务:安静等待完成通知即可。不要反复轮询、不要另起副本。\n` +
+    `铁律:\n` +
+    `- **前台执行**:Bash 调用不要设 run_in_background —— 后台任务会在你交卷时被 harness 连进程树杀掉。\n` +
+    `- **绝对不许 kill / pkill / 中断它**,也不许"重启一次试试"。\n` +
     `- 只有拿到真实退出码才算完;拿不到就如实回报"未拿到退出码",**不要**自己动手"修"。\n` +
-    `(2026-08-05 事故:壳 pkill 了 prelude 两次,GATE1 因此毙掉整条流水线。)\n\n` +
+    `(2026-08-05 事故:壳 pkill 了 prelude 两次;2026-09-26 事故:壳把 prelude 转后台后交卷,两次都被杀。)\n\n` +
     `\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', ...AG('gp_shell'), label, ...(phaseName ? { phase: phaseName } : {}) })
+}
+// 🚨 2026-09-26 事故(GATE1 毙全线):prelude 壳用 run_in_background 启动 prelude、挂 Monitor 就交卷;
+// harness 在壳交卷时按**进程树**杀掉它的后台任务,两次 prelude 都在 ~7s 吃 SIGKILL,L2 不落。
+// 壳选不选后台是模型行为(历史 135 次后台启动 23 次没等就交卷),叮嘱挡不住 —— 长命令(09-17 实测
+// frame 150s / prelude 295s / l4-prep 287s / l3-prepare 29s)一律走 detach:命令双 fork 脱离壳的
+// 进程树,壳只跑 ≤100s 的有界前台等待,这里循环到终态。壳后台化、提前交卷、被杀都碰不到命令本体;
+// 同 key 再调只等不重跑(`autoresearch/trace/detach.py`)。
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+// state 用枚举、禁多余字段:09-26 真壳冒烟里壳自编 state="done" 并把整行包进同名字段。
+const DETACHED = { type: 'object', required: ['state', 'key'], additionalProperties: false,
+  properties: { state: { type: 'string', enum: ['RUNNING', 'COMPLETED', 'FAILED', 'LOST'] },
+    key: { type: 'string' }, exit_code: { type: ['integer', 'null'] }, tail: { type: 'string' },
+    stderr_tail: { type: 'string' }, result: {},
+    expect_file: { type: ['boolean', 'null'] }, reason: { type: 'string' } } }
+const DETACH_TERMINAL = ['COMPLETED', 'FAILED', 'LOST']
+async function detached(key, cmd, label, phaseName, { expectFile = null, maxRounds = 40 } = {}) {
+  const call = `AUTORESEARCH_ENGINE=${ENGINE} uv run --no-sync python -m autoresearch.trace.detach ` +
+    `--run-id ${RUN_ID} --key ${key} --wait-seconds 100` +
+    `${expectFile ? ` --expect-file ${expectFile}` : ''} --shell ${shq(cmd)}`
+  let misses = 0
+  // Workflow 运行时禁用 Date.now()(破坏 resume;09-26 探针实测)→ 用轮数封顶,每轮 ≤~100s 有界等待。
+  for (let i = 1; i <= maxRounds; i++) {
+    const res = await agent(
+      `执行下面这条命令。它只打印一行 JSON 对象:把**这个对象本身**逐字段照抄作为结构化返回 —— 不要包一层、不要改写 state 的值、不要添加字段。不要判断、不要解释、不要重试或改写命令。\n` +
+      `**前台执行**:Bash 调用不要设 run_in_background(它最多约 100 秒就返回;真正的长任务已在后台独立运行)。\n` +
+      `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n\n\`\`\`\n${call}\n\`\`\``,
+      { agentType: 'general-purpose', ...AG('gp_shell_json'), label: i > 1 ? `${label}#${i}` : label,
+        schema: DETACHED, ...(phaseName ? { phase: phaseName } : {}) })
+      .catch(() => null)
+    if (res && DETACH_TERMINAL.includes(res.state)) return res
+    misses = (res && typeof res.state === 'string') ? 0 : misses + 1   // 形状不对 = 没回报
+    if (misses >= 3) return { state: 'LOST', key, exit_code: null, tail: '', reason: '中继壳连续 3 次无有效回报' }
+  }
+  return { state: 'TIMEOUT', key, exit_code: null, tail: '', reason: `${maxRounds} 轮有界等待内未到终态` }
 }
 // run_mode 四态白名单 = `autoresearch.scan.run_mode.MODES` 的镜像。GATE1 回来的模式不在其中,
 // 就不是"取个默认值继续"的事(见下方 GATE1 处的守卫)。
@@ -124,7 +158,7 @@ function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 ph
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**` +
-    `(混入 stderr 会污染这行 JSON)。`,
+    `(混入 stderr 会污染这行 JSON)。**前台执行**:Bash 调用不要设 run_in_background(秒级命令;后台任务会在你交卷时被杀)。`,
     { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 // 2026-09-13:本文件的通用 JSON 壳 `gpJson` 已随它唯一的调用点(GATE1 后的独立 run-mode 壳)
@@ -268,7 +302,7 @@ function stageGate(label, cmd, stage, phaseName) {
     `依次执行:\`${cmd}; ${PY(stage, `${stage}-result-${label.toLowerCase()}`)} autoresearch.scan.stage_result show ${SD} ${stage}\`\n` +
     '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。\n' +
     '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**' +
-    '(混入 stderr 会污染这行 JSON)。',
+    '(混入 stderr 会污染这行 JSON)。**前台执行**:Bash 调用不要设 run_in_background(后台任务会在你交卷时被杀)。',
     { agentType: 'general-purpose', ...AG('gp_shell'), label,
       schema: STAGE_RESULT, ...(phaseName ? { phase: phaseName } : {}) })
 }
@@ -277,7 +311,7 @@ function stageGate(label, cmd, stage, phaseName) {
 phase('Prelude')
 // frame 先行:pack 存盘 + 取数入湖(prelude/universe 随后湖命中不重拉)
 log('Prelude 开始:frame → [universe 全市场取数 ∥ market_view](取数历史 ~10m,完成即 GATE1)')
-await bash(`mkdir -p ${SD} && ${PY('frame', 'frame-attempt-1')} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame', 'Prelude')
+await detached('frame-attempt-1', `mkdir -p ${SD} && ${PY('frame', 'frame-attempt-1')} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame', 'Prelude')
 // frame 与 universe 同样走 tushare 全市场取数,同样会 ChunkedEncodingError 半途而废 —— 但此前只有
 // universe 有重试守卫(见下方 l2-check),frame 这条裸奔。事故两代:
 //   2026-07-27:frame 在 11/12 端点断线退出码 1,`>` 重定向留下 **0 字节** pack;
@@ -293,7 +327,7 @@ const packok = await gate('pack-check',
   OK, 'Prelude')
 if (!packok || !packok.ok) {
   log('⚠️ market_pack 缺失或非合法 JSON(frame 半途失败)→ 重试一次')
-  await bash(`${PY('frame', 'frame-attempt-2', 2)} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
+  await detached('frame-attempt-2', `${PY('frame', 'frame-attempt-2', 2)} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
   const packok2 = await gate('pack-recheck',
     `${PYC('frame', 'pack-check-attempt-2', 2)} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍缺失/非法"}'`,
     OK, 'Prelude')
@@ -324,9 +358,14 @@ await parallel([
   // W8-5:回显必须以**文件真在**为条件。原先 `prelude && echo SUMMARY_FILE=...` 只看 prelude
   // 退出码,07-28 汇总屏写盘失败(被 suppress 吞)时照样回显路径 → agent 回报「Summary file
   // generated」但文件不存在,CP1 转播落空。日志不得替不存在的文件背书。
-  () => bash(`${PY('prelude', 'prelude-attempt-1')} autoresearch.scan.prelude ${date}; test -s ${SD}/_prelude_summary.md ` +
-    `&& echo "SUMMARY_FILE=${SD}/_prelude_summary.md" || echo "SUMMARY_MISSING(见 stderr 的落盘失败行)"`,
-    'prelude/universe', 'Prelude'),
+  // 2026-09-26:回显改由 detach 的 expect_file(终态时现查文件)背书,仍以文件真在为条件。
+  () => detached('prelude-attempt-1', `${PY('prelude', 'prelude-attempt-1')} autoresearch.scan.prelude ${date}`,
+    'prelude/universe', 'Prelude', { expectFile: `${SD}/_prelude_summary.md` })
+    .then((r) => {
+      log(`prelude ${r.state}(exit=${r.exit_code})· ` +
+        (r.expect_file ? `SUMMARY_FILE=${SD}/_prelude_summary.md` : 'SUMMARY_MISSING(见 stderr 的落盘失败行)'))
+      return r
+    }),
   // Wave10 A4:策略师只拿**投影**(`strategist_pack.json`),不给 full pack。
   // 此前防锚定写在这句 prompt 里(「pack 里的 sector_healthy_top3 …忽略它」)——
   // 一句叮嘱管着一份就摆在眼前的数据,07-30/31 连续两日复发。指令级约束的失败率不为零,
@@ -345,8 +384,9 @@ const l2ok = await gate('l2-check',
   `test -s ${SD}/L2_gbdt_top200.csv && echo '{"ok":true}' || echo '{"ok":false,"reason":"L2 缺失"}'`, OK, 'Prelude')
 if (!l2ok || !l2ok.ok) {
   log('L2 缺失(universe 半途失败)→ 重试确定性前奏一次')
-  await bash(`${PY('prelude', 'prelude-attempt-2', 2)} autoresearch.scan.prelude ${date} --skip consensus`,
+  const retry = await detached('prelude-attempt-2', `${PY('prelude', 'prelude-attempt-2', 2)} autoresearch.scan.prelude ${date} --skip consensus`,
     'prelude-retry', 'Prelude')
+  log(`prelude 重试 ${retry.state}(exit=${retry.exit_code})${retry.reason ? ` · ${retry.reason}` : ''}`)
 }
 // 2026-09-13(GATE1 调度合并):契约校验 + 预算 + **运行模式判定**合成一次确定性调用。
 // 这不只是省一个壳 —— 它把"判模式"收进 GATE1 这笔事务:gate 不过就根本不判模式,
@@ -435,7 +475,7 @@ const sectors = sectorsRes.sectors || []
 const preL3BriefSectors = sectors
 log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
-  () => bash(`${PY('l3', 'l3-prepare-attempt-1')} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
+  () => detached('l3-prepare-attempt-1', `${PY('l3', 'l3-prepare-attempt-1')} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   // invocation id 用**当日行业清单里的序号**:行业名是中文,JS 侧没有 sha256 可用,
   // 而事件 subject 的 ASCII key 由 python 从 --subject-display 派生。序号在一次 run 内
   // 唯一且确定;index 里显示的仍是行业原名(payload.subject_display)。
@@ -517,7 +557,7 @@ const fmeta = g2m.meta || {}
 // assemble+GATE4 也随之上移主会话收尾。
 phase('L4-prep')
 log(`L4-prep:[四生产者并行]→prompts→${streamingL4 ? '单票 slim∥intel 流式交接' : '批量 slim legacy 交接'}`)
-await bash(
+await detached('l4-prep-attempt-1',
   // shared 必须先于 prompts:_l4_shared_instructions.md 此前全仓无生产者(只有读者),
   // 当日 📐/🔁/🚪 校准行从未到达任何一张决策卡(Wave5 ④B)。
   // TTL 复用(l4_reuse --apply)已于 2026-07-29 退役(用户裁定 R5「不要任何复用」)——
