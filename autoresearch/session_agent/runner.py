@@ -41,6 +41,7 @@ from autoresearch.contracts.retry import TASK_ATTEMPT
 from autoresearch.session_agent import artifacts, service, store
 from autoresearch.session_agent.dispatch import build_request
 from autoresearch.session_agent.executors.base import (
+    DISPATCH_DIR,
     DispatchRequest,
     DispatchResult,
     ExecutorTimeout,
@@ -50,7 +51,6 @@ from autoresearch.session_agent.executors.base import (
 
 #: One retry for TASK_ATTEMPT-class failures of a SESSION task (spec §4 A1-1).
 SESSION_MAX_ATTEMPTS = 2
-DISPATCH_DIR = "_dispatch"
 _NO_PARAMS = {"type": "object", "required": [], "additionalProperties": False}
 _HEARTBEAT_SECONDS = 5.0
 

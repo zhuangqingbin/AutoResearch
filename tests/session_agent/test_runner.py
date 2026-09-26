@@ -238,7 +238,8 @@ def test_independent_review_submits_a_verified_host_receipt(tmp_path, monkeypatc
 
     run = begin_synthetic_run(
         tmp_path, monkeypatch,
-        [inf("synthetic.review", role="scan.l4.review", subject="600519", independent=True)],
+        [inf("synthetic.review", role="scan.l4.review", subject="600519", independent=True,
+             inputs=("synthetic.prompt",))],
         host=profile(independent_context=True),
     )
     seen = []
@@ -267,7 +268,8 @@ def test_independent_review_submits_a_verified_host_receipt(tmp_path, monkeypatc
 def test_independent_review_without_evidence_fails_instead_of_faking_a_receipt(tmp_path, monkeypatch):
     run = begin_synthetic_run(
         tmp_path, monkeypatch,
-        [inf("synthetic.review", role="scan.l4.review", subject="600519", independent=True)],
+        [inf("synthetic.review", role="scan.l4.review", subject="600519", independent=True,
+             inputs=("synthetic.prompt",))],
         host=profile(independent_context=True),
     )
     final = runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=50,

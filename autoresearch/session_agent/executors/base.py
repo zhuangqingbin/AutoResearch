@@ -42,6 +42,8 @@ from typing import Protocol, runtime_checkable
 from autoresearch.contracts.retry import TASK_ATTEMPT
 
 SCHEMA_VERSION = 1
+#: Run-scoped mailbox / runner status directory: ``<staging>/_dispatch/``.
+DISPATCH_DIR = "_dispatch"
 
 #: session role → (project agent definition, scan_config ``agents`` role).
 #: Seven judgment roles of the scan (spec §4 A1-3); the review reuses the l4-card agent
@@ -211,7 +213,7 @@ def classify_error(message: str | None, declared: str | None = None) -> str:
 
 
 __all__ = [
-    "DEFAULT_TIMEOUTS", "DispatchRequest", "DispatchResult", "ExecutorTimeout",
+    "DEFAULT_TIMEOUTS", "DISPATCH_DIR", "DispatchRequest", "DispatchResult", "ExecutorTimeout",
     "ExecutorUnavailable", "FALLBACK_TIMEOUT", "InferenceExecutor", "ROLE_DISPATCH",
     "SCHEMA_VERSION", "classify_error", "supports_reattach",
 ]
