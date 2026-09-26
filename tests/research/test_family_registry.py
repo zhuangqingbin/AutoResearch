@@ -10,6 +10,7 @@ from autoresearch.contracts import research_experiment as rx
 SPEC = Path(__file__).resolve().parents[2] / "docs" / "research" / "2026-09-07-w3-three-grids-family.spec.json"
 SPEC_V2 = SPEC.with_name("2026-09-07-w3-three-grids-family-v2.spec.json")
 FUNNEL = SPEC.with_name("2026-09-13-funnel-shape-family.spec.json")
+SWING = SPEC.with_name("2026-09-26-swing-ruler-family.spec.json")
 
 
 def test_w3_family_spec_is_a_valid_frozen_experiment():
@@ -79,3 +80,49 @@ def test_funnel_family_registers_a_falsifiable_bar_and_forward_out_of_sample_day
     assert "2026-09-13" in spec["stop_rule"]          # 向前样本外的起算点 = 冻结日
     assert "10" in spec["stop_rule"] and "不自动上线" in spec["stop_rule"]
     assert spec["quality_constraints"].count("不") >= 3   # 不接 prelude/不写 run 目录/不改生产参数
+
+
+# ───────────────── 10 日尺家族(2026-09-26 daily-engine §5 B2)─────────────────
+
+
+def test_swing_ruler_family_spec_is_a_valid_frozen_experiment():
+    spec = rx.validate_spec(json.loads(SWING.read_text(encoding="utf-8")))
+    assert spec["experiment_id"] == "FAM_SWING_RULER_20260926"
+    assert spec["experiment_family"] == "swing-ruler"
+    assert [h["hypothesis_id"] for h in spec["hypotheses"]] == [
+        "swing_h1_hold_plus_finalists", "swing_h2_lowturn_lane",
+        "swing_h3_rejection_negative", "swing_h4_e6_r_tier_sign"]
+    assert spec["engine"] == "claude" and len(spec["code_sha"]) == 40
+
+
+def test_swing_family_is_labelled_on_the_swing_ruler_without_replacing_the_main_ruler():
+    """契约只许主尺当 `ruler`;10 日尺只能以敏感尺身份出现 —— B0:不替换主尺,B4 再裁。"""
+    spec = json.loads(SWING.read_text(encoding="utf-8"))
+    assert spec["ruler"] == rx.MAIN_RULER
+    assert spec["sensitivity_rulers"] == ["fwd_10_oc"]
+    assert all(h["label"] == "fwd_10_oc" for h in spec["hypotheses"][:3])
+
+
+def test_swing_family_freezes_its_decision_knobs_in_the_registration():
+    """块长、样本门、评级集合、FDR 水平全写死在登记里 —— 留在 CLI 上就是「试到好看为止」。"""
+    spec = json.loads(SWING.read_text(encoding="utf-8"))
+    rule = spec["selection_rule"]
+    assert rule["decision_block"] == 10 and rule["block_lengths"] == [1, 5, 10]
+    assert rule["ge_hold_ratings"] == ["Buy", "Overweight", "Hold"]
+    assert rule["veto_ratings"] == ["Underweight", "Sell"]
+    assert rule["fdr_alpha"] == 0.05 and rule["ci_level"] == 0.95
+    assert spec["maturity_policy"] == "scan_days >= 40"
+    assert "BY" in spec["multiplicity"] and "arbitrary" in spec["multiplicity"]
+
+
+def test_swing_family_directional_hypotheses_are_falsifiable_and_h4_stays_descriptive():
+    spec = json.loads(SWING.read_text(encoding="utf-8"))
+    h1, h2, h3, h4 = spec["hypotheses"]
+    assert h1["expected_direction"] == h2["expected_direction"] == "positive"
+    assert h3["expected_direction"] == "negative"
+    for h in (h1, h2, h3):
+        assert "CI" in h["rejection_condition"] and "40" in h["rejection_condition"]
+        assert "不等于" in h["rejection_condition"]
+    assert h4["expected_direction"] == "two_sided" and "描述性" in h4["rejection_condition"]
+    assert "不追加第五个假设" in spec["stop_rule"] and "新 experiment_id" in spec["stop_rule"]
+    assert "只展示不推" in spec["stop_rule"]

@@ -1,0 +1,83 @@
+{
+ "schema_version": 1,
+ "experiment_id": "FAM_SWING_RULER_20260926",
+ "engine": "claude",
+ "created_at": "2026-09-26T17:36:00+08:00",
+ "code_sha": "e51e3de9693f726d4d64573785a9cbd4f409ea3c",
+ "prompt_hashes": {},
+ "input_manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+ "experiment_family": "swing-ruler",
+ "hypotheses": [
+  {
+   "hypothesis_id": "swing_h1_hold_plus_finalists",
+   "mechanism": "隔夜尺上 L3/L4 没有选股 alpha(07-12、08-28 普查),全仓唯一的正读数出现在 5–10 日尺(08-21 低位转强 fwd_10 +0.99pp)。若卡评级 ≥Hold 的判断在周级兑现,非 📌 finalist ∩ 评级 ≥Hold 的 fwd_10_oc 应跑赢同日全市场可交易中位。",
+   "expected_direction": "positive",
+   "available_at": "D 日盘后(卡评级当晚发布);D+1 开盘买 → D+10 收盘卖(fwd_10_oc),D+10 收盘后成熟(outcome_status_swing = MATURE_10)",
+   "metric_definition": "行值 = fwd_10_oc − 同日全湖 D+1 开盘可买(buyable)票的 fwd_10_oc 中位(pp);先日内等权、再跨日等权",
+   "population": "账本 MATURE_10 行 ∩ 非 📌 ∩ finalist 身份(role ≠ rated,含 composite/sector 席位与 BUY 行)∩ 卡评级 ∈ {Buy, Overweight, Hold} ∩ D+1 开盘可买 ∩ fwd_10_oc 有值",
+   "label": "fwd_10_oc",
+   "rejection_condition": "n_days < 40 → INSUFFICIENT(不判读);否则块长 10 的块 bootstrap 95% CI 下界 ≤ 0 或 BY 校正 q > 0.05 → UNPROVEN(未证**不等于**已证无效);CI 上界 < 0 且 q ≤ 0.05 → NEGATIVE(反向证伪);CI 下界 > 0 且 q ≤ 0.05 → POSITIVE"
+  },
+  {
+   "hypothesis_id": "swing_h2_lowturn_lane",
+   "mechanism": "08-21 Gate0:低位转强在隔夜尺显著为负、周级尺翻正(fwd_5/10 +0.63/+0.99pp)。本格验证该正号在 lane = lowturn 的 finalist 上是否稳定;08-21 读数与本账本有重叠样本,本格是稳健性复核,不是独立确认。",
+   "expected_direction": "positive",
+   "available_at": "D 日盘后(L3 lane 当晚产出);D+1 开盘买 → D+10 收盘卖(fwd_10_oc),D+10 收盘后成熟",
+   "metric_definition": "行值 = fwd_10_oc − 同日全湖 D+1 开盘可买(buyable)票的 fwd_10_oc 中位(pp);先日内等权、再跨日等权",
+   "population": "账本 MATURE_10 行 ∩ 非 📌 ∩ finalist 身份(role ≠ rated)∩ lane == lowturn(不限评级)∩ D+1 开盘可买 ∩ fwd_10_oc 有值",
+   "label": "fwd_10_oc",
+   "rejection_condition": "n_days < 40 → INSUFFICIENT(不判读);否则块长 10 的块 bootstrap 95% CI 下界 ≤ 0 或 BY 校正 q > 0.05 → UNPROVEN(未证**不等于**已证无效);CI 上界 < 0 且 q ≤ 0.05 → NEGATIVE(反向证伪);CI 下界 > 0 且 q ≤ 0.05 → POSITIVE"
+  },
+  {
+   "hypothesis_id": "swing_h3_rejection_negative",
+   "mechanism": "否决有效、挑选无效(09-24:826 finalist 中 UW 后 fwd10 −1.91pp、Sell −22.6pp vs Hold −0.59pp)。若 L4 的否决在 10 日尺上有效,评级 ∈ {UW, Sell} 的 finalist 应跑输同日全市场可交易中位。09-24 读数与本账本重叠,本格是按预注册口径(市场中位超额、块 bootstrap、BY)的复核。",
+   "expected_direction": "negative",
+   "available_at": "D 日盘后(卡评级当晚发布);D+1 开盘买 → D+10 收盘卖(fwd_10_oc),D+10 收盘后成熟",
+   "metric_definition": "行值 = fwd_10_oc − 同日全湖 D+1 开盘可买(buyable)票的 fwd_10_oc 中位(pp);先日内等权、再跨日等权",
+   "population": "账本 MATURE_10 行 ∩ 非 📌 ∩ finalist 身份(role ≠ rated)∩ 卡评级 ∈ {Underweight, Sell} ∩ D+1 开盘可买 ∩ fwd_10_oc 有值",
+   "label": "fwd_10_oc",
+   "rejection_condition": "n_days < 40 → INSUFFICIENT(不判读);否则块长 10 的块 bootstrap 95% CI 上界 ≥ 0 或 BY 校正 q > 0.05 → UNPROVEN(未证**不等于**否决无效);CI 下界 > 0 且 q ≤ 0.05 → POSITIVE(反向证伪:被否的票反而跑赢);CI 上界 < 0 且 q ≤ 0.05 → NEGATIVE(假设成立)"
+  },
+  {
+   "hypothesis_id": "swing_h4_e6_r_tier_sign",
+   "mechanism": "E6 相对 BUY 按隔夜尺选。若 B4 换主尺,同一批 BUY 在 10 日尺上的方向是否与隔夜尺一致,决定「隔夜尺留作执行尺」能否与「10 日尺选股」共存。",
+   "expected_direction": "two_sided",
+   "available_at": "D 日盘后 E6 决策;gap_c1_o2 于 D+2 成熟,fwd_10_oc 于 D+10 成熟",
+   "metric_definition": "逐行 sign(fwd_10_oc) == sign(gap_c1_o2)(两尺原始收益;0 取其自身符号)的占比与行数;两尺任一缺值的行不计",
+   "population": "账本 MATURE_10 行 ∩ 非 📌 ∩ e6_buy = True ∩ mode = active ∩ buy_tier ≠ A(tiering 上线前的 BUY 没有 tier 字段,按 E6 定义皆为相对 BUY,计入)",
+   "label": "fwd_10_oc 与 gap_c1_o2 符号一致率",
+   "rejection_condition": "描述性读数:不入 BY 族、不判 POSITIVE/NEGATIVE、无拒绝条件;只报一致率与行数,行数小就照实写行数"
+  }
+ ],
+ "population_rule": "只读 $RPT/scan/_ledger/recommendations.csv(批 5 Task 1 之后带 outcome_status_swing / t10 两列);analysis_date ∈ split.test;同一 analysis_date 多个 run 只取 run_id 字典序最大者(= scan.populations.select_run 过渡规则);只取 outcome_status_swing == MATURE_10 的行,PENDING_10 / MISSING_MARKET_DATA / 空(旧行)逐类计数后剔除,不当 0;📌 = 账本 lane 或 role == pinned ∪ research.edge_census.pinned_codes(该 run 的冻结 staging),全部假设统一剔除",
+ "selection_rule": {
+  "ge_hold_ratings": ["Buy", "Overweight", "Hold"],
+  "veto_ratings": ["Underweight", "Sell"],
+  "lowturn_lane": "lowturn",
+  "h4_exclude_tiers": ["A"],
+  "h4_mode": "active",
+  "decision_block": 10,
+  "block_lengths": [1, 5, 10],
+  "ci_level": 0.95,
+  "fdr_alpha": 0.05
+ },
+ "ruler": "gap_c1_o2",
+ "sensitivity_rulers": ["fwd_10_oc"],
+ "return_unit": "fraction",
+ "baseline": "同日全湖 fwd_10_oc 在 D+1 开盘可买(common.ruler.swing_entry_flag() = buyable)票上的中位;日期取账本的 t1 / t10(可信交易日历),湖分区须恰好覆盖 D..t10 共 11 个 session 且首二末与账本一致,否则当日基准 UNAVAILABLE,计数后剔除",
+ "evidence_mode": "EOD_PROXY",
+ "weighting": "day_equal",
+ "cost_model_version": "none",
+ "split": {
+  "train": ["2026-01-01", "2026-03-01"],
+  "validation": ["2026-03-01", "2026-06-18"],
+  "test": ["2026-06-18", "2026-12-31"]
+ },
+ "purge_rule": "无训练段、无拟合:train / validation 两段落在账本起点 2026-06-18 之前,为空,只为满足方案契约的三段形状。fwd_10 标签跨 10 个 session,相邻分析日窗口重叠 9 个 → 显著性只用块长 10 的块 bootstrap(common.stats.block_mean_ci / block_mean_test),不做逐日 t 检;块 bootstrap 按观察到的扫描日序列重采样(扫描日有缺口时一个块跨越的交易日更多,重叠相关只会被多覆盖)",
+ "embargo_sessions": 10,
+ "bootstrap": {"n_boot": 2000, "seed": 20260926},
+ "multiplicity": "BY(H1–H3 三条方向性假设一族,dependence=arbitrary;p 值 = common.stats.block_mean_test 块长 10 双侧);H4 描述性,不入族",
+ "maturity_policy": "scan_days >= 40",
+ "quality_constraints": "只读账本与共享湖;零网络;不写 run 目录、不写 staging、不改生产账本;不回注 L3/L4、评级、BUY、E6 或 MAIN_RULER;输入在冻结时不绑定(input_manifest_hash 全 0,同 funnel-shape 先例:账本随夜间 fill 增长),每次读数的输入 sha256 与代码 HEAD 落 manifest.json;读数只进 $RPT/research/swing_ruler/<experiment_id>/,目录已存在即拒",
+ "stop_rule": "样本终点 2026-12-31(test 段末)。2026-09-26 首跑是冻结后第一次读数(基线),照实报告;B4 裁决只采用冻结窗结束后第一次 H1 n_days ≥ 40 的全量读数,之后不再挑读数时点、不追跑到好看为止;--since 收窄预注册窗口的跑法只算探索性(verdict = EXPLORATORY),不作判读。H1 与 H2 同时不成立 → B 线止于「观察席只展示不推」(spec §5 B2)。不追加第五个假设;改任何假设 / 阈值 / 人口 / 窗口 = 新 experiment_id。过门只换来 B4 由用户裁决的资格,不自动换主尺、不自动上线。"
+}
