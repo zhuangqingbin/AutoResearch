@@ -28,6 +28,13 @@ Error semantics of ``dispatch``:
   result of the timed-out attempt can never be accepted);
 - any other exception → ``AGENT_ERROR`` (classified by :func:`classify_error`).
 
+On ``ExecutorTimeout`` the runner freezes an ``ABANDONED`` attempt record (the timeout
+message is its reason): the evidence closure then does not demand a transcript / web
+receipts that cannot exist.  An executor that can still observe a *late* result of such an
+attempt may expose ``late_results() -> list[tuple[DispatchRequest, DispatchResult]]``
+(mailbox does): the runner binds that transcript to the abandoned attempt as evidence only
+(never a submission), each round and once more right before ``finish``.
+
 Batch 4 (headless ``claude -p`` executor) implements the same protocol; see
 ``DispatchRequest.max_turns`` / ``tier`` and ``DispatchResult.usage``.
 """

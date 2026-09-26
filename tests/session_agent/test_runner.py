@@ -124,6 +124,41 @@ def test_claude_run_requests_name_the_claude_agent(tmp_path, monkeypatch):
     assert ex.requests[0].engine == "claude" and ex.requests[0].agent_type == "l4-card"
 
 
+def test_reported_failure_binds_its_transcript_before_the_retry(tmp_path, monkeypatch):
+    """I4: a reported (not timed-out) transient failure is superseded by a2; its own
+    transcript must be bound while a1 still runs, or the closure misses it."""
+    from . import _runner_support
+
+    monkeypatch.setattr(_runner_support, "ENGINE", "claude")
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    fixture = Path(__file__).resolve().parents[1] / "trace/fixtures/claude/agent-l4-card.jsonl"
+
+    def transcript(name: str) -> str:
+        path = tmp_path / "host_transcripts" / f"agent-{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(fixture.read_bytes())
+        return str(path)
+
+    class _Reporting(_FakeExecutor):
+        def dispatch(self, request):
+            if request.attempt == 1:
+                return DispatchResult(ok=False, error="API Error: Connection closed mid-response",
+                                      session_ref="session-main", context_ref="agent-a1",
+                                      parent_context_ref="session-main",
+                                      transcript_path=transcript("a1"))
+            super().dispatch(request)
+            return DispatchResult(ok=True, session_ref="session-main", context_ref="agent-a2",
+                                  parent_context_ref="session-main",
+                                  transcript_path=transcript("a2"))
+
+    final = runner.run_loop(run.run_id, _Reporting(), poll_seconds=0.01, max_rounds=100,
+                            hooks=run.hooks())
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    closure = json.loads((Path(run.handle.capsule) / "verification/evidence_closure.json")
+                         .read_text("utf-8"))
+    assert closure["missing"] == [], closure["missing"]
+
+
 def test_orphan_claimed_inference_is_not_redispatched(tmp_path, monkeypatch):
     run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
     # The previous runner process claimed the task and died before submit.

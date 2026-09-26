@@ -141,7 +141,10 @@ def bind_transcript_evidence(run_id: str, request: DispatchRequest, result: Disp
     from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
     snapshot = capture_snapshot(Path(result.transcript_path), engine=request.engine)
-    if snapshot.last_ordinal is None:
+    end_ordinal = snapshot.last_ordinal
+    if end_ordinal is None and snapshot.rows:
+        end_ordinal = len(snapshot.rows) - 1
+    if end_ordinal is None:
         return ()
     bound = bind_task_transcript(
         run_id,
@@ -152,7 +155,7 @@ def bind_transcript_evidence(run_id: str, request: DispatchRequest, result: Disp
         parent_context_ref=parent,
         session_ref=result.session_ref or request.host_session_ref,
         start_ordinal=0,
-        end_ordinal=snapshot.last_ordinal,
+        end_ordinal=end_ordinal,
         context_source="SUBAGENT",
         handle_loader=handle_loader,
     )
@@ -201,6 +204,7 @@ class Runner:
         # Retry intent is derived from durable state every round (review I3); the only
         # in-memory memo is "this process already tried and was refused" (no spinning).
         self._l4_refused: set[str] = set()
+        self._late_bound: set[tuple[str, int]] = set()
         self._skip: dict[str, str] = {}
         self._orphans: list[dict] = []
         self._dispatches: list[dict] = []
@@ -350,6 +354,7 @@ class Runner:
             while rounds < self.max_rounds:
                 rounds += 1
                 progressed = self._harvest()
+                self._bind_late_evidence()
                 if self._det_busy():
                     # A deterministic execute may be mid-expansion (expansion file on disk,
                     # store/artifacts not yet synced): read the graph only between executes.
@@ -415,6 +420,7 @@ class Runner:
         return json.loads(json.dumps(value, default=str))
 
     def _finish(self, state: dict, rounds: int) -> dict:
+        self._bind_late_evidence()           # a late transcript that arrived before finish
         try:
             report = service.finish(
                 self.run_id,
@@ -629,6 +635,16 @@ class Runner:
         try:
             result = flight.future.result()
         except ExecutorTimeout as exc:
+            # Nothing was reported for this attempt: record it ABANDONED (the timeout is
+            # the reason) so a late transcript can still be bound to it, and so the
+            # closure does not demand evidence that cannot exist (review I4).
+            try:
+                from autoresearch.session_agent.evidence import freeze_abandonment
+
+                freeze_abandonment(self.handle, task, attempt, str(exc),
+                                   executor=getattr(self.executor, "name", None))
+            except Exception as record_exc:  # noqa: BLE001 - reported, the failure proceeds
+                self._error(task["task_id"], f"abandonment record failed: {record_exc}")
             self._fail(flight, "TIMEOUT", str(exc))
             return
         except Exception as exc:  # noqa: BLE001 - classified like l4-stock.js
@@ -686,6 +702,40 @@ class Runner:
             return
         self._record(flight, "SUBMITTED", result)
 
+    def _bind_late_evidence(self) -> None:
+        """Bind late results of abandoned attempts (executor ``late_results()``) as
+        evidence of *that* attempt — never submitted, never accepted (review I4)."""
+        source = getattr(self.executor, "late_results", None)
+        if not callable(source):
+            return
+        from autoresearch.session_agent.evidence import read_abandonment
+
+        try:
+            late = list(source())
+        except Exception as exc:  # noqa: BLE001 - evidence gaps are reported, not fatal
+            self._error(None, f"late results unavailable: {type(exc).__name__}: {exc}")
+            return
+        for request, result in late:
+            key = (request.task_id, request.attempt)
+            if (
+                key in self._late_bound
+                or request.task_id in self._inflight          # not harvested yet
+                or read_abandonment(self.handle, request.task_id, request.attempt) is None
+            ):
+                continue
+            self._late_bound.add(key)
+            refs = self._bind_evidence(request, result)
+            self._ledger({
+                "ts": _now(), "task_id": request.task_id, "attempt": request.attempt,
+                "kind": "INFERENCE", "role": request.role, "agent_type": request.agent_type,
+                "outcome": "LATE_RESULT", "error_class": None,
+                "session_ref": result.session_ref, "context_ref": result.context_ref,
+                "transcript_path": result.transcript_path,
+                "usage": dict(result.usage) if result.usage else None,
+            })
+            self._event("LATE_EVIDENCE_BOUND", task_id=request.task_id,
+                        attempt=request.attempt, bound=bool(refs))
+
     def _bind_evidence(self, request: DispatchRequest, result: DispatchResult) -> tuple:
         if result.evidence_refs:
             return tuple(result.evidence_refs)
@@ -700,6 +750,10 @@ class Runner:
         task, attempt = flight.task, flight.attempt
         self._event("TASK_FAILING", task_id=task["task_id"], attempt=attempt,
                     error_class=error_class, message=message[:500])
+        if result is not None and flight.request is not None:
+            # The agent reported back: bind its transcript while the attempt still runs,
+            # so the failed attempt is evidenced like any other (review I4; idempotent).
+            self._bind_evidence(flight.request, result)
         try:
             service.fail(self.run_id, task["task_id"], attempt, error_class, message[:2000],
                          handle_loader=self.hooks.handle_loader)

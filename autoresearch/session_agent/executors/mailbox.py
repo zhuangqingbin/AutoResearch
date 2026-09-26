@@ -405,6 +405,23 @@ class MailboxExecutor:
             error_class=doc.get("error_class"),
         )
 
+    def late_results(self) -> list[tuple[DispatchRequest, DispatchResult]]:
+        """Results that arrived for abandoned attempts — evidence only (runner binds the
+        transcript to that attempt; the work itself stays discarded)."""
+        rows = []
+        for marker in sorted(mailbox_dir(self.staging).glob("*.abandoned")):
+            record = _read_json(marker) or {}
+            task_id, attempt = record.get("task_id"), record.get("attempt")
+            if not isinstance(task_id, str) or type(attempt) is not int:
+                continue
+            doc = read_late_result(self.staging, task_id, attempt)
+            issued = _read_json(request_path(self.staging, task_id, attempt))
+            if doc is None or issued is None:
+                continue
+            issued.pop("issued_at", None)
+            rows.append((DispatchRequest.from_json(issued), self._result(doc)))
+        return rows
+
     def dispatch(self, request: DispatchRequest) -> DispatchResult:
         issue_request(self.staging, request)
         task_id, attempt = request.task_id, request.attempt

@@ -640,6 +640,96 @@ def test_wait_with_a_fresh_heartbeat_is_idle_not_dead(tmp_path):
     assert doc["kind"] == "IDLE" and doc["runner_state"] == "RUNNING"
 
 
+# ── I4 (review 2026-09-26): an abandoned attempt's late transcript is its evidence ──
+
+CLAUDE_TRANSCRIPT = REPO / "tests/trace/fixtures/claude/agent-l4-card.jsonl"
+
+
+def _claude_transcript(folder: Path, name: str) -> str:
+    """A Claude-shaped subagent transcript: JSONL rows carry no ``ordinal``."""
+    path = folder / f"agent-{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(CLAUDE_TRANSCRIPT.read_bytes())
+    assert all("ordinal" not in json.loads(line) for line in path.read_text("utf-8").splitlines())
+    return str(path)
+
+
+def _poll(predicate, seconds=20.0):
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        assert time.monotonic() < deadline, "host simulation timed out"
+        time.sleep(0.01)
+
+
+@pytest.mark.parametrize("late_result_arrives", [True, False])
+def test_abandoned_attempt_evidence_closes_with_or_without_a_late_result(
+        tmp_path, monkeypatch, late_result_arrives):
+    from autoresearch.session_agent import host_evidence
+
+    from . import _runner_support
+
+    monkeypatch.setattr(_runner_support, "ENGINE", "claude")
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    staging = Path(run.handle.staging)
+    transcripts = tmp_path / "host_transcripts"             # outside the run workspace
+    seen = {}
+
+    def next_request():
+        while True:
+            doc = mailbox.wait_request(staging, timeout=0.2, poll_seconds=0.01)
+            if doc["kind"] == "REQUEST":
+                return doc
+            assert doc["kind"] == "IDLE", doc
+
+    def host():
+        first = next_request()                              # a1: taken, then sat on
+        _poll(lambda: mailbox.is_abandoned(staging, first["task_id"], 1))
+        if late_result_arrives:
+            try:
+                mailbox.write_result(staging, first["task_id"], 1, ok=True,
+                                     session_ref="session-main", context_ref="agent-late",
+                                     parent_context_ref="session-main",
+                                     transcript_path=_claude_transcript(transcripts, "late"))
+            except mailbox.MailboxAbandoned:
+                seen["late"] = "ABANDONED"
+        second = next_request()
+        path = _claude_transcript(transcripts, "a2")
+        for output in second["output_paths"].values():
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            Path(output).write_text(CARD_TEXT, encoding="utf-8")
+        mailbox.write_result(staging, second["task_id"], second["attempt"], ok=True,
+                             session_ref="session-main", context_ref="agent-a2",
+                             parent_context_ref="session-main", transcript_path=path)
+        seen["second"] = second["attempt"]
+
+    thread = threading.Thread(target=host)
+    thread.start()
+    try:
+        final = runner.run_loop(run.run_id, mailbox.MailboxExecutor(staging, poll_seconds=0.01),
+                                poll_seconds=0.01, max_rounds=20000, hooks=run.hooks(),
+                                timeouts={"stock.card": 1.0})
+    finally:
+        thread.join(timeout=30)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    assert seen["second"] == 2
+    late_refs = host_evidence.transcript_refs_for_task(run.handle, "synthetic.inference", 1)
+    if late_result_arrives:
+        assert seen["late"] == "ABANDONED"
+        assert late_refs and late_refs[0]["status"] == "PRESENT"      # bound to a1 only
+    else:
+        assert late_refs == []
+    capsule = Path(run.handle.capsule)
+    closure = json.loads((capsule / "verification/evidence_closure.json").read_text("utf-8"))
+    assert closure["missing"] == [] and closure["completeness_ok"] is True, closure["missing"]
+    plan = json.loads((capsule / "evidence/evidence_plan.json").read_text("utf-8"))
+    a1 = next(key for key in plan["task_keys"] if key["attempt"] == 1)
+    assert a1["state"] == "SUPERSEDED"
+    assert ("transcript" in a1["requirements"]) is late_result_arrives
+    record = json.loads((capsule / "evidence/tasks/synthetic.inference/a1/abandoned.json")
+                        .read_text("utf-8"))
+    assert record["status"] == "ABANDONED" and "taken" in record["reason"]
+
+
 # ── M4 (review 2026-09-26): each engine's host dispatches its own project agent ─────
 
 def test_codex_requests_name_the_codex_project_agent():

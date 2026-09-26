@@ -84,8 +84,20 @@ def _task_and_state(handle, task_id: str, attempt: int) -> dict:
     task = service._task(handle, task_id)
     if task["owner"] == "SESSION":
         entry = store.read_entry(Path(handle.workspace) / "session/tasks.json", task_id)
-        if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
-            raise ValueError("host evidence requires the running task attempt")
+        if entry["state"] == "RUNNING" and entry["attempt"] == attempt:
+            return task
+        from autoresearch.session_agent.evidence import read_abandonment
+
+        # A late transcript of an attempt the runner abandoned (timed out, never
+        # accepted) is evidence of that attempt only — never of an accepted result.
+        accepted = entry["state"] == "SUCCEEDED" and entry["attempt"] == attempt
+        if (
+            not accepted
+            and 1 <= attempt <= int(entry["attempt"])
+            and read_abandonment(handle, task_id, attempt) is not None
+        ):
+            return task
+        raise ValueError("host evidence requires the running task attempt")
     return task
 
 

@@ -10,6 +10,8 @@ runner before a real run (batch 2–3 Task 5; audit
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +26,8 @@ from .test_scan_runner_gaps import TEMPLATE_MARKET_VIEW
 
 CODE = "600519"
 SECTOR = "食品饮料"
+#: The harness pins engine=codex, so its fake agents leave Codex-shaped transcripts.
+CODEX_TRANSCRIPT = Path(__file__).resolve().parents[1] / "trace/fixtures/codex/rollout.jsonl"
 
 
 def _write(path: Path, payload) -> None:
@@ -113,9 +117,10 @@ class _FakeScanOperations:
 class _FakeScanModels:
     name = "fake-models"
 
-    def __init__(self, *, branchy: bool = False):
+    def __init__(self, *, branchy: bool = False, transcripts: Path | None = None):
         self.requests = []
         self.branchy = branchy
+        self.transcripts = transcripts      # outside the run workspace (capsule rule)
 
     def dispatch(self, request):
         self.requests.append(request)
@@ -127,16 +132,23 @@ class _FakeScanModels:
             "sector.brief": "## 地形段\n行业成交温和,估值处于近一年中位附近。\n",
             "scan.l3": json.dumps([{"code": CODE, "finalist": True, "thesis": "t"}]),
             "scan.l3.repair": json.dumps([{"code": CODE, "thesis": "fixed"}]),
-            "scan.l4.intel": "## 事件段\n- 无新增事件\n## 声明行\n网查 3 条\n",
+            # Real intel differs between attempts (live web search).
+            "scan.l4.intel": f"## 事件段\n- 无新增事件({request.task_id})\n## 声明行\n网查 3 条\n",
             "scan.l4.card": card,
             "scan.l4.review": card,
         }[request.role]
         for path in request.output_paths.values():
             _write(Path(path), text)
         evidence = (("host-binding:" + "1" * 64,) if request.independent_context else ())
+        transcript = None
+        if self.transcripts is not None:
+            transcript = self.transcripts / f"{request.task_id}.a{request.attempt}.jsonl"
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(CODEX_TRANSCRIPT, transcript)
         return DispatchResult(ok=True, session_ref="session-main",
                               context_ref=f"agent-{request.task_id}",
-                              parent_context_ref="session-main", evidence_refs=evidence)
+                              parent_context_ref="session-main", evidence_refs=evidence,
+                              transcript_path=str(transcript) if transcript else None)
 
 
 def _scan_run(tmp_path, monkeypatch, *, host=None, user_config=None):
@@ -307,12 +319,54 @@ def test_synthetic_sentinel_pinned_scan_reviews_holdings_and_finishes(tmp_path, 
     assert "scan.l3.prepare" not in operations.calls and "scan.gate2.skip" in operations.calls
 
 
+def _closure_missing(handle) -> list[str]:
+    return json.loads((Path(handle.capsule) / "verification/evidence_closure.json")
+                      .read_text(encoding="utf-8"))["missing"]
+
+
+def _attempt_agnostic(missing) -> set[str]:
+    """One logical gap per task: ``l4.X.a2.card:a1`` and ``l4.X.a1.card:a1`` compare equal,
+    so a retry run may only repeat gaps the harness already has without a retry."""
+    result = set()
+    for item in missing:
+        value = re.sub(r"\.a\d+(?=[.:]|$)", ".aN", item)
+        value = re.sub(r"-a\d+(?=[-:]|$)", "-aN", value)
+        result.add(re.sub(r":a\d+(?=:|$)", ":aK", value))
+    return result
+
+
+def _baseline_missing(tmp_path, monkeypatch, *, branchy=False, host=None, user_config=None):
+    """The same scan without any retry (same harness gaps, same transcripts)."""
+    from autoresearch.session_agent import host_evidence
+
+    handle = _scan_run(tmp_path / "baseline", monkeypatch, host=host, user_config=user_config)
+    if branchy:
+        monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                            lambda current, task, receipt: [receipt])
+    final = runner.run_loop(
+        RUN_ID, _FakeScanModels(branchy=branchy, transcripts=tmp_path / "baseline_transcripts"),
+        max_parallel=4, poll_seconds=0.01, max_rounds=3000,
+        hooks=_plain_hooks(handle, _FakeScanOperations(handle, branchy=branchy)))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    missing = _closure_missing(handle)
+    assert not any(item.startswith("TRANSCRIPT_MISSING:l4.") and ".card:" in item
+                   for item in missing), "harness must bind card transcripts"
+    return missing
+
+
+def _abandonment(handle, task_id: str, attempt: int) -> dict:
+    path = (Path(handle.capsule) / "evidence/attempt_records" / task_id / f"a{attempt}"
+            / "abandoned.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_l4_card_timeout_drives_one_taskbook_retry_to_finish(tmp_path, monkeypatch):
     from autoresearch.session_agent.executors.base import ExecutorTimeout
 
+    baseline = _baseline_missing(tmp_path, monkeypatch)
     handle = _scan_run(tmp_path, monkeypatch)
     operations = _FakeScanOperations(handle)
-    models = _FakeScanModels()
+    models = _FakeScanModels(transcripts=tmp_path / "host_transcripts")
     original = models.dispatch
 
     def dispatch(request):
@@ -335,6 +389,73 @@ def test_l4_card_timeout_drives_one_taskbook_retry_to_finish(tmp_path, monkeypat
     assert book["tasks"][CODE]["attempt"] == 2
     promoted = (Path(handle.staging) / "details" / f"{CODE}.md").read_text(encoding="utf-8")
     assert "**Rating**: Hold" in promoted                              # a2 card promoted
+    # Review I4: the retry run adds no evidence gap the no-retry baseline lacks.
+    missing = _closure_missing(handle)
+    assert _attempt_agnostic(missing) - _attempt_agnostic(baseline) == set(), missing
+    plan = json.loads((Path(handle.capsule) / "evidence/evidence_plan.json").read_text("utf-8"))
+    tickets = {key["task_id"]: key["attempt"] for key in plan["task_keys"]
+               if key["owner"] == "L4_TASKBOOK"}
+    assert tickets == {f"l4.{CODE}.a1": 1, f"l4.{CODE}.a2": 2}      # keyed by the id's attempt
+    abandoned = _abandonment(handle, f"l4.{CODE}.a1.card", 1)
+    assert abandoned["status"] == "ABANDONED" and "超时" in abandoned["reason"]
+
+
+def test_l4_card_timeout_with_intel_keeps_the_bound_a1_intel_intact(tmp_path, monkeypatch):
+    """The a2 intel must not overwrite the bound a1 intel file (review I4 b)."""
+    from autoresearch.session_agent import host_evidence
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    host = profile(independent_context=True, web_search=True)
+    config = {"l4_intel": {"enabled": True}}
+    baseline = _baseline_missing(tmp_path, monkeypatch, branchy=True, host=host,
+                                 user_config=config)
+    handle = _scan_run(tmp_path, monkeypatch, host=host, user_config=config)
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda current, task, receipt: [receipt])
+    models = _FakeScanModels(branchy=True, transcripts=tmp_path / "host_transcripts")
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.task_id == f"l4.{CODE}.a1.card":
+            raise ExecutorTimeout(f"等待 {request.task_id} 的结果文件超时")
+        return original(request)
+
+    models.dispatch = dispatch
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, _FakeScanOperations(handle, branchy=True)))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    intel = [request.task_id for request in models.requests if request.role == "scan.l4.intel"]
+    assert intel == [f"l4.{CODE}.a1.intel", f"l4.{CODE}.a2.intel"]
+    with artifacts.open_artifact(handle, f"scan.l4.{CODE}.a1.intel") as stream:
+        assert f"l4.{CODE}.a1.intel" in stream.read().decode("utf-8")   # a1 bytes untouched
+    missing = _closure_missing(handle)
+    assert _attempt_agnostic(missing) - _attempt_agnostic(baseline) == set(), missing
+
+
+def test_session_task_timeout_retry_adds_no_evidence_gap(tmp_path, monkeypatch):
+    """A SESSION retry (sector brief a1 abandoned) must not leave a1's missing transcript
+    in the closure: no evidence can exist for work that was never reported (I4 c)."""
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    baseline = _baseline_missing(tmp_path, monkeypatch)
+    handle = _scan_run(tmp_path, monkeypatch)
+    models = _FakeScanModels(transcripts=tmp_path / "host_transcripts")
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.role == "sector.brief" and request.attempt == 1:
+            raise ExecutorTimeout(f"等待 {request.task_id} 的结果文件超时")
+        return original(request)
+
+    models.dispatch = dispatch
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, _FakeScanOperations(handle)))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    briefs = [(r.task_id, r.attempt) for r in models.requests if r.role == "sector.brief"]
+    assert [attempt for _, attempt in briefs] == [2]
+    missing = _closure_missing(handle)
+    assert _attempt_agnostic(missing) - _attempt_agnostic(baseline) == set(), missing
+    assert _abandonment(handle, briefs[0][0], 1)["status"] == "ABANDONED"
 
 
 def test_failed_l3_repair_degrades_to_the_original_judged_and_finishes(tmp_path, monkeypatch):
