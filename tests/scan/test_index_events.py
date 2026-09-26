@@ -158,12 +158,17 @@ def test_build_filters_whitelist_and_labels_phase(lake):
     assert df.flow_adv_days.isna().all()                                     # B3 之前恒空 = 未计算
 
 
-def test_build_dedups_same_code_index_side_keeping_the_newest_announcement(lake):
-    """minor-4(final whole-branch review):`sort_values("publish_date", ascending=False)` 读
-    起来像一句「newest-wins 去重」的承诺,但从没有任何代码兑现它——两份公告(原公告 + 更正
-    公告)覆盖同一个 (code, index_code, side) 时,旧代码会让两行都进最终表,门会对着同一个
-    事实的两个不同 `eff_close_date` 各自判一次。补上真正的去重:按 (code, index_code, side)
-    分组,循迭代顺序(已按 publish_date 降序)保留第一次出现的行 = 最新公告那份。"""
+def test_build_keeps_both_rows_when_a_correction_announcement_covers_the_same_code_index_side(lake):
+    """final whole-branch review 的一次限定范围复核(2026-09-26)推翻了 minor-4:那次修复给
+    `sort_values("publish_date", ascending=False)` 配上了一句「newest-wins 去重」
+    (`drop_duplicates(subset=[...], keep="first")`),但复核用本项目自己的临时公告措辞真实
+    复现出它的不对称——新公告解析不出生效日(`phase="unknown_eff"`)时会无条件驱逐一条老
+    公告本该在扫描日判成 `passive_close_eve` 的行,门因此在它存在的理由(生效前夜)那一晚
+    悄悄放行(见 `test_build_keeps_a_resolved_row_when_a_newer_unresolvable_temporary_notice_
+    arrives`);发布日相同时,稳定排序还会让谁留下变成任意的。撤回排序与去重两处改动,回到
+    保守行为:两份公告(原公告 + 更正公告)覆盖同一个 (code, index_code, side) 时两行都保留。
+    门是任一行命中即否决的 any-match(见 `relative_buy._hard_gate`),多一行的代价只是一次
+    可能多余的否决,少一行的代价是漏放真正的生效前夜——两者不对称,故意保守不去重。"""
     fl = _list([
         ["3007011", "关于调整沪深300指数样本的公告", "20261127", "index_rebalance"],
         ["3007012", "关于更正沪深300指数样本调整的公告", "20261128", "index_rebalance"],
@@ -174,9 +179,35 @@ def test_build_dedups_same_code_index_side_keeping_the_newest_announcement(lake)
     })
     df = ie.build_index_events("2026-11-30", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
     hs300_add = df[(df.index_code == "000300") & (df.code == "600221") & (df.side == "add")]
-    assert len(hs300_add) == 1                                     # 不是两行
-    assert hs300_add.iloc[0]["ann_date"] == "20261128"              # 保留的是更新的那份公告(更正)
-    assert hs300_add.iloc[0]["eff_close_date"] == "20261214"
+    assert len(hs300_add) == 2                                        # 两行都留着,不再互相驱逐
+    assert set(hs300_add["ann_date"]) == {"20261127", "20261128"}
+    assert set(hs300_add["eff_close_date"]) == {"20261211", "20261214"}
+
+
+def test_build_keeps_a_resolved_row_when_a_newer_unresolvable_temporary_notice_arrives(lake):
+    """final whole-branch review 限定范围复核(2026-09-26)逮到的回归,用本项目自己的规范
+    临时公告措辞复现:一条**更新**的临时调整公告解析不出生效日(`phase="unknown_eff"`),
+    与一条**更早**、已解析出生效日的公告覆盖同一个 (code, index_code, side)——按发布日期
+    降序迭代 + `drop_duplicates(keep="first")` 的旧实现会让新公告那一行(未解析)驱逐旧公告
+    那一行(已解析出 `passive_close_eve`),门在它唯一该响的那一夜(生效前夜)悄悄放行,
+    per-stock 的 ⛔ 简报行也随 `calendar.py` 第三腿一起消失——唯一留下的痕迹是一个计数。
+    这条测试就是那盏灯:在旧实现下必须失败(见修复报告的变异核验),修复后(delete the sort
+    与 dedup,两行都保留)必须通过,且门要找的相位仍然在场。"""
+    fl = _list([
+        ["3007031", "关于调整沪深300指数样本的公告", "20261127", "index_rebalance"],
+        ["3007032", "关于沪深300指数样本临时调整的公告", "20261128", "index_rebalance"],
+    ])
+    fd = _fetch_detail({
+        "3007031": _detail_rows("3007031", "20261127", "上述调整将于2026年12月11日收市后生效。", ROSTER[:1]),
+        "3007032": _detail_rows("3007032", "20261128", "自东兴证券、信达证券退市日起调整", ROSTER[:1]),
+    })
+    df = ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
+    hs300_add = df[(df.index_code == "000300") & (df.code == "600221") & (df.side == "add")]
+    assert len(hs300_add) == 2                                        # 两份公告都留着,不互相驱逐
+    assert set(hs300_add["phase"]) == {"passive_close_eve", "unknown_eff"}
+    resolved = hs300_add[hs300_add["phase"] == "passive_close_eve"]
+    assert len(resolved) == 1 and resolved.iloc[0]["ann_date"] == "20261127"
+    assert resolved.iloc[0]["eff_close_date"] == "20261211"           # 门要找的相位仍然在场
 
 
 def test_build_processes_announcements_whose_title_lacks_the_word_sample(lake):

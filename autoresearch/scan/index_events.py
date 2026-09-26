@@ -248,7 +248,7 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
         return pd.DataFrame(columns=EVENT_COLS)
 
     rows: list[dict] = []
-    for ann in lst.sort_values("publish_date", ascending=False).itertuples(index=False):
+    for ann in lst.itertuples(index=False):
         # #8(review 2026-09-25):不再用标题猜「像不像调样公告」—— list 端点本身只返回调样类
         # 公告,标题关键词过滤只会制造一种静默丢失:换个措辞(「成份股」「名单」而非「样本」)的
         # 真公告会消失进空表,读起来像「源可达无事件」,其实是「公告被我们自己的过滤器吃了」。
@@ -275,13 +275,15 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
                          "side": r.side, "ann_date": ann_date, "eff_close_date": eff, "phase": phase,
                          "source": source, "flow_adv_days": None})
     df = pd.DataFrame(rows, columns=EVENT_COLS)
-    if len(df):
-        # minor-4(final whole-branch review):上面 `sort_values("publish_date", ascending=False)`
-        # 读起来像一句「newest-wins 去重」的承诺,但直到这里都没有任何代码兑现它——两份公告
-        # (原公告 + 更正公告)覆盖同一个 (code, index_code, side) 时会各自贡献一行,门会对着
-        # 同一个事实的两个不同 `eff_close_date` 各判一次。真正兑现:按这三个键去重,`keep="first"`
-        # 配合上面已经按 publish_date 降序的迭代顺序,保留的正是最新公告那份。
-        df = df.drop_duplicates(subset=["code", "index_code", "side"], keep="first").reset_index(drop=True)
+    # final whole-branch review 限定范围复核(2026-09-26):minor-4 曾在这里加过 newest-wins
+    # 去重(按 publish_date 降序迭代 + `drop_duplicates(keep="first")`),但复核用本项目自己的
+    # 临时公告措辞真实复现出它的不对称——新公告若解析不出生效日(`phase="unknown_eff"`)会
+    # 无条件驱逐一条老公告本该判成 `passive_close_eve` 的行,门因此在它存在的理由(生效前夜)
+    # 那一晚悄悄放行(见 `test_build_keeps_a_resolved_row_when_a_newer_unresolvable_temporary_
+    # notice_arrives`);发布日相同时,稳定排序还会让谁留下变成任意的。故意不去重、两份公告
+    # (原公告 + 更正公告)覆盖同一个 (code, index_code, side) 时两行都保留:门是任一行命中即
+    # 否决的 any-match(`relative_buy._hard_gate`),多一行的代价只是一次可能多余的否决,少一
+    # 行的代价是漏放真正的生效前夜——两者不对称,这里选保守。
     if with_flow and len(df):
         from autoresearch.scan.index_flow import flow_adv_days
         try:
