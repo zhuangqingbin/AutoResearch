@@ -198,7 +198,7 @@
     //   → _inject_sector_seats_l1 镜像 pinned 注入 L1 → select_l2 作保留行追加
     //   → l3/prompt 的 🏭 列 + triage ①c 强留 → l3/merge 给**已在场**的行打 guard 留痕。
     // ⚖️ 证据:09-01→09-17 七日离线重放每日恰 3 行业 / 6 席、**席位全非落刀**(A6 7/7);
-    //   不净增 L4 卡数 —— 席位换掉菜单 200 行里的其他行,finalist 名额仍由 l4_budget 决定,
+    //   不净增 L4 卡数 —— 席位换掉菜单 200 行里的其他行,finalist 名额仍由 l4.max_cards(与 l4_budget)决定,
     //   merge.py 只对 l3-rank 自己判成 finalist 的行打 sector_seat 标(不强推额外卡)。
     // 🚨 2026-09-25:本键此前**只在离线重放里以参数形式存在,生产配置从未写过**,
     //   而 user_config 的默认是「缺省 = 不出席 = parity」——即裁定③ 的交付物一直是关的。
@@ -247,12 +247,12 @@
     // ── composite 证据席(2026-08-26 §3 路A · 守卫⑨)────────────────────────────
     // 【生效点】scan/l3/merge.composite_seat_cfg → ① write_finalists 的
     //   inject_composite_seats(把当日 L2 菜单 composite 最高的 m 只强制送进 finalists,
-    //   guard=composite_seat / lane=composite,不占 finalist 名额、不受 lt55/cap 约束)
+    //   guard=composite_seat / lane=composite,不占 finalist 名额但计入 l4.max_cards、不受 lt55/cap 约束)
     //   ② scan/l3/prompt.prepare_l3_table → triage 的 ①b 强留(让 l3-rank 真判到它们 ——
     //   pass1 切了它们,finalists 里就只剩空 thesis 行,pinned 当年踩过这个坑)。
     // 剔除:📌 保送 / ST·退 / 当日涨幅 ≥9.5%(追高在隔夜尺四年逐年为负)。
     // ⚖️ 证据与边界同 relative_buy.pool 那段(两键是**同一个裁定**的产物,同批改)。
-    // 回滚杆 = "enabled": false(一行,逐字 parity);m 每加 1 ≈ +1 张卡 ≈ +$1.5/日。
+    // 回滚杆 = "enabled": false(一行,逐字 parity);l4.max_cards 固定时 m 每加 1 = L3 名额 −1(卡数不变);卡数压到 ≤ m 时席位让位到 max_cards−1。
     "composite_seat": { "enabled": true, "m": 3 },
     // ── 低位转强第三画像(2026-08-21 低位转强波;design §6.1)────────────────────
     // 【生效点】scan/l3/prompt.py prepare_l3_table → l3_table_md(lowturn_flag, lowturn_cfg)
@@ -288,7 +288,7 @@
   //   「席位优先、再按 conviction」截尾进 bench(guard="max_cards")③ self_review.l4_card_count_lint
   //   发布前对账:任务簿非 📌 票数 > max_cards → warn「L4 卡数·超配置上限」。
   // 语义:max_cards = 非 📌 卡上限;📌 持仓恒出卡不占额。finalist 名额 = max_cards − composite m;
-  //   budget_flags=true 再与 menu.l4_budget(五面旗只降不升)取小;false 忽略旗恒按 max_cards。
+  //   budget_flags=true 时 finalist 名额再与 menu.l4_budget(五面旗只降不升)取小(席位另计);false 忽略旗。
   // 默认 13 = 原 finalist_max 10 + composite m 3(逐字 parity)。改小立刻生效;改大时 L3 候选
   //   (pass1_target 40)与当日够格票数才是上限 —— 卡数 = min(max_cards, 够格 finalist + 席位)。
   "l4": { "max_cards": 13, "budget_flags": true },

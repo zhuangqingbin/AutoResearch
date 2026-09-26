@@ -29,6 +29,15 @@ def test_max_cards_smaller_than_seats_keeps_positive_cap():
     cfg = {"l4": {"max_cards": 2}, "l3": {"composite_seat": {"enabled": True, "m": 3}}}
     caps = effective_caps(cfg, 30)
     assert caps["finalist_cap"] == 1 and caps["l3cap"] == 1    # 永不为 0/负
+    assert caps["seat_m"] == 1                                  # 席位让位:总数 = max_cards(复审 I-2)
+
+
+@pytest.mark.parametrize("max_cards,seats,l3", [(1, 0, 1), (3, 2, 1), (4, 3, 1), (13, 3, 10)])
+def test_seats_yield_so_at_least_one_l3_pick_survives(max_cards, seats, l3):
+    cfg = {"l4": {"max_cards": max_cards}, "l3": {"composite_seat": {"enabled": True, "m": 3}}}
+    caps = effective_caps(cfg, 30)
+    assert (caps["seat_m"], caps["l3cap"]) == (seats, l3)
+    assert caps["seat_m"] + caps["finalist_cap"] == max_cards
 
 
 def test_budget_flags_false_ignores_menu_budget():

@@ -12,7 +12,9 @@ def effective_caps(cfg: dict | None, l4_budget: int) -> dict:
     """返回 {max_cards, budget_flags, seat_m, finalist_cap, l3cap}。
 
     - `max_cards`:非 📌 卡上限(含 composite 席位);📌 持仓恒出卡、不占额。
-    - `finalist_cap` = max(1, max_cards − seat_m):留给 L3 finalist tier 的名额。
+    - `seat_m` = min(composite m, max_cards − 1):席位最多 max_cards − 1 —— 卡数压到 ≤ m 时席位
+      让位,至少留 1 张 L3 深判卡(否则全是没有 L3 论点的证据席直通车,L3 的 max-effort 白做)。
+    - `finalist_cap` = max_cards − seat_m(≥1):留给 L3 finalist tier 的名额(📌 不占,见 write_finalists)。
     - `l3cap`:传给 l3-rank / `write_finalists` 的 finalist tier 上限;`budget_flags=true` 时再与
       `menu.l4_budget`(五面旗只降不升)取小,`false` 时忽略旗。永不为 0。
     """
@@ -22,7 +24,7 @@ def effective_caps(cfg: dict | None, l4_budget: int) -> dict:
     max_cards = int(l4.get("max_cards", DEFAULT_MAX_CARDS))
     budget_flags = bool(l4.get("budget_flags", True))
     seat_on, seat_m = composite_seat_cfg(cfg)
-    seat_m = int(seat_m) if seat_on else 0
+    seat_m = max(0, min(int(seat_m) if seat_on else 0, max_cards - 1))
     finalist_cap = max(1, max_cards - seat_m)
     l3cap = min(finalist_cap, int(l4_budget)) if budget_flags else finalist_cap
     return {"max_cards": max_cards, "budget_flags": budget_flags, "seat_m": seat_m,

@@ -615,16 +615,28 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
 
     from autoresearch.scan.l4.card_count import effective_caps
     from autoresearch.scan.user_config import load_user_config
+    from autoresearch.scan.user_config import load_pinned
     caps = effective_caps(load_user_config(), budget)
-    fin, bench = merge_l3_finalists_v3(jd, budget=budget, finalist_max=caps["finalist_cap"])
+    kept = load_pinned(date, path=pinned_path)["kept"]
+    pinned_codes = {str(p["code"]).zfill(6) for p in kept}
+    # 📌 不占名额(2026-09-26 复审 I-1):l3-rank 若把 📌 也判进 finalist tier,它会在 v3 的 cap 截尾里
+    # 占掉一个非📌 名额,之后 lane 改判 pinned、守卫⑩又不数它 → 当日少一张卡且无痕。按 tier 里的
+    # 📌 数 k 放宽 v3 的 cap(k 随放宽单调不减、上界 = 📌 数,几轮即稳定);k=0 的日子只跑一轮 = parity。
+    k = 0
+    for _ in range(len(pinned_codes) + 1):
+        fin, bench = merge_l3_finalists_v3(jd, budget=budget + k, finalist_max=caps["finalist_cap"] + k)
+        k_now = int(fin["code"].astype(str).isin(pinned_codes).sum()) if len(fin) else 0
+        if k_now <= k:
+            break
+        k = k_now
     finalist_n = int(len(fin))
 
     # 守卫⑨ composite 席位(2026-08-26 §3 路A):在 v3 全部守卫**之后**、pinned 注入**之前**
-    # 注入 —— 与 📌 同级的直通车,不占 finalist 名额、不参与 cap 截尾。放在 pinned 之前是为了
+    # 注入 —— 与 📌 同级的直通车,不占 finalist 名额(但计入 l4.max_cards,守卫⑩)、不参与 v3 cap 截尾。放在 pinned 之前是为了
     # 让 pinned 的「已在场就只改判 lane」逻辑仍能覆盖同码情形(📌 优先级更高)。
     seats: list[dict] = []
-    seat_enabled, seat_m = composite_seat_cfg()
-    if seat_enabled and seat_m > 0:
+    seat_m = caps["seat_m"]        # = composite m,卡数压到 ≤ m 时让位到 max_cards − 1(card_count)
+    if seat_m > 0:
         seats = pick_composite_seats(l2, seat_m,
                                      exclude={str(c) for c in fin.get("code", [])})
         fin = inject_composite_seats(fin, seats, judged=jd)
@@ -653,8 +665,6 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
                 m = fin["code"].astype(str).str.zfill(6).isin(sector_codes) & (fin["guard"].fillna("") == "")
                 fin.loc[m, "guard"] = SECTOR_SEAT_GUARD
 
-    from autoresearch.scan.user_config import load_pinned
-    kept = load_pinned(date, path=pinned_path)["kept"]
     if kept:
         # judged=jd:pinned 被 L3 判过但落 bench 时,把它的 L3 真判字段带进 finalists(不然
         # 只剩 L2 空行 → 下游 summary/L4 prompt 全以为"pinned 没有 L3 论点")。

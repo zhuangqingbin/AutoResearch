@@ -94,7 +94,7 @@ L2 之后、与 L3 证据取数**并发**:`sector.reuse <date> --apply`(TTL ≤5
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制 + 明日买家,写不出不选)与行为化 conviction(≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只;50-69 = 值得 L4 验不背书)。
 
-**token 经济与预算**:`delta=True` 略去无变化票;L4 派发数由 `menu.l4_budget` 控(五面旗:落刀>60% / 相对落刀>40% 且>2×全市场 / 健康涨≤2 / risk_off / 0买连败≥3;1 旗→22、≥2 旗→15);`l3cap`/`max_cards` 由 GATE1 回显(`card_count.effective_caps`):`l3cap` 进 L3 区间与 `l3_select --budget`,`max_cards` 作 GATE2 预算(GATE2 数非豁免 lane 全部行,席位也算)。
+**token 经济与预算**:`delta=True` 略去无变化票;L4 卡数由 `l4.max_cards` 定(📌 不占额;`menu.l4_budget` 五面旗只压 finalist 名额:落刀>60% / 相对落刀>40% 且>2×全市场 / 健康涨≤2 / risk_off / 0买连败≥3;1 旗→22、≥2 旗→15);`l3cap`/`max_cards` 由 GATE1 回显(`card_count.effective_caps`):`l3cap` 进 L3 区间与 `l3_select --budget`,`max_cards` 作 GATE2 预算(GATE2 数非豁免 lane 全部行,席位也算)。
 
 **三面旗**(presence-gated,缺=parity):主力失真 `dist_flag`(反号/微量)、监管 `reg_flag`(近 10 日立案/问询/处罚)、误读三预警 `misread_flag`(低基:np_yoy>100 且 roe<8;背离:cmf/obv 正但 main_net_ratio<0;套牢:winner_rate<25 且 ma_bull=0 且 pct_60d>0;L4 简报同步注旗,l3-rank 硬约束 E 强制自证)。
 
