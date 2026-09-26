@@ -288,6 +288,10 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("publication_delivery_identity_file", "*.delivery.json", "report", "finalize",
              "session_agent.publication", "json", "conditional",
              required_when="session_v1 发布器交付文件型兼容视图"),
+    # 2026-09-26 批 4(spec §6 C3):送达记录(渠道/状态/截断/错误;绝无凭证)。落在 brief 所在的
+    # 兼容报告目录 —— canonical 发布根 runs/<run_id>/p1 是封存的目录哈希,不往里写。
+    Artifact("delivery_record", "_delivery.json", "report", "observe", "delivery", "json",
+             "conditional", required_when="scan.delivery.send 跑过(无人值守 scan_run 成功后)"),
     Artifact("session_acceptance_proof", "*/*/*/*.json", "acceptance", "finalize",
              "session_agent.evaluation", "json", "conditional",
              required_when="某宿主真实场景生成或显式导入 portable proof"),

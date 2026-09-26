@@ -108,6 +108,9 @@ _TOP_WHITELIST = {
     # 2026-09-26 用户需求「最终进入 L4 卡的个数可配置、且真实生效」:max_cards / budget_flags,
     # 唯一算法 scan/l4/card_count.effective_caps(GATE1 回显,Workflow 与 session_agent 只读)。
     "l4",
+    # 2026-09-26 daily-engine 批 4(spec §6 C3):无人值守场的送达渠道。默认 channel="none"
+    # = parity(什么都不发);消费点 scan/delivery.configured_delivery → send()/notify()。
+    "delivery",
 }
 _SUB_WHITELIST = {
     "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
@@ -133,6 +136,7 @@ _SUB_WHITELIST = {
     "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering", "rebalance_gate"},
     "retention": {"bind_transcripts"},
     "calendar": {"index_rebalance", "index_rebalance_flow"},
+    "delivery": {"channel", "file_dir"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -148,6 +152,8 @@ def _t_rbmode(v): return v in {"shadow", "active"}
 def _t_rbpool(v): return v in {"finalists", "composite"}
 def _t_date_or_null(v): return v is None or (isinstance(v, str) and _DATE_RE.fullmatch(v) is not None)
 def _t_profile(v): return v in {"calibrated", "preference"}
+def _t_channel(v): return isinstance(v, str) and v in {"none", "bark", "mail", "file"}
+def _t_path_or_null(v): return v is None or (isinstance(v, str) and v.strip() != "")
 
 
 def _t_pref_weights(v):
@@ -230,6 +236,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # false 或无 active run 时 `transcript_binder.safe_bind_run` 仍写带 reason 的
     # 禁用报告,不清除已有证据。
     ("retention", "bind_transcripts"): (_t_bool, "boolean"),
+    # 送达(2026-09-26 批 4,spec §6 C3):channel 闭集;file_dir 只在 channel=file 时读(null=未配)。
+    # 凭证(BARK_TOKEN / DELIVERY_MAIL_TO)**不进本文件**,只在 .env —— 这里没有它们的键。
+    ("delivery", "channel"): (_t_channel, "none|bark|mail|file"),
+    ("delivery", "file_dir"): (_t_path_or_null, "非空路径字符串 或 null"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
