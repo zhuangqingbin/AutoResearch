@@ -21,7 +21,17 @@ threads only run ``executor.dispatch``.  Store / artifact / event writes are flo
 A crash between ``claim`` and ``submit`` leaves the attempt RUNNING.  On restart the
 runner never claims it again: an executor with ``supports_reattach`` re-attaches to the
 same attempt (mailbox: same request file), otherwise the attempt is reported as an
-orphan and the run stops ``STALLED`` for an operator decision (``resume`` / ``fail``).
+orphan (with the exact ``fail --error-class STALE_TASK`` command as its hint) and the run
+stops ``STALLED`` for an operator decision.
+
+Restart safety (review I3): retry intent is never held only in memory — every round the
+runner derives it from durable state (store: SESSION task FAILED below
+``SESSION_MAX_ATTEMPTS``; taskbook: ticket FAILED with a ``TASK_ATTEMPT`` class below
+``l4_tasks.MAX_ATTEMPTS``), so a runner restarted after a crash spends exactly the retries
+the dead one would have.  One runner per run: ``_dispatch/runner.lock`` is held (flock)
+for the process lifetime; a second runner refuses with :class:`RunnerAlreadyRunning`.
+A heartbeat thread refreshes ``runner.json`` independently of the loop thread, so a long
+service call never looks like a dead runner to ``mailbox wait``.
 """
 from __future__ import annotations
 
@@ -31,6 +41,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -58,6 +69,21 @@ _HEARTBEAT_SECONDS = 5.0
 
 class RunnerUnsupported(RuntimeError):
     """The runner has no parameter source for a deterministic operation."""
+
+
+class RunnerAlreadyRunning(RuntimeError):
+    """Another live runner holds ``_dispatch/runner.lock`` for this run."""
+
+
+def orphan_hint(run_id: str, task_id: str, attempt: int) -> str:
+    """The operator action that makes a restarted runner progress past an orphan."""
+    return (
+        f"uv run --no-sync python -m autoresearch.session_agent fail --run-id {run_id} "
+        f"--task-id {task_id} --attempt {attempt} --error-class STALE_TASK "
+        "--message 'orphaned by a dead runner'; then restart the runner under a NEW "
+        "trace.detach key (e.g. session-runner-2): it retries the task once as "
+        f"a{attempt + 1} (an L4 child: one retry-l4; a review: stops REVIEW_FAILED)"
+    )
 
 
 @dataclass(frozen=True)
@@ -148,9 +174,13 @@ class Runner:
         timeout_multiplier: float = 1.0,
         log: Callable[[dict], None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        heartbeat_seconds: float = _HEARTBEAT_SECONDS,
     ):
         if type(max_parallel) is not int or max_parallel < 1:
             raise ValueError("max_parallel must be a positive integer")
+        if not heartbeat_seconds > 0:
+            raise ValueError("heartbeat_seconds must be positive")
+        self.heartbeat_seconds = float(heartbeat_seconds)
         self.run_id = run_id
         self.executor = executor
         self.max_parallel = max_parallel
@@ -168,14 +198,19 @@ class Runner:
                                                 file=sys.stderr, flush=True))
         self._sleep = sleep
         self._inflight: dict[str, _Flight] = {}
-        self._retry_queue: list[tuple[dict, int]] = []
-        self._l4_retry: dict[str, int] = {}
+        # Retry intent is derived from durable state every round (review I3); the only
+        # in-memory memo is "this process already tried and was refused" (no spinning).
+        self._l4_refused: set[str] = set()
         self._skip: dict[str, str] = {}
         self._orphans: list[dict] = []
         self._dispatches: list[dict] = []
         self._errors: list[dict] = []
         self._started_at = _now()
         self._heartbeat = 0.0
+        self._status_lock = threading.Lock()
+        self._exited = False
+        self._stop_beat = threading.Event()
+        self._lock_stream = None
 
     # ── service plumbing ────────────────────────────────────────────────────────
     def _handle(self):
@@ -200,17 +235,61 @@ class Runner:
         return path
 
     def _write_status(self, state: str, outcome: dict | None = None) -> None:
-        atomic_write_json(self._dispatch_dir() / "runner.json", {
-            "schema_version": 1,
-            "run_id": self.run_id,
-            "pid": os.getpid(),
-            "executor": getattr(self.executor, "name", type(self.executor).__name__),
-            "state": state,
-            "started_at": self._started_at,
-            "updated_at": _now(),
-            "in_flight": sorted(self._inflight),
-            "outcome": outcome,
-        })
+        with self._status_lock:
+            if self._exited:
+                return                     # EXITED is final: a late beat never revives it
+            self._exited = state == "EXITED"
+            atomic_write_json(self._dispatch_dir() / "runner.json", {
+                "schema_version": 1,
+                "run_id": self.run_id,
+                "pid": os.getpid(),
+                "executor": getattr(self.executor, "name", type(self.executor).__name__),
+                "state": state,
+                "started_at": self._started_at,
+                "updated_at": _now(),
+                "heartbeat_epoch": time.time(),
+                "heartbeat_seconds": self.heartbeat_seconds,
+                "in_flight": sorted(self._inflight.copy()),   # dict.copy is atomic (GIL)
+                "outcome": outcome,
+            })
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop_beat.wait(self.heartbeat_seconds):
+            try:
+                self._write_status("RUNNING")
+            except Exception as exc:  # noqa: BLE001 - a failed beat must not kill the run
+                self._event("HEARTBEAT_FAILED", message=f"{type(exc).__name__}: {exc}")
+
+    def _acquire_run_lock(self) -> None:
+        """M2: exactly one runner per run (flock held for the process lifetime)."""
+        path = self._dispatch_dir() / "runner.lock"
+        stream = path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            stream.seek(0)
+            holder = stream.read().strip() or "{}"
+            stream.close()
+            try:
+                pid = json.loads(holder).get("pid")
+            except (json.JSONDecodeError, AttributeError):
+                pid = None
+            raise RunnerAlreadyRunning(
+                f"another runner is already running run {self.run_id}: pid {pid} holds {path}; "
+                "do not start a second one (it would claim the same work). Stop that "
+                "process first if it is stuck."
+            ) from None
+        stream.seek(0)
+        stream.truncate()
+        stream.write(json.dumps({"pid": os.getpid(), "started_at": self._started_at}))
+        stream.flush()
+        self._lock_stream = stream
+
+    def _release_run_lock(self) -> None:
+        stream, self._lock_stream = self._lock_stream, None
+        if stream is not None:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            stream.close()
 
     def _ledger(self, row: dict) -> None:
         path = self._dispatch_dir() / "ledger.jsonl"
@@ -249,7 +328,17 @@ class Runner:
         self.host_profile = json.loads(
             (service._session_dir(self.handle) / "host_profile.json").read_text("utf-8")
         )
+        self._acquire_run_lock()           # before runner.json: a refused runner writes nothing
+        try:
+            return self._run_locked()
+        finally:
+            self._release_run_lock()
+
+    def _run_locked(self) -> dict:
         self._write_status("RUNNING")
+        beat = threading.Thread(target=self._heartbeat_loop, name="session-heartbeat",
+                                daemon=True)
+        beat.start()
         self._inference_pool = cf.ThreadPoolExecutor(
             max_workers=self.max_parallel, thread_name_prefix="session-inference")
         self._det_pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-det")
@@ -271,17 +360,18 @@ class Runner:
                 progressed |= self._run_l4_retries()
                 state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
                 status = state["state"]
-                if not self._inflight and not self._retry_queue:
+                retries = self._session_retries()
+                if not self._inflight and not retries:
                     if status == "DONE":
                         outcome = self._finish(state, rounds)
                         break
-                    if status == "BLOCKED" and not self._l4_retry:
+                    if status == "BLOCKED":
                         outcome = self._outcome(state, rounds, "BLOCKED")
                         break
                     if status == "WAITING":
                         outcome = self._outcome(state, rounds, "STALLED")
                         break
-                launched = self._launch(state["tasks"] if status == "READY" else [])
+                launched = self._launch(state["tasks"] if status == "READY" else [], retries)
                 progressed |= launched
                 if status == "READY" and not launched and not self._inflight:
                     outcome = self._outcome(state, rounds, "STALLED")
@@ -294,6 +384,8 @@ class Runner:
         finally:
             self._inference_pool.shutdown(wait=False, cancel_futures=True)
             self._det_pool.shutdown(wait=False, cancel_futures=True)
+            self._stop_beat.set()
+            beat.join(timeout=max(1.0, 2 * self.heartbeat_seconds))
             self._write_status("EXITED", outcome)
         return outcome
 
@@ -349,14 +441,32 @@ class Runner:
     def _det_busy(self) -> bool:
         return any(flight.kind == "DETERMINISTIC" for flight in self._inflight.values())
 
-    def _launch(self, ready: list[dict]) -> bool:
+    def _session_retries(self) -> list[tuple[dict, int]]:
+        """Durable retry intent: SESSION tasks (no parent ticket) the store holds FAILED
+        (= recorded retryable: an inference TASK_ATTEMPT class, an idempotent operation,
+        or an operator's STALE_TASK) below ``SESSION_MAX_ATTEMPTS``."""
+        retries = []
+        for task_id, entry in store.read_entries(service._store_path(self.handle)).items():
+            spec = entry["spec"]
+            if (
+                entry["state"] != "FAILED"
+                or spec.get("parent_task") is not None
+                or task_id in self._inflight
+                or task_id in self._skip
+                or int(entry["attempt"]) >= SESSION_MAX_ATTEMPTS
+            ):
+                continue
+            if spec["kind"] == "INFERENCE" and (entry.get("error") or {}).get(
+                    "code") not in TASK_ATTEMPT:
+                continue
+            retries.append((spec, int(entry["attempt"]) + 1))
+        return retries
+
+    def _launch(self, ready: list[dict], retries: list[tuple[dict, int]] = ()) -> bool:
         launched = False
-        pending_retries, self._retry_queue = self._retry_queue, []
-        for task, attempt in pending_retries:
+        for task, attempt in retries:
             if self._can_start(task):
                 launched |= self._start(task, attempt)
-            else:
-                self._retry_queue.append((task, attempt))
         for task in ready:
             task_id = task["task_id"]
             if task_id in self._inflight or task_id in self._skip:
@@ -462,21 +572,29 @@ class Runner:
                 continue
             attempt = self._entry(task["task_id"])["attempt"]
             orphan = {"task_id": task["task_id"], "attempt": attempt, "kind": task["kind"]}
+            hint = orphan_hint(self.run_id, task["task_id"], attempt)
             if task["kind"] == "INFERENCE" and supports_reattach(self.executor):
-                handoff = json.loads((
-                    Path(self.handle.capsule) / "agents/session/requests"
-                    / f"session-{task['task_id']}-a{attempt}.json"
-                ).read_text(encoding="utf-8"))
-                request = build_request(
-                    self.handle, task, attempt, host_profile=self.host_profile,
-                    timeouts=self.timeouts, timeout_multiplier=self.timeout_multiplier)
-                self._dispatch(task, attempt, request, {
-                    "envelope": handoff["envelope"], "plan_hash": handoff["plan_hash"]})
+                try:
+                    handoff = json.loads((
+                        Path(self.handle.capsule) / "agents/session/requests"
+                        / f"session-{task['task_id']}-a{attempt}.json"
+                    ).read_text(encoding="utf-8"))
+                    request = build_request(
+                        self.handle, task, attempt, host_profile=self.host_profile,
+                        timeouts=self.timeouts, timeout_multiplier=self.timeout_multiplier)
+                    claim = {"envelope": handoff["envelope"], "plan_hash": handoff["plan_hash"]}
+                except Exception as exc:  # noqa: BLE001 - one bad orphan is reported, not fatal
+                    # e.g. a crash between store.claim and the handoff freeze: nothing to
+                    # re-attach to.
+                    error = f"{type(exc).__name__}: {exc}"[:500]
+                    self._orphans.append({**orphan, "error": error, "hint": hint})
+                    self._event("ORPHAN_UNRECOVERABLE", **orphan, error=error, hint=hint)
+                    continue
+                self._dispatch(task, attempt, request, claim)
                 self._event("ORPHAN_REATTACHED", **orphan)
             else:
-                self._orphans.append(orphan)
-                self._event("ORPHAN_LEFT_RUNNING", **orphan,
-                            hint="session_agent resume; then fail --error-class STALE_TASK")
+                self._orphans.append({**orphan, "hint": hint})
+                self._event("ORPHAN_LEFT_RUNNING", **orphan, hint=hint)
 
     # ── harvesting ──────────────────────────────────────────────────────────────
     def _harvest(self) -> bool:
@@ -504,12 +622,7 @@ class Runner:
             return
         self._record(flight, f"FAILED:{(entry.get('error') or {}).get('code')}",
                      error_class=(entry.get("error") or {}).get("code"))
-        if (
-            entry["state"] == "FAILED"
-            and flight.task["parent_task"] is None
-            and flight.attempt < SESSION_MAX_ATTEMPTS
-        ):
-            self._retry_queue.append((flight.task, flight.attempt + 1))
+        # A FAILED (retryable) entry is retried by _session_retries from the store.
 
     def _settle_inference(self, flight: _Flight) -> None:
         task, attempt, request = flight.task, flight.attempt, flight.request
@@ -595,55 +708,86 @@ class Runner:
                         f"{error_class}: {message[:1000]} (not recorded as a task failure: {exc})")
             return
         self._record(flight, f"FAILED:{error_class}", result, error_class)
-        if error_class not in TASK_ATTEMPT:
-            return
-        parent = task.get("parent_task")
-        if parent is None:
-            if (self._entry(task["task_id"])["state"] == "FAILED"
-                    and attempt < SESSION_MAX_ATTEMPTS):
-                self._retry_queue.append((task, attempt + 1))
-            return
-        if _is_review(task["task_id"]):
+        # Retries (SESSION: _session_retries; L4 intel/card: _l4_retries) are derived
+        # from the durable store / taskbook each round, never queued here (review I3).
+        if error_class in TASK_ATTEMPT and task.get("parent_task") is not None and _is_review(
+                task["task_id"]):
             self._review_failed(task, error_class, message)
-            return
-        from autoresearch.scan.l4_tasks import MAX_ATTEMPTS
-
-        next_attempt = int(parent["attempt"]) + 1
-        if next_attempt <= MAX_ATTEMPTS:
-            code = str(parent["subject"])
-            self._l4_retry[code] = max(self._l4_retry.get(code, 0), next_attempt)
 
     def _review_failed(self, task: dict, error_class: str, message: str) -> None:
         """retry-l4 rebuilds ticket/slim/intel/card only — never the review — so a
         review TASK_ATTEMPT failure stops the run instead of re-spending intel + card."""
         subject = str((task.get("parent_task") or {}).get("subject") or task.get("subject"))
-        entry = {"code": f"REVIEW_FAILED:{error_class}", "task_id": task["task_id"],
-                 "subject": subject, "message": message[:1000]}
-        if entry not in self._errors:
-            self._errors.append(entry)
-            self._event("REVIEW_FAILED", task_id=task["task_id"], subject=subject,
-                        error_class=error_class)
+        if any(item.get("task_id") == task["task_id"]
+               and str(item.get("code", "")).startswith("REVIEW_FAILED") for item in self._errors):
+            return
+        self._errors.append({"code": f"REVIEW_FAILED:{error_class}", "task_id": task["task_id"],
+                             "subject": subject, "message": message[:1000]})
+        self._event("REVIEW_FAILED", task_id=task["task_id"], subject=subject,
+                    error_class=error_class)
+
+    def _l4_retries(self) -> dict[str, int]:
+        """Durable retry-l4 intent from the taskbook: a ticket FAILED with a TASK_ATTEMPT
+        class below ``MAX_ATTEMPTS`` whose failed child is not a review and whose retry
+        subtree does not exist yet; tickets with a child still in flight wait."""
+        from autoresearch.session_agent import legacy_scan
+
+        if not legacy_scan.taskbook_path(self.handle).is_file():
+            return {}
+        from autoresearch.scan.l4_tasks import MAX_ATTEMPTS
+
+        entries = store.read_entries(service._store_path(self.handle))
+        in_flight = {
+            (flight.task.get("parent_task") or {}).get("subject")
+            for flight in self._inflight.values()
+        }
+        wanted = {}
+        for code, ticket in (legacy_scan._payload(self.handle).get("tasks") or {}).items():
+            attempt = int(ticket.get("attempt") or 0)
+            if (
+                ticket.get("status") != "FAILED"
+                or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
+                or attempt < 1
+                or attempt + 1 > MAX_ATTEMPTS
+                or code in in_flight
+                or code in self._l4_refused
+                or f"l4.{code}.a{attempt + 1}.card" in entries      # already expanded
+            ):
+                continue
+            children = {
+                task_id: entry for task_id, entry in entries.items()
+                if (entry["spec"].get("parent_task") or {}).get("subject") == code
+                and (entry["spec"].get("parent_task") or {}).get("attempt") == attempt
+            }
+            if any(entry["state"] == "RUNNING" for entry in children.values()):
+                continue                   # an orphaned child: STALLED path reports it
+            reviews = [
+                (task_id, entry) for task_id, entry in children.items()
+                if _is_review(task_id) and entry["state"] in {"FAILED", "BLOCKED"}
+            ]
+            if reviews:
+                task_id, entry = reviews[0]
+                self._review_failed(entry["spec"], (entry.get("error") or {}).get("code")
+                                    or str(ticket.get("last_error_class")),
+                                    str((entry.get("error") or {}).get("message") or ""))
+                continue
+            wanted[code] = attempt + 1
+        return wanted
 
     def _run_l4_retries(self) -> bool:
         progressed = False
-        for code, attempt in list(self._l4_retry.items()):
-            busy = any(
-                (flight.task.get("parent_task") or {}).get("subject") == code
-                for flight in self._inflight.values()
-            )
-            if busy:
-                continue
+        for code, attempt in self._l4_retries().items():
             try:
                 service.retry_l4(self.run_id, code, attempt,
                                  handle_loader=self.hooks.handle_loader)
             except (RuntimeError, KeyError, ValueError) as exc:
                 # No child of this ticket is in flight here (checked above), so a
                 # "not quiescent" refusal means a child is RUNNING without a live owner.
+                self._l4_refused.add(code)
                 self._error(f"l4.{code}", f"L4 retry refused: {exc}")
             else:
                 self._event("L4_RETRY_EXPANDED", code=code, attempt=attempt)
                 progressed = True
-            del self._l4_retry[code]
         return progressed
 
 

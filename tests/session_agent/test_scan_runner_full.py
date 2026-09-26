@@ -409,6 +409,82 @@ def test_review_timeout_stops_blocked_without_respending_intel_and_card(tmp_path
     assert final["skipped"] == []
 
 
+class _RunnerCrash(BaseException):
+    """Stands in for SIGKILL/OOM: nothing in the runner may catch it."""
+
+
+def _plain_hooks(handle, operations):
+    return ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=operations,
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+
+
+def test_restart_retries_an_l4_ticket_that_failed_before_the_crash(tmp_path, monkeypatch):
+    """Review I3: the retry-l4 intent must come from the taskbook, not runner memory."""
+    import pytest
+
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    operations = _FakeScanOperations(handle)
+    models = _FakeScanModels()
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.task_id == f"l4.{CODE}.a1.card":
+            models.requests.append(request)
+            raise ExecutorTimeout("timed out")
+        return original(request)
+
+    models.dispatch = dispatch
+    real_retry = service.retry_l4
+
+    def crash(*args, **kwargs):
+        raise _RunnerCrash()
+
+    monkeypatch.setattr(service, "retry_l4", crash)
+    with pytest.raises(_RunnerCrash):
+        runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01, max_rounds=3000,
+                        hooks=_plain_hooks(handle, operations))
+    monkeypatch.setattr(service, "retry_l4", real_retry)
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, operations))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    cards = [request.task_id for request in models.requests if request.role == "scan.l4.card"]
+    assert cards == [f"l4.{CODE}.a1.card", f"l4.{CODE}.a2.card"]
+
+
+def test_restart_does_not_turn_a_review_failure_into_an_l4_retry(tmp_path, monkeypatch):
+    from autoresearch.session_agent import host_evidence
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch,
+                       host=profile(independent_context=True, web_search=True),
+                       user_config={"l4_intel": {"enabled": True}})
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda current, task, receipt: [receipt])
+    models = _FakeScanModels(branchy=True)
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.role == "scan.l4.review":
+            raise ExecutorTimeout("timed out")
+        return original(request)
+
+    models.dispatch = dispatch
+    operations = _FakeScanOperations(handle, branchy=True)
+    first = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=_plain_hooks(handle, operations))
+    assert first["stop_reason"] == "BLOCKED"
+    before = len(models.requests)
+    second = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                             max_rounds=3000, hooks=_plain_hooks(handle, operations))
+    assert second["stop_reason"] == "BLOCKED"
+    assert len(models.requests) == before                       # nothing re-spent
+    assert any(error.get("code") == "REVIEW_FAILED:TIMEOUT" for error in second["errors"])
+
+
 def test_unresolvable_l4_retry_stops_the_run_instead_of_spinning(tmp_path, monkeypatch):
     """retry-l4 refused as 'not quiescent' while none of that ticket's children is in
     flight here means a child is RUNNING without a live owner: report, do not spin."""

@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from autoresearch.common.atomic import sha256_file
 from autoresearch.session_agent import runner, service, store
 from autoresearch.session_agent.executors.base import (
@@ -119,7 +121,9 @@ def test_orphan_claimed_inference_is_not_redispatched(tmp_path, monkeypatch):
     assert ex.calls == []
     assert final["status"] in {"WAITING", "BLOCKED"} and final["finished"] is False
     assert final["stop_reason"] == "STALLED"
-    assert final["orphans"] == [{"task_id": "synthetic.inference", "attempt": 1, "kind": "INFERENCE"}]
+    assert [{key: row[key] for key in ("task_id", "attempt", "kind")}
+            for row in final["orphans"]] == [
+        {"task_id": "synthetic.inference", "attempt": 1, "kind": "INFERENCE"}]
 
 
 def test_reattaching_executor_adopts_orphan_without_a_new_claim(tmp_path, monkeypatch):
@@ -339,3 +343,113 @@ def test_run_writes_a_status_file_the_host_can_poll(tmp_path, monkeypatch):
     status = json.loads((Path(run.handle.staging) / "_dispatch/runner.json").read_text("utf-8"))
     assert status["state"] == "EXITED"
     assert status["outcome"]["stop_reason"] == final["stop_reason"] == "FINISHED"
+
+
+# ── I3 (review 2026-09-26): restart derives retries from durable state ──────────────
+
+def _handle_loader(run):
+    return lambda rid: run.handle
+
+
+def test_restart_retries_a_durably_failed_session_task(tmp_path, monkeypatch):
+    """The previous runner recorded TIMEOUT for a1 and died before retrying: a restart
+    must spend the promised single retry, not stop BLOCKED with zero dispatches."""
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    service.claim(run.run_id, "synthetic.inference", 1, handle_loader=_handle_loader(run),
+                  event_recorder=lambda *a, **k: None)
+    service.fail(run.run_id, "synthetic.inference", 1, "TIMEOUT", "timed out before crash",
+                 handle_loader=_handle_loader(run))
+    ex = _FakeExecutor()
+    final = runner.run_loop(run.run_id, ex, poll_seconds=0.01, max_rounds=50, hooks=run.hooks())
+    assert ex.calls == [("synthetic.inference", 2)]
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+
+
+def test_deterministic_orphan_hint_is_actionable_and_restart_progresses(tmp_path, monkeypatch):
+    run = begin_synthetic_run(tmp_path, monkeypatch, [det("synthetic.one")])
+    service.claim(run.run_id, "synthetic.one", 1, handle_loader=_handle_loader(run),
+                  event_recorder=lambda *a, **k: None)          # runner died mid-execute
+    events = []
+    first = runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=5,
+                            hooks=run.hooks(), log=events.append)
+    assert first["stop_reason"] == "STALLED"
+    orphan = first["orphans"][0]
+    assert (orphan["task_id"], orphan["attempt"]) == ("synthetic.one", 1)
+    hint = orphan["hint"]
+    assert "fail" in hint and "--error-class STALE_TASK" in hint and "--attempt 1" in hint
+    assert "detach key" in hint
+    # Follow the hint literally: record the orphan as a STALE_TASK failure, restart.
+    service.fail(run.run_id, "synthetic.one", 1, "STALE_TASK", "orphaned by a dead runner",
+                 handle_loader=_handle_loader(run))
+    second = runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=50,
+                             hooks=run.hooks())
+    assert second["finished"] is True, (second["stop_reason"], second["errors"])
+    assert run.op_calls == ["synthetic.one@2"]
+
+
+def test_orphan_without_its_frozen_handoff_is_reported_not_a_crash(tmp_path, monkeypatch):
+    """Crash between store.claim and the handoff freeze: no request file to re-attach."""
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    store.claim(Path(run.handle.workspace) / "session/tasks.json", "synthetic.inference", 1,
+                "session-main", [])
+    final = runner.run_loop(run.run_id, _ReattachingExecutor(), poll_seconds=0.01,
+                            max_rounds=5, hooks=run.hooks())
+    assert final["stop_reason"] == "STALLED"
+    orphan = final["orphans"][0]
+    assert orphan["task_id"] == "synthetic.inference" and "FileNotFoundError" in orphan["error"]
+    assert "--error-class STALE_TASK" in orphan["hint"]
+
+
+def test_second_runner_on_the_same_run_refuses_to_start(tmp_path, monkeypatch):
+    """M2: two live runners would claim the same work (same session_ref)."""
+    import os
+
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    release = threading.Event()
+    started = threading.Event()
+
+    class _Blocking(_FakeExecutor):
+        def dispatch(self, request):
+            started.set()
+            release.wait(10)
+            return super().dispatch(request)
+
+    outcome = {}
+    thread = threading.Thread(target=lambda: outcome.update(runner.run_loop(
+        run.run_id, _Blocking(), poll_seconds=0.01, max_rounds=5000, hooks=run.hooks())))
+    thread.start()
+    try:
+        assert started.wait(10)
+        status_path = Path(run.handle.staging) / "_dispatch/runner.json"
+        with pytest.raises(runner.RunnerAlreadyRunning, match=f"pid {os.getpid()}"):
+            runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=5,
+                            hooks=run.hooks())
+        assert json.loads(status_path.read_text("utf-8"))["state"] == "RUNNING"
+    finally:
+        release.set()
+        thread.join(10)
+    assert outcome["finished"] is True
+    # The lock is released on exit: a later runner may start again.
+    again = runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=5,
+                            hooks=run.hooks())
+    assert again["stop_reason"] in {"FINISHED", "FINISH_FAILED"}
+
+
+def test_heartbeat_keeps_beating_while_the_loop_thread_is_busy(tmp_path, monkeypatch):
+    """RUNNER_DEAD uses heartbeat age: a long finish/publish must not look dead."""
+    run = _three_task_run(tmp_path, monkeypatch)
+    status_path = Path(run.handle.staging) / "_dispatch/runner.json"
+    beats = []
+
+    def slow_publish(current):
+        for _ in range(2):
+            beats.append(json.loads(status_path.read_text("utf-8"))["heartbeat_epoch"])
+            time.sleep(0.25)
+        return None
+
+    final = runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=200,
+                            hooks=run.hooks(publisher=slow_publish), heartbeat_seconds=0.05)
+    assert final["finished"] is True
+    assert beats[1] > beats[0]                              # beat while publish blocked the loop
+    status = json.loads(status_path.read_text("utf-8"))
+    assert status["state"] == "EXITED" and status["heartbeat_seconds"] == 0.05

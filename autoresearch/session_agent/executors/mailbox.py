@@ -54,6 +54,8 @@ RESULT_FIELDS = (
 NEVER_TAKEN_FACTOR = 4.0
 #: ``mailbox wait`` default: stays under the host shell's 120 s Bash timeout.
 DEFAULT_WAIT_SECONDS = 90.0
+#: A RUNNING runner.json whose heartbeat is older than this many beats is dead.
+DEAD_HEARTBEATS = 6
 
 
 class MailboxConflict(RuntimeError):
@@ -285,6 +287,44 @@ def taken_at_epoch(staging, task_id: str, attempt: int) -> float | None:
     return stamp.timestamp()
 
 
+def _pid_alive(pid) -> bool | None:
+    if type(pid) is not int or pid < 1:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:                        # e.g. EPERM: exists, owned by someone else
+        return True
+    return True
+
+
+def _heartbeat_age(runner: dict, wall) -> float | None:
+    value = runner.get("heartbeat_epoch")
+    if isinstance(value, (int, float)):
+        return float(wall()) - float(value)
+    try:
+        stamp = datetime.fromisoformat(str(runner.get("updated_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return float(wall()) - stamp.timestamp()
+
+
+def runner_dead_reason(runner: dict | None, *, wall=time.time) -> tuple[str, str] | None:
+    """``("PID", why)`` / ``("HEARTBEAT", why)`` for a RUNNING runner.json that is dead."""
+    if not runner or runner.get("state") != "RUNNING":
+        return None
+    pid = runner.get("pid")
+    if _pid_alive(pid) is False:
+        return "PID", f"runner pid {pid} is not alive (killed/crashed; runner.json still RUNNING)"
+    beat = float(runner.get("heartbeat_seconds") or 5.0)
+    age = _heartbeat_age(runner, wall)
+    if age is not None and age > DEAD_HEARTBEATS * beat:
+        return "HEARTBEAT", (f"runner heartbeat is {age:.0f}s old (> {DEAD_HEARTBEATS}× "
+                             f"{beat:g}s); pid {pid} does not beat")
+    return None
+
+
 def wait_request(
     staging,
     *,
@@ -298,15 +338,30 @@ def wait_request(
     """Host side: block until one request is handed out, the runner exits, or timeout.
 
     Returns ``{"kind": "RUNNER_EXITED", "runner", "unanswered"}`` as soon as the runner
-    has exited (nothing it issued can be accepted any more), ``{"kind": "REQUEST",
-    **request, "request_path"}`` (each request is handed out once unless
-    ``include_taken``; abandoned attempts never), or ``{"kind": "IDLE", ...}`` on timeout.
+    has exited (nothing it issued can be accepted any more); ``{"kind": "RUNNER_DEAD",
+    "reason", "runner", "unanswered"}`` when runner.json says RUNNING but its pid is gone,
+    or its heartbeat stays older than ``DEAD_HEARTBEATS`` beats for one more beat (restart
+    the runner under a new detach key — it re-attaches to these requests);
+    ``{"kind": "REQUEST", **request, "request_path"}`` (each request is handed out once
+    unless ``include_taken``; abandoned attempts never), or ``{"kind": "IDLE", ...}``.
     """
     deadline = clock() + float(timeout)
+    stale_since = None
     while True:
         runner = _runner_state(staging)
         if runner and runner.get("state") == "EXITED":
             return {"kind": "RUNNER_EXITED", "runner": runner,
+                    "unanswered": _unanswered(staging)}
+        dead = runner_dead_reason(runner, wall=wall)
+        if dead is not None and dead[0] == "HEARTBEAT":
+            # A suspended laptop wakes with an old heartbeat: give the beat one period.
+            stale_since = clock() if stale_since is None else stale_since
+            if clock() - stale_since < float(runner.get("heartbeat_seconds") or 5.0):
+                dead = None
+        elif dead is None:
+            stale_since = None
+        if dead is not None:
+            return {"kind": "RUNNER_DEAD", "reason": dead[1], "runner": runner,
                     "unanswered": _unanswered(staging)}
         for doc in pending_requests(staging, include_taken=include_taken):
             if include_taken or _take(staging, doc, wall=wall):
@@ -378,9 +433,10 @@ class MailboxExecutor:
 
 
 __all__ = [
-    "DEFAULT_WAIT_SECONDS", "DISPATCH_DIR", "MailboxAbandoned", "MailboxConflict",
-    "MailboxExecutor", "NEVER_TAKEN_FACTOR", "RESULT_FIELDS", "abandon_request",
-    "abandoned_path", "is_abandoned", "issue_request", "mailbox_dir", "pending_requests",
-    "read_abandonment", "read_late_result", "read_result", "request_path", "result_path",
-    "taken_at_epoch", "wait_request", "write_result",
+    "DEAD_HEARTBEATS", "DEFAULT_WAIT_SECONDS", "DISPATCH_DIR", "MailboxAbandoned",
+    "MailboxConflict", "MailboxExecutor", "NEVER_TAKEN_FACTOR", "RESULT_FIELDS",
+    "abandon_request", "abandoned_path", "is_abandoned", "issue_request", "mailbox_dir",
+    "pending_requests", "read_abandonment", "read_late_result", "read_result",
+    "request_path", "result_path", "runner_dead_reason", "taken_at_epoch", "wait_request",
+    "write_result",
 ]

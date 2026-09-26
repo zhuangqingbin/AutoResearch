@@ -597,6 +597,49 @@ def test_cli_complete_of_an_abandoned_attempt_says_ABANDONED(tmp_path, monkeypat
     assert "discarded" in doc["message"]
 
 
+def _runner_json(tmp_path, **fields):
+    (tmp_path / "_dispatch").mkdir(exist_ok=True)
+    (tmp_path / "_dispatch/runner.json").write_text(json.dumps(
+        {"state": "RUNNING", "heartbeat_seconds": 5.0, **fields}), encoding="utf-8")
+
+
+def _dead_pid() -> int:
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def test_wait_reports_a_dead_runner_process(tmp_path):
+    """Review I3: a SIGKILLed runner leaves runner.json RUNNING; wait must not say IDLE."""
+    _runner_json(tmp_path, pid=_dead_pid(), heartbeat_epoch=time.time())
+    doc = mailbox.wait_request(tmp_path, timeout=5, poll_seconds=0.01)
+    assert doc["kind"] == "RUNNER_DEAD" and "not alive" in doc["reason"]
+
+
+def test_wait_reports_a_stale_heartbeat_only_after_it_stays_stale(tmp_path):
+    import os
+
+    fake = _FakeTime()
+    _runner_json(tmp_path, pid=os.getpid(), heartbeat_epoch=fake.now - 31.0)
+    doc = mailbox.wait_request(tmp_path, timeout=60, poll_seconds=1.0, clock=fake.clock,
+                               sleep=fake.sleep, wall=fake.clock)
+    assert doc["kind"] == "RUNNER_DEAD" and "heartbeat" in doc["reason"]
+    assert fake.now - 1_000.0 >= 5.0                         # one heartbeat of grace first
+
+
+def test_wait_with_a_fresh_heartbeat_is_idle_not_dead(tmp_path):
+    import os
+
+    fake = _FakeTime()
+    _runner_json(tmp_path, pid=os.getpid(), heartbeat_epoch=fake.now - 4.0)
+    doc = mailbox.wait_request(tmp_path, timeout=3, poll_seconds=1.0, clock=fake.clock,
+                               sleep=fake.sleep, wall=fake.clock)
+    assert doc["kind"] == "IDLE" and doc["runner_state"] == "RUNNING"
+
+
 def test_cli_wait_default_stays_under_the_host_bash_timeout():
     from autoresearch.session_agent import __main__ as cli
 

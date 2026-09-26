@@ -116,9 +116,16 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
      attempt 的迟到证据),不要手动重试 —— runner 已按规则开了新 attempt 或停机。
    - `kind=IDLE`:再调 `wait`;`taken_unanswered` 列出已领未答的请求(会话重启后用 `--include-taken` 重新领)。
    - `kind=RUNNER_EXITED`:读 `runner.outcome`(`finished`、`stop_reason`、`finish.canonical_path`)。
+   - `kind=RUNNER_DEAD`:runner.json 仍写 RUNNING,但 pid 已不在或心跳超 6 拍(`reason` 说明)——按第 4 步
+     用**新 detach key** 重启 runner(它会重新挂接未答请求),再继续 `wait`。
    - CP0–CP7 播报不变(素材路径同 SKILL;CP5 可读 `status --run-id` 的 `l4` 计数)。
 4. **收尾**:`finished=true` 时对 `finish.canonical_path` 跑 `verify-report --level full`(上一节命令)。
-   `stop_reason=BLOCKED|STALLED` 时 outcome 列出 `errors/orphans/skipped`:修复后重跑第 2 步同一命令;
+   `stop_reason=BLOCKED|STALLED` 时 outcome 列出 `errors/orphans/skipped`(每个 orphan 带 `hint`:照做
+   `fail --error-class STALE_TASK` 即可让重启后的 runner 重试一次)。**重启 = 第 2 步命令换一个新的
+   `--key`**(如 `session-runner-2`、`-3`…):`trace/detach` 对同一 `(run_id, key)` 只等不重跑,用旧 key
+   什么也不会发生。重试意图从任务表/任务簿的持久状态推导(不靠进程内存),重启后照常补足那一次重试;
+   同一 run 同时只能有一个 runner(`_dispatch/runner.lock`),第二个会带着持锁 pid 直接拒绝启动。
+   `REVIEW_FAILED:<类>`(复核超时/断连)不会重跑 intel+card,整场停在 BLOCKED。
    或换新 run_id 走 legacy Workflow(`LEGACY_ORCHESTRATION_FALLBACK`,记录原因)。runner 不替失败 run
    冻结 capsule,需要时显式 `python -m autoresearch.trace.capsule finalize <RUN_ID> --business-status FAILED`。
 
