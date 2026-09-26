@@ -372,6 +372,43 @@ def test_failed_l3_repair_degrades_to_the_original_judged_and_finishes(tmp_path,
     assert repair["status"] == "DEGRADED" and repair["preserved_original"] is True
 
 
+def test_review_timeout_stops_blocked_without_respending_intel_and_card(tmp_path, monkeypatch):
+    """Review I2: retry-l4 rebuilds ticket/slim/intel/card only, never the review —
+    a review TASK_ATTEMPT failure must stop the run BLOCKED with REVIEW_FAILED, not
+    spend another intel + card and then stall on a missing ensemble file."""
+    from autoresearch.session_agent import host_evidence
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch,
+                       host=profile(independent_context=True, web_search=True),
+                       user_config={"l4_intel": {"enabled": True}})
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda current, task, receipt: [receipt])
+    models = _FakeScanModels(branchy=True)
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.role == "scan.l4.review":
+            models.requests.append(request)
+            raise ExecutorTimeout(f"等待 {request.task_id} 的结果文件超时")
+        return original(request)
+
+    models.dispatch = dispatch
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=_FakeScanOperations(handle, branchy=True),
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=hooks)
+    assert final["stop_reason"] == "BLOCKED", (final["stop_reason"], final["errors"])
+    l4 = [request.task_id for request in models.requests
+          if request.role in {"scan.l4.intel", "scan.l4.card", "scan.l4.review"}]
+    assert l4 == [f"l4.{CODE}.a1.intel", f"l4.{CODE}.a1.card", f"l4.{CODE}.a1.review2"]
+    assert any(error.get("code") == "REVIEW_FAILED:TIMEOUT" and error.get("subject") == CODE
+               for error in final["errors"]), final["errors"]
+    assert final["skipped"] == []
+
+
 def test_unresolvable_l4_retry_stops_the_run_instead_of_spinning(tmp_path, monkeypatch):
     """retry-l4 refused as 'not quiescent' while none of that ticket's children is in
     flight here means a child is RUNNING without a live owner: report, do not spin."""

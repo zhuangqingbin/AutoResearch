@@ -6,8 +6,9 @@ publication stay in ``service`` / ``store`` / ``publication``.  Each round:
 1. **harvest** finished work — inference: hash every output file itself (the driver
    trusts files, never an executor's word), bind transcript evidence, ``submit``;
    failures go through ``service.fail`` and ``contracts.retry.TASK_ATTEMPT`` classes
-   (TIMEOUT …) get exactly one new attempt (L4 children: one new taskbook attempt
-   via ``service.retry_l4``);
+   (TIMEOUT …) get exactly one new attempt (L4 intel/card: one new taskbook attempt
+   via ``service.retry_l4``; a review2/review3 failure stops the run ``REVIEW_FAILED``
+   because retry-l4 never rebuilds the review);
 2. read ``service.next``;
 3. **launch** READY tasks — L4 taskbook tickets are *claimed* (the taskbook preflight is
    the ticket's execution), deterministic tasks run through ``service.execute`` on one
@@ -83,6 +84,10 @@ class _Flight:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _is_review(task_id: str) -> bool:
+    return task_id.endswith((".review2", ".review3"))
 
 
 def _params_for(task: dict) -> dict:
@@ -598,12 +603,26 @@ class Runner:
                     and attempt < SESSION_MAX_ATTEMPTS):
                 self._retry_queue.append((task, attempt + 1))
             return
+        if _is_review(task["task_id"]):
+            self._review_failed(task, error_class, message)
+            return
         from autoresearch.scan.l4_tasks import MAX_ATTEMPTS
 
         next_attempt = int(parent["attempt"]) + 1
         if next_attempt <= MAX_ATTEMPTS:
             code = str(parent["subject"])
             self._l4_retry[code] = max(self._l4_retry.get(code, 0), next_attempt)
+
+    def _review_failed(self, task: dict, error_class: str, message: str) -> None:
+        """retry-l4 rebuilds ticket/slim/intel/card only — never the review — so a
+        review TASK_ATTEMPT failure stops the run instead of re-spending intel + card."""
+        subject = str((task.get("parent_task") or {}).get("subject") or task.get("subject"))
+        entry = {"code": f"REVIEW_FAILED:{error_class}", "task_id": task["task_id"],
+                 "subject": subject, "message": message[:1000]}
+        if entry not in self._errors:
+            self._errors.append(entry)
+            self._event("REVIEW_FAILED", task_id=task["task_id"], subject=subject,
+                        error_class=error_class)
 
     def _run_l4_retries(self) -> bool:
         progressed = False
