@@ -4,6 +4,8 @@
 >
 > 采集基线:2026-07-16 · main @ `075d3ac` + 未提交改动 · `autoresearch/` 26,487 行 Python / 126 个模块 · 1,280 测试绿
 > 本文与源码冲突时**以源码为准**;凡文案已滞后于实证之处,本文单列「⚠️ 张力」不替上游圆场。
+>
+> **2026-09-26 起冻结**(`docs/superpowers/specs/2026-09-26-daily-engine-consolidation-design.md` §4 A5):实施期间不新增法证层、不新增普查族(B2 除外)、不动 E6 规则版本。三线:A 编排壳税归零 + 文档瘦身 → C launchd headless 自治;B 10 日尺作第二把一等尺(影子,不替换主尺)。skill 文档自此只讲现行机制:运维 `docs/ops/scan-ops.md`,负结果与沿革 `docs/research/scan-negative-results.md`。
 
 ---
 

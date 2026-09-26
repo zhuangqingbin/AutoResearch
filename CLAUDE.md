@@ -39,4 +39,6 @@
 - `autoresearch/scan`、`autoresearch/analyze`、`autoresearch/macro` —— 三个 skill 的 stage 管道 + agents + CLI。
 - `autoresearch/broker` —— 券商成交取数层(2026-08-27 设计稿):手机 App 导出的交割单/对账单/截图表 → 标准化成交表 `context_<engine>/broker/trades.csv`(零 LLM;A/B 两级契约;幂等;`ingest`/`reconcile` 两个 CLI)。只记不学,不进 lake/。券商格式 adapter(chinaclear/gtht/tpy)等真样本探针后再建。
 
+> **2026-09-26 三线设计稿**(`docs/superpowers/specs/2026-09-26-daily-engine-consolidation-design.md`):A 编排壳税归零 + skill 文档瘦身(agent 文件是契约唯一真身,playbook 只剩指针;运维见 `docs/ops/scan-ops.md`,负结果见 `docs/research/scan-negative-results.md`)· B `common.ruler.SWING_RULER="fwd_10_oc"` 第二把尺(影子,不替换 `MAIN_RULER`)· C launchd headless 自治。实施期冻结:不新增法证层/普查族。
+>
 > 注：原框架的**付费 LLM 多 agent 路径**（LangGraph 编排、provider clients、CLI、批量 runner）已移除——本项目现在**只**保留 Claude-as-engine 的 scan / analyze / macro 路线 + 其依赖的免费数据层（`autoresearch/data`、`autoresearch/dataflows`、`autoresearch/agents/utils`）。架构详见 `docs/specs/2026-06-22-autoresearch-arch-redesign-design.md` 与 README 的 **架构** 节。
