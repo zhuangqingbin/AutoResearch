@@ -1802,6 +1802,22 @@ def _retry_dir(scan_dir: Path, code: str, attempt: int) -> Path:
     return scan_dir / "session_attempts" / code / f"a{attempt}"
 
 
+def _write_if_changed(path: Path, payload: bytes) -> bool:
+    """Byte-compare before rewriting: identical content keeps the file (and its inode)."""
+    if path.is_file() and not path.is_symlink() and path.read_bytes() == payload:
+        return False
+    atomic_write_bytes(path, payload)
+    return True
+
+
+def _copy_attempt_status(scan_dir: Path, code: str, attempt: int) -> None:
+    """Every attempt (a1 included) registers its own intel_status copy (N2): a retry
+    rewrites the canonical `_l4_intel_status_<code>.json` the report reads."""
+    target = _retry_dir(scan_dir, code, attempt) / "intel_status.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _write_if_changed(target, (scan_dir / f"_l4_intel_status_{code}.json").read_bytes())
+
+
 def scan_l4_slim(handle=None, *, code: str | None = None) -> dict:
     current = handle or _active_handle()
     from autoresearch.session_agent import legacy_scan
@@ -1866,19 +1882,18 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
 
     scan_dir = Path(current.staging)
     attempt = _l4_attempt(scan_dir, code6)
-    if attempt > 1:
-        retry_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
-        if retry_intel.is_file():
-            shutil.copyfile(retry_intel, scan_dir / f"_l4_intel_{code6}.md")
+    # N2: every attempt's bound intel (a1 included) is the agent's bytes in its attempt
+    # dir and is never rewritten; the canonical file is this attempt's working copy, which
+    # the guard trims/normalizes in place exactly as the legacy flow does.
+    bound_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
+    if bound_intel.is_file():
+        _write_if_changed(scan_dir / f"_l4_intel_{code6}.md", bound_intel.read_bytes())
     result = guard_intel(scan_dir, code6, soft_cap=configured_soft_cap())
     if result.get("action") in {"KEPT", "TRIMMED"}:
         _normalize_intel(scan_dir, code6)
     status = from_guard(result, code=code6, scan_dir=scan_dir, enabled=True, attempts=1)
     write_status(scan_dir, status)
-    if attempt > 1:
-        target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    _copy_attempt_status(scan_dir, code6, attempt)
     intel_path = scan_dir / f"_l4_intel_{code6}.md"
     bundle_path = (
         _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
@@ -1907,10 +1922,7 @@ def scan_l4_intel_disabled(handle=None, *, code: str | None = None) -> dict:
     status = from_guard(None, code=code6, scan_dir=scan_dir, enabled=False, attempts=0)
     write_status(scan_dir, status)
     attempt = _l4_attempt(scan_dir, code6)
-    if attempt > 1:
-        target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    _copy_attempt_status(scan_dir, code6, attempt)
     bundle_path = (
         _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
         if attempt > 1
@@ -2056,7 +2068,7 @@ def scan_l4_finalize(handle=None, *, code: str | None = None) -> dict:
     )
     intel_bundle = json.loads(intel_bundle_path.read_text(encoding="utf-8"))
     if intel_bundle.get("intel") is not None:
-        atomic_write_bytes(
+        _write_if_changed(
             scan_dir / f"_l4_intel_{code6}.md",
             _decode_payload(intel_bundle["intel"]),
         )
