@@ -41,6 +41,10 @@ SEAT_RATINGS = ("Buy", "Overweight", "Hold")
 READOUT_METRIC = "l3_finalist_minus_bench_fwd10"
 #: 读数样本门 —— 与 B4「影子 ≥40 交易日」同一个数(spec §5 B4;普查登记的 scan_days >= 40)。
 READOUT_MIN_DAYS = 40
+#: 区间最少簇数(复审 I1):这一格的区间是 `populations._interval` 的 date-cluster bootstrap,
+#: fwd_10 按 10 个 session 一簇(`populations.RULER_BLOCK`)。簇数 < 10 时重采样单元太少,
+#: 覆盖率远低于名义 95%(复审模拟:4 簇 ~70%)→ 只印点估计,区间写「不可信」。
+READOUT_MIN_CLUSTERS = 10
 #: 观察席文案禁词(它是 10 日尺影子,不是决策)。lint 与渲染器共用这一张表。
 BANNED_WORDS = ("BUY", "买入", "可买")
 #: 卡面入场立场 → 表格文字。`UNKNOWN` = 卡里没有机读 `**入场**` 行(09-25 契约 `2fa2d38` 之前的
@@ -105,9 +109,14 @@ def ruler_readout(path: Path | None = None) -> dict:
     except ValueError:
         n_days = 0
     value = row.get("value") or ""
+    from autoresearch.scan.populations import RULER_BLOCK
+
+    block = int(RULER_BLOCK.get(SWING, 1))
     out = {"metric": READOUT_METRIC, "file": target.name, "locator": locator,
            "n_days": n_days, "value": value, "ci_low": row.get("ci_low") or "",
-           "ci_high": row.get("ci_high") or "", "row_status": row.get("status") or ""}
+           "ci_high": row.get("ci_high") or "", "row_status": row.get("status") or "",
+           # 与 `populations._blocked` 同一分簇:有序日按 block 天一簇 → ceil(n_days / block)
+           "block": block, "n_clusters": -(-n_days // block) if n_days > 0 else 0}
     thin = n_days < READOUT_MIN_DAYS or out["row_status"] != "MATURE" or not value
     return {**out, "status": "THIN" if thin else "OK"}
 
@@ -224,8 +233,12 @@ def _readout_line(readout: dict | None) -> str:
         return head + f"样本不足(n_days {readout.get('n_days')} < {READOUT_MIN_DAYS})。"
     try:
         pp = 100.0 * float(readout["value"])
-        lo, hi = 100.0 * float(readout["ci_low"]), 100.0 * float(readout["ci_high"])
-        ci = f",块 bootstrap [{lo:+.2f}, {hi:+.2f}]pp"
+        clusters = int(readout.get("n_clusters", -(-int(readout.get("n_days") or 0) // 10)))
+        if clusters < READOUT_MIN_CLUSTERS:
+            ci = f",区间不可信(簇数 {clusters}<{READOUT_MIN_CLUSTERS}),不印"
+        else:
+            lo, hi = 100.0 * float(readout["ci_low"]), 100.0 * float(readout["ci_high"])
+            ci = f",块 bootstrap [{lo:+.2f}, {hi:+.2f}]pp"
     except (KeyError, TypeError, ValueError):
         return head + "读数格式无法解析,不猜。"
     return head + f"{pp:+.2f}pp(n_days {readout.get('n_days')}{ci})。"

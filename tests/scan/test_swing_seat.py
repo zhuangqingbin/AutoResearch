@@ -256,3 +256,20 @@ def test_readout_line_is_labelled_as_the_finalist_vs_bench_cell_not_the_seat_rec
     seat = _built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=45))
     line = ss.render_section(seat)[-1]
     assert "finalist − bench" in line and "不是本席战绩" in line
+
+
+# ───────────────────── 复审 I1(§12 那一半):簇数 < 10 不印区间 ─────────────────────
+
+def test_readout_never_prints_an_interval_built_from_fewer_than_ten_clusters(tmp_path):
+    """复审 I1:这一格的区间是 10 日一簇的 date-cluster bootstrap。45 天 = 5 簇,重采样只有
+    5 个单元,区间覆盖率远低于名义 95%(复审模拟 ~70%)—— 印出来就是伪精确。点估计照印,
+    区间换成「区间不可信(簇数<10)」。"""
+    line = ss.render_section(_built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=45)))[-1]
+    assert "+0.42pp" in line
+    assert "区间不可信(簇数 5<10)" in line
+    assert "[" not in line and "-0.31" not in line and "+1.15" not in line
+
+
+def test_readout_prints_the_interval_once_there_are_ten_clusters(tmp_path):
+    line = ss.render_section(_built(_scan(tmp_path), _stage_rulers(tmp_path, n_days=100)))[-1]
+    assert "+0.42pp" in line and "[-0.31, +1.15]pp" in line and "区间不可信" not in line
