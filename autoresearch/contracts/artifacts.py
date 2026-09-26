@@ -479,7 +479,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "w3_grids", "json", "conditional"),
     Artifact("w3_grids_signals", "w3_grids/*/signal_coverage.json", "research_report", "observe",
              "w3_grids", "json", "conditional"),
-    # B2 10 日尺预注册普查(2026-09-26 登记;冻结方案见 docs/research/2026-09-26-swing-ruler-family.spec.json)
+    # B2 10 日尺预注册普查(2026-09-26 登记;冻结方案见 docs/research/2026-09-26-swing-ruler-family-v2.spec.json,
+    # v1 = 同目录 2026-09-26-swing-ruler-family.spec.json 已被取代、拒跑 —— 复审 I1)
     Artifact("swing_ruler_spec", "swing_ruler/*/spec.json", "research_report", "observe",
              "swing_ruler_census", "json", "conditional"),
     Artifact("swing_ruler_cells", "swing_ruler/*/cells.csv", "research_report", "observe",
