@@ -111,6 +111,8 @@ RUNS_COLUMNS = (
     "run_mode", "business_status", "evidence_status", "actionability_status",
     "decision_approved_at", "first_available_session", "exec_lag",
     "n_finalist", "n_buy", "n_buy_a", "wall", "identity_quality", "ready_quality",
+    # 2026-09-26 §5 B1:10 日尺(`ruler.SWING_RULER`)已成熟且有值的行数;见 `_n_mature_10`。
+    "n_mature_10",
 )
 
 SESSION_COLUMNS = (
@@ -262,6 +264,22 @@ def _run_counts(run_dir: Path, run_mode: str = "") -> tuple[int | None, int | No
     return None, None, None
 
 
+def _n_mature_10(scan: Path, run_name: str) -> int | None:
+    """结果文档里 10 日尺 `MATURE_10` 且 `fwd_10_oc` 有值的行数(§5 B1)。
+
+    没有结果文档 / 文档早于成熟章(缺 `outcome_status_swing` 键)→ `None`(未知,不写 0);
+    `PENDING_10`/`MISSING_MARKET_DATA` → 0(已知:这一刻还没有一行成熟)。
+    """
+    doc = _read_json(_outcome.outcome_path(run_name, scan))
+    status = doc.get("outcome_status_swing") if isinstance(doc, dict) else None
+    if not status:
+        return None
+    if status != _outcome.MATURE_10:
+        return 0
+    return sum(1 for row in (doc.get("rows") or {}).values()
+               if isinstance(row, dict) and row.get(_ruler.SWING_RULER) is not None)
+
+
 def _wall_of(run_dir: Path) -> str | None:
     """`_buyability.json.wall`(2026-09-24 §2.7);缺 → None(老 run 没有它)。"""
     doc = _read_json(run_dir / "trace" / "staging" / "_buyability.json")
@@ -328,6 +346,7 @@ def collect_runs(reports_root: Path | None = None) -> list[dict]:
             "n_finalist": n_finalist,
             "n_buy": n_buy,
             "n_buy_a": n_buy_a,
+            "n_mature_10": _n_mature_10(scan, run.name),
             "wall": _wall_of(run),
             "identity_quality": ("legacy" if not capsule_run_id
                                  else "shared_capsule_id" if shared_with != run.name

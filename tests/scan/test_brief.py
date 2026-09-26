@@ -1218,3 +1218,57 @@ def test_buyability_line_shows_dash_for_tiering_when_the_decision_document_preda
     _write_buyability(scan, wall="cards_silent")   # 默认 doc 没有 "tiering" 键
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     assert "tiering —" in md
+
+
+# ───────────────────── ⑦ 10 日观察席指针(2026-09-26 §5 B3,影子)─────────────────────
+
+def _write_seat(scan: Path, n: int) -> None:
+    from autoresearch.scan import swing_seat as ss
+
+    rows = [{"code": f"60000{i}", "name": f"名{i}", "rating": "Hold", "entry": "允许",
+             "entry_stance": "ALLOWED", "conviction": "60"} for i in range(n)]
+    ss.write_swing_seat(scan, {"schema_version": ss.SCHEMA_VERSION, "date": _DATE,
+                               "ruler": ss.SWING, "rows": rows, "n": n,
+                               "readout": {"status": "ABSENT"}, "_src": []})
+
+
+def test_seat_pointer_counts_the_seat_file_and_is_sourced(scan):
+    """⑦ 的只数读 `_swing_seat.json`(L5 一次算好、落盘),不在 brief 里重算 —— 与
+    summary §12 同一份事实;边表记一行,文件在白名单里。"""
+    _write_seat(scan, 2)
+    built = brief.build(scan, run_folder=_RUN)
+    assert "**⑦ 10 日观察席(影子)**:2 只 → summary §12" in built["markdown"]
+    row = next(r for r in built["sources"] if r["field"] == "swing_seat.n")
+    assert row["value"] == "2" and row["file"] == "_swing_seat.json"
+    assert row["file"] in brief.INPUT_WHITELIST
+
+
+def test_seat_pointer_is_printed_even_on_an_empty_day(scan):
+    """空日也照出(「0 只」),不许整行消失 —— 否则读者分不清「没跑」与「没有」。"""
+    _write_seat(scan, 0)
+    assert "**⑦ 10 日观察席(影子)**:0 只 → summary §12" in brief.build(scan, run_folder=_RUN)["markdown"]
+
+
+def test_seat_pointer_says_not_generated_when_the_seat_file_is_absent(scan):
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "**⑦ 10 日观察席(影子)**:未生成 → summary §12" in md
+
+
+def test_seat_pointer_is_the_first_thing_compacted_over_budget(scan, monkeypatch):
+    """超预算时 ⑦ 先退成 `⑦ 见 summary §12`(影子指针最不值钱),④/⑥ 原样不动。"""
+    _write_seat(scan, 3)
+    full = brief.build(scan, run_folder=_RUN)["markdown"]
+    monkeypatch.setattr(brief, "MAX_BYTES", len(full.encode("utf-8")) - 5)
+    squeezed = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "**⑦** 见 summary §12" in squeezed and "3 只 → summary §12" not in squeezed
+    keep = [ln for ln in full.splitlines() if not ln.startswith("**⑦")]
+    assert [ln for ln in squeezed.splitlines() if not ln.startswith("**⑦")] == keep
+
+
+def test_seat_pointer_sits_after_delta_and_outside_the_dashboard_slice(scan):
+    _write_seat(scan, 1)
+    built = brief.build(scan, run_folder=_RUN)
+    lines = built["markdown"].splitlines()
+    assert lines.index(next(ln for ln in lines if ln.startswith("**⑦"))) == \
+        lines.index(next(ln for ln in lines if ln.startswith("**⑥"))) + 1
+    assert "⑦" not in brief.dashboard_block(built)

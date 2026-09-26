@@ -522,6 +522,19 @@ def test_l3_metric_drops_pinned_and_composite_seats(tmp_path, monkeypatch):
     assert got.loc["l3_finalist_minus_bench", "value"] == pytest.approx(0.02)
 
 
+def test_l3_finalist_minus_bench_has_a_fwd10_twin(tmp_path, monkeypatch):
+    """2026-09-26 §5 B1:stage_rulers「增加 fwd_10 列」—— L3 finalist−bench 的 10 日尺孪生格
+    (§12 观察席读数行读它)。同一家族口径(剔 📌/席位)、块长 10 的定义版本;隔夜那一格
+    不受 D+10 收盘影响。"""
+    monkeypatch.chdir(tmp_path)
+    fwd10 = {CODES[0]: 0.05, CODES[1]: 0.05, CODES[2]: 0.50, CODES[3]: 0.50}
+    lake = _lake(tmp_path, fwd10=fwd10)
+    got = _rulers_for(tmp_path, lake, {"pinned": (CODES[2],), "seats": (CODES[3],)})
+    assert got.loc["l3_finalist_minus_bench_fwd10", "value"] == pytest.approx(0.05)
+    assert got.loc["l3_finalist_minus_bench_fwd10", "metric_definition_version"] == "g3.v1+block10"
+    assert got.loc["l3_finalist_minus_bench", "value"] == pytest.approx(0.0)
+
+
 def test_l4_reject_value_compares_rejected_against_comparable_full_cards(tmp_path,
                                                                         monkeypatch):
     """被否决家族(早停 ∨ UW/Sell)− 可比满卡家族(Hold/OW/Buy 且未早停)。

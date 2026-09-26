@@ -139,6 +139,15 @@ def _isolate_temperature_csv(monkeypatch):
                         Path("/nonexistent/tests-no-real-temperature.csv"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_swing_seat_stage_rulers(monkeypatch):
+    """同上一条的理由:§12 观察席读数行缺省读真实 `_ledger/views/stage_rulers.csv`(gitignored,
+    夜间重建)。测试里一律指向不存在的路径 → 读数行恒为「暂无」,不随开发机真账本变。要测读数
+    的用例显式传 `stage_rulers_path`。"""
+    monkeypatch.setattr("autoresearch.scan.swing_seat._default_stage_rulers_path",
+                        lambda: Path("/nonexistent/tests-no-real-stage-rulers.csv"))
+
+
 @pytest.fixture
 def codex_run(tmp_path, monkeypatch):
     """One active Codex run plus a writable copy of the rollout fixture."""

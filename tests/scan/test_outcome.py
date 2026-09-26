@@ -585,3 +585,183 @@ def test_ledger_line_shows_legacy_rows_as_calendar_unverified(tmp_path, monkeypa
     line = outcome.ledger_line(root)
     assert "日历未验证 1 笔不计" in line
     assert "攒样本" in line          # 合格样本仍然只有 1 笔,远不到 20,不印均值
+
+
+# ───────────────────────── 10 日尺成熟(2026-09-26 批 5 Task 1 · B1)─────────────────────────
+#
+# 主尺(隔夜 gap_c1_o2)D+2 成熟,10 日尺(`common.ruler.SWING_RULER` = fwd_10_oc)D+10 才
+# 成熟 —— 两枚成熟章,互不替代。旧判据「D+2 一到就永久跳过重算」让 fwd_10_oc 永久冻成
+# 缺失;新判据下 `fill` 对主尺已核验的 run 只补 10 日尺那几列,**主尺数值冻结不重写**
+# (重写已核验的主尺历史只能走 §6 C3 的可审阅迁移,不能借 swing 回访悄悄发生)。
+
+import datetime as _dt  # noqa: E402  (本节夹具专用,留在节内便于整节阅读)
+
+
+def _weekdays(start: str, end: str) -> list[str]:
+    s, e = _dt.date.fromisoformat(start), _dt.date.fromisoformat(end)
+    out, cur = [], s
+    while cur <= e:
+        if cur.weekday() < 5:
+            out.append(cur.isoformat())
+        cur += _dt.timedelta(days=1)
+    return out
+
+
+#: 合成可信日历(无节假日的工作日),覆盖 D=2026-09-10 前后远超 10 个 session。
+_SWING_SESSIONS = _weekdays("2026-08-03", "2026-11-30")
+_SWING_CODES = ("603317", "300857", "000001")
+
+
+def _write_swing_day(root, day: str, i: int, *, t2_open_bump: float = 0.0) -> None:
+    px = 10.0 + 0.1 * i
+    pd.DataFrame([{"ts_code": f"{c}.{'SH' if c[0] == '6' else 'SZ'}",
+                   "open": px + t2_open_bump, "high": px * 1.05, "low": px * 0.95,
+                   "close": px * 1.01, "pct_chg": 1.0, "amount": 1.0e8}
+                  for c in _SWING_CODES]).to_parquet(root / f"{day.replace('-', '')}.parquet",
+                                                     index=False)
+
+
+@pytest.fixture
+def tmp_lake_10_sessions(tmp_path, monkeypatch):
+    """D=2026-09-10 之后 ≥10 个交易日的真 parquet 湖(09-01..09-30)+ 注入可信日历。
+
+    日历走 `exec_anchor.trading_sessions` 的 monkeypatch(`market_frame` 缺省即读它),
+    所以测试不联网、也不依赖真实 tushare token。T+10 = 2026-09-24。
+    """
+    from autoresearch.scan import exec_anchor as ea
+
+    monkeypatch.setattr(ea, "trading_sessions", lambda start, end: (
+        [d for d in _SWING_SESSIONS if start <= d <= end], "trade_cal"))
+    root = tmp_path / "lake" / "daily"
+    root.mkdir(parents=True)
+    for i, day in enumerate(d for d in _SWING_SESSIONS if "2026-09-01" <= d <= "2026-09-30"):
+        _write_swing_day(root, day, i)
+    return root
+
+
+def test_outcome_marks_swing_maturity_separately(tmp_lake_10_sessions):
+    """D+2 成熟不等于 D+10 成熟:主尺 MATURE 而 10 日尺 PENDING_10 必须同时成立。"""
+    fr, meta = outcome.market_frame("2026-09-10", lake_daily=tmp_lake_10_sessions, today="2026-09-15")
+    assert meta["outcome_status"] == outcome.MATURE
+    assert meta["outcome_status_swing"] == "PENDING_10" and meta["t10"] is not None
+    fr2, meta2 = outcome.market_frame("2026-09-10", lake_daily=tmp_lake_10_sessions, today="2026-09-30")
+    assert meta2["outcome_status_swing"] == "MATURE_10" and meta2["fwd10_verified"] is True
+
+
+def test_swing_is_missing_market_data_when_t10_has_passed_but_the_lake_lacks_it(tmp_lake_10_sessions):
+    """T+10 已过但湖里没有那天 → `MISSING_MARKET_DATA`(不是 PENDING,也不是 MATURE_10);
+    主尺照旧 MATURE,不被拖累。"""
+    (tmp_lake_10_sessions / "20260924.parquet").unlink()
+    fr, meta = outcome.market_frame("2026-09-10", lake_daily=tmp_lake_10_sessions, today="2026-09-30")
+    assert meta["outcome_status"] == outcome.MATURE
+    assert meta["t10"] == "20260924"
+    assert meta["outcome_status_swing"] == outcome.MISSING_MARKET_DATA
+    assert meta["fwd10_verified"] is False
+
+
+def test_swing_status_is_pending_when_the_main_ruler_is_still_pending(tmp_lake_10_sessions):
+    """主尺还没到 T+2 → 10 日尺更不可能成熟:`PENDING_10`(而不是空,也不是失败态)。"""
+    fr, meta = outcome.market_frame("2026-09-10", lake_daily=tmp_lake_10_sessions, today="2026-09-11")
+    assert fr is None and meta["outcome_status"] == outcome.PENDING_SESSION
+    assert meta["outcome_status_swing"] == outcome.PENDING_10
+
+
+def test_ledger_carries_swing_status_and_t10_columns_and_pending_rows_have_no_value(
+        tmp_path, monkeypatch, tmp_lake_10_sessions):
+    """`recommendations.csv` 追加 `outcome_status_swing`/`t10` 两列(doc 级逐行广播);
+    PENDING_10 的行 `fwd_10_oc` 是空单元格 —— 不是 0,也不是 "nan"。"""
+    monkeypatch.chdir(tmp_path)
+    _run(tmp_path, "20260910_2100", "2026-09-10")
+    root = tmp_path / ws.reports_root() / "scan"
+    outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-15")
+    doc = json.loads(outcome.outcome_path("20260910_2100", root).read_text(encoding="utf-8"))
+    assert doc["outcome_status"] == outcome.MATURE
+    assert doc["outcome_status_swing"] == outcome.PENDING_10 and doc["t10"] == "20260924"
+    rows = outcome.load_ledger(root)
+    assert rows and all(r["outcome_status_swing"] == "PENDING_10" for r in rows)
+    assert all(r["t10"] == "20260924" for r in rows)
+    assert all(r["fwd_10_oc"] == "" for r in rows)
+    header = (outcome.ledger_root(root) / outcome.LEDGER_CSV).read_text(
+        encoding="utf-8").splitlines()[0].split(",")
+    assert header[-2:] == ["outcome_status_swing", "t10"]        # 追加在末尾,不插队
+
+
+def test_fill_revisits_a_main_settled_run_until_the_swing_ruler_matures(
+        tmp_path, monkeypatch, tmp_lake_10_sessions):
+    """两枚成熟章:主尺已核验的 run 在 D+10 到期时**再补一次** 10 日尺;两枚都齐才永久跳过。
+    期间(D+3..D+9)重复 fill 不重写文档,但跳过原因必须写明是在等 10 日尺。"""
+    monkeypatch.chdir(tmp_path)
+    _run(tmp_path, "20260910_2100", "2026-09-10")
+    root = tmp_path / ws.reports_root() / "scan"
+
+    first = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-15")
+    assert first["filled"] == 1
+    waiting = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-16")
+    assert waiting["filled"] == 0 and waiting["skipped"] == 1
+    assert "PENDING_10" in waiting["skip_reasons"]["20260910_2100"]
+
+    matured = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-30")
+    assert matured["filled"] == 1 and matured["runs"] == ["20260910_2100"]
+    rows = {r["code"]: r for r in outcome.load_ledger(root)}
+    assert rows["603317"]["outcome_status_swing"] == "MATURE_10"
+    # fwd_10_oc = close[T+10] / open[T+1] − 1:T+1=09-11(第 9 个 session,i=8),T+10=09-24(i=17)
+    expect = (10.0 + 0.1 * 17) * 1.01 / (10.0 + 0.1 * 8) - 1.0
+    assert float(rows["603317"]["fwd_10_oc"]) == pytest.approx(expect, abs=1e-6)
+
+    settled = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-10-09")
+    assert settled["filled"] == 0
+    assert settled["skip_reasons"]["20260910_2100"] == "already_verified_complete"
+
+
+def test_swing_revisit_never_rewrites_the_verified_main_ruler_values(
+        tmp_path, monkeypatch, tmp_lake_10_sessions):
+    """swing 回访只补 10 日尺那几列:主尺已核验的 gap_c1_o2 **冻结**。即便湖在 T+2 那天被
+    改写过(数据修订),已核验的隔夜读数也不会被这条路径悄悄换掉 —— 那是 §6 C3 可审阅
+    迁移的职责(删掉「冻结主尺」这一层,这条测试必红)。"""
+    monkeypatch.chdir(tmp_path)
+    _run(tmp_path, "20260910_2100", "2026-09-10")
+    root = tmp_path / ws.reports_root() / "scan"
+    outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-15",
+                 now="2026-09-15T23:00:00")
+    before = {r["code"]: r for r in outcome.load_ledger(root)}
+
+    # 湖修订:T+2(09-14,i=9)的开盘价被改写 —— 若重算主尺,gap_c1_o2 必变。
+    _write_swing_day(tmp_lake_10_sessions, "2026-09-14", 9, t2_open_bump=0.5)
+    outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-30",
+                 now="2026-09-30T23:00:00")
+    after = {r["code"]: r for r in outcome.load_ledger(root)}
+    assert after["603317"]["outcome_status_swing"] == "MATURE_10"
+    assert after["603317"]["fwd_10_oc"] != ""
+    for code in before:
+        assert after[code][outcome.MAIN] == before[code][outcome.MAIN]
+        assert after[code]["outcome_status"] == before[code]["outcome_status"]
+        assert after[code]["computed_at"] == before[code]["computed_at"]
+
+
+def test_legacy_main_settled_docs_are_backfilled_as_swing_incomplete(
+        tmp_path, monkeypatch, tmp_lake_10_sessions):
+    """旧行按 swing 未完成回填:本波之前写的已核验文档没有 `outcome_status_swing` 键,
+    缺键 ≠ MATURE_10 —— 下一次 fill 必须回访并补齐,而不是当成两枚章都已齐。
+    另一个 run 的旧 CSV 行(旧表头没有两列)按空处理,原样保留。"""
+    monkeypatch.chdir(tmp_path)
+    _run(tmp_path, "20260910_2100", "2026-09-10")
+    root = tmp_path / ws.reports_root() / "scan"
+    doc = outcome.compute_outcome(root / "20260910_2100", lake_daily=tmp_lake_10_sessions,
+                                  today="2026-09-15")
+    for key in ("outcome_status_swing", "t10"):
+        doc.pop(key, None)
+    assert outcome._is_settled(doc)                     # 夹具健全性:主尺那一枚已齐
+    outcome.write_outcome(doc, root)
+    path = outcome.ledger_root(root) / outcome.LEDGER_CSV
+    legacy_cols = [c for c in outcome.LEDGER_COLUMNS if c not in ("outcome_status_swing", "t10")]
+    path.write_text(",".join(legacy_cols) + "\n" + ",".join(
+        {"run_id": "20260801_2100", "analysis_date": "2026-08-01", "code": "000002",
+         "outcome_status": "MATURE"}.get(c, "") for c in legacy_cols) + "\n", encoding="utf-8")
+
+    res = outcome.fill(reports_root=root, lake_daily=tmp_lake_10_sessions, today="2026-09-30")
+    assert res["filled"] == 1
+    rows = {(r["run_id"], r["code"]): r for r in outcome.load_ledger(root)}
+    assert rows[("20260910_2100", "603317")]["outcome_status_swing"] == "MATURE_10"
+    legacy = rows[("20260801_2100", "000002")]
+    assert legacy["outcome_status_swing"] == "" and legacy["t10"] == ""
+    assert legacy["outcome_status"] == "MATURE"

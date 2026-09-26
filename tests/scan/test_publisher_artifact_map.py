@@ -74,6 +74,7 @@ _BRIEF_WHITELIST_BEFORE = (
     "manifest.json",
     "recommendations.csv",
     "_buyability.json",
+    "_swing_seat.json",         # 2026-09-26 §5 B3:⑦ 观察席只数(有意新增,不是派生漂移)
 )
 
 _TRACE_MAPPING_BEFORE = (
@@ -114,12 +115,13 @@ def test_brief_whitelist_names_resolve_in_the_registry():
 
 
 def test_brief_whitelist_does_not_widen_permissions():
-    """白名单是**许可**表,比登记表窄:登记表里 85+ 个产物,brief 只准读这 13 个。
+    """白名单是**许可**表,比登记表窄:登记表里 85+ 个产物,brief 只准读这 14 个
+    (2026-09-26 +1:`swing_seat`,⑦ 观察席只数)。
 
     反面锚:哪天有人图省事写成 `for_root("staging")`,这条立刻红。
     """
     staging_paths = {a.path for a in C.for_root("staging")}
-    assert len(brief.REGISTERED_INPUTS) == 13
+    assert len(brief.REGISTERED_INPUTS) == 14
     assert len(staging_paths) > 3 * len(brief.REGISTERED_INPUTS), \
         "登记表突然变小了?这条锚是为了保证下面那句『窄很多』还有意义"
     derived = {C.by_name(n).path for n in brief.REGISTERED_INPUTS}
@@ -266,7 +268,11 @@ def test_assemble_stage_result_records_the_derived_list(tmp_path):
 #:
 #: 2026-09-24(Task 4):有意改了 —— BUY 行的「绝对 gap」stub 与固定的 42 日证据句改读账本,
 #: `test_brief.py` 先红了一片(见 task-4-report.md),这里跟着重算,不是绕过本条家训。
-_BRIEF_SHA256_BEFORE = "f3509321db85a88f1382e1558d42752b2a37058820b564f3c5ec83cdf11a696e"
+#:
+#: 2026-09-26(daily-engine 批 5 Task 3,spec §5 B3):有意改了 —— ⑥ 之后新增一行
+#: `**⑦ 10 日观察席(影子)**:未生成 → summary §12`(夹具没有 `_swing_seat.json`)。
+#: 核验:把这一行从新产物里删掉,sha256 逐字等于旧值 f3509321…a696e —— 其余字节一个没动。
+_BRIEF_SHA256_BEFORE = "12c7637cb1a34645e284597611d38430cfc1f8d7550201bb2c8ce39be0a59c8e"
 
 
 def test_brief_bytes_did_not_move(tmp_path):
