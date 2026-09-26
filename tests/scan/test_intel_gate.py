@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from autoresearch.scan.l4 import intel_gate as ig
 
@@ -130,3 +131,69 @@ def test_gate_file_is_a_registered_artifact():
     from autoresearch.contracts import artifacts as ca
 
     assert ca.by_name("intel_gate").path == ig.GATE_FILENAME == "_intel_gate.json"
+
+
+# ───────────────────────── 离线回放(批 6 Task 2;证据门) ─────────────────────────
+
+_HEAD = ("# 活体情报 — {code} 测 @ 2026-09-17\n〔intel v1·盲搜·as-of ≤ 2026-09-17〕\n\n"
+         "## 事件段(≤10 行;按时效窗排序:T0 → 24h → 催化挂 → 背景)\n"
+         "| 日期 | 时效窗 | 事件(一行,含量级) | 源(含 http(s) 链接) | 净分 |\n|---|---|---|---|---|\n")
+
+
+def _intel(code: str, *rows: tuple[str, str]) -> str:
+    return _HEAD.format(code=code) + "".join(
+        f"| 2026-09-17 | {window} | 事件 | [x](https://e.x/{i}) | {score} |\n"
+        for i, (window, score) in enumerate(rows))
+
+
+def _replay_run(tmp_path, name="20260917-0917_2152"):
+    run = tmp_path / name / "trace" / "staging"
+    run.mkdir(parents=True)
+    pd.DataFrame([{"code": c, "lane": "trend", "guard": "", "pinned_note": ""}
+                  for c in ("000001", "000002", "000003", "000004")]).to_csv(run / "finalists.csv", index=False)
+    dead = {"main_inflow_yi": -1.0, "cmf_20": -0.1, "obv_mom_20": -0.1}
+    pd.DataFrame([{"code": "000001", **dead}, {"code": "000002", **dead}, {"code": "000004", **dead},
+                  {"code": "000003", **dead, "cmf_20": 0.2}]).to_csv(run / "L1_scored_full.csv", index=False)
+    (run / "_final_ratings.json").write_text(json.dumps(
+        {"000001": "Underweight", "000002": "Hold", "000003": "Hold", "000004": "Sell"}), encoding="utf-8")
+    (run / "_l4_intel_000001.md").write_text(
+        _intel("000001", ("T0", "−2.0"), ("背景", "0.0")), encoding="utf-8")   # 全角减号的真格式
+    (run / "_l4_intel_000002.md").write_text(_intel("000002", ("T0", "0.0")), encoding="utf-8")
+    (run / "_l4_intel_000003.md").write_text(_intel("000003", ("T0", "-1.0")), encoding="utf-8")
+    (run / "_l4_intel_000004.md").write_text(          # 旧 schema:没有时效窗列 → T0 无法测
+        "## 事件段\n| 日期 | 事件 | 源 | 2日内可发酵? | 净分 |\n|---|---|---|---|---|\n"
+        "| 2026-09-17 | 事件 | [x](https://e.x/9) | 否 | -1 |\n", encoding="utf-8")
+    return run
+
+
+def test_replay_rows_join_the_predicate_with_intel_and_final_rating(tmp_path):
+    rows = {r["code"]: r for r in ig.replay([_replay_run(tmp_path)])}
+    assert set(ig.REPLAY_COLUMNS) >= {"run", "code", "dead", "final_rating",
+                                      "intel_t0_negative", "intel_events"}
+    one = rows["000001"]
+    assert one["run"] == "20260917-0917_2152" and one["dead"] is True
+    assert one["intel_t0_negative"] is True and one["intel_events"] == 2      # −2.0 也认得出
+    assert one["final_rating"] == "Underweight"
+    assert rows["000002"]["dead"] is True and rows["000002"]["intel_t0_negative"] is False
+    assert rows["000003"]["dead"] is False                                     # cmf_20 为正
+    assert rows["000004"]["intel_t0_negative"] is None                         # 旧稿:不猜
+
+
+def test_replay_summary_counts_and_applies_the_preregistered_stop_rules(tmp_path):
+    rows = ig.replay([_replay_run(tmp_path)])
+    got = ig.replay_summary(rows)
+    assert got["n_runs"] == 1 and got["n_checked"] == 4 and got["n_dead"] == 3
+    assert got["n_dead_t0_negative"] == 1 and got["n_dead_t0_unmeasured"] == 1
+    assert got["n_dead_rated_ge_hold"] == 1 and got["n_dead_rated_ge_ow"] == 0
+    # 最坏情况:(1 确认 + 1 无法测)/ 3 > 10%;≥Hold 1/3 > 5% → 不上线
+    assert got["t0_negative_share_worst"] == pytest.approx(2 / 3)
+    assert got["plan_rule_pass"] is False and got["spec_rule_pass"] is False
+    assert got["launch_eligible"] is False
+
+
+def test_replay_cli_prints_csv_rows_and_a_summary(tmp_path, capsys):
+    assert ig.main(["replay", str(_replay_run(tmp_path))]) == 0
+    out, err = capsys.readouterr()
+    lines = out.strip().splitlines()
+    assert lines[0].split(",")[:3] == list(ig.REPLAY_COLUMNS[:3]) and len(lines) == 5
+    assert json.loads(err.strip().splitlines()[-1])["n_dead"] == 3
