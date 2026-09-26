@@ -107,6 +107,19 @@ INVALID_ANALYSIS_DATE = "INVALID_ANALYSIS_DATE"
 #: `lake_partitions`/`weekday_heuristic` 一律不可信——即便它们恰好给出了正确的日期。
 TRADE_CAL_QUALITY = "trade_cal"
 
+# ── 10 日尺的第二枚成熟章(2026-09-26 daily-engine §5 B1)──
+#
+# 主尺 D+2 成熟,`common.ruler.SWING_RULER`(fwd_10_oc)要到 D+10 —— 两枚章互不替代。
+# 行(CSV)只在主尺 MATURE 时存在,所以行上只会出现 `SWING_STATUSES` 三值之一;主尺非
+# MATURE 的文档(没有行)在 doc 级沿用主尺的日期级状态(`PENDING_SESSION` → `PENDING_10`,
+# 其余原样),「为什么还没有」照旧写在状态里,不塌缩成空。
+SWING = _ruler.SWING_RULER
+MATURE_10 = "MATURE_10"
+PENDING_10 = "PENDING_10"
+SWING_STATUSES = (MATURE_10, PENDING_10, MISSING_MARKET_DATA)
+#: swing 回访只补这两列(5/10 日旁列,同一 null 门);主尺与其余列冻结不重写。
+SWING_SIDE_COLUMNS = ("fwd_5_oc", "fwd_10_oc")
+
 #: A4 执行线阈值(设计稿 §3 路A)。**先量后用**:上线与否是产品裁定,这里只负责记下
 #: 「若按此执行会怎样」。证据:四年全湖 1086 日,收在当日区间上 30% 的票隔夜比全体差
 #: 0.13~0.27pp,**逐年同号**(2022–2026 无一年反号)。
@@ -156,6 +169,10 @@ LEDGER_COLUMNS = (
     #  写出的是它自己的状态字符串(如 `UNVERIFIED_CALENDAR`),两者天然可辨。
     "anchor_session", "exec_lag", "actionability", "exec_gap_c1_o2", "exec_outcome_status",
     "computed_at",
+    # ── 10 日尺成熟章(2026-09-26 §5 B1,追加在末尾)。与 `outcome_status` 同一纪律:只有
+    #  恰好是字面量 `"MATURE_10"` 才可信;旧行缺这两列 = 未知(空),不是「已成熟」。
+    #  PENDING_10 的行 `fwd_10_oc` 是空单元格(未成熟 ≠ 0),读数方必须从分母剔除并计数。
+    "outcome_status_swing", "t10",
 )
 
 
@@ -455,10 +472,11 @@ def market_frame(date: str, *, lake_daily: Path | None = None,
 
     `fr is None` 覆盖全部非成熟情形(`meta["outcome_status"]` 如实区分是哪一种,
     §2.2 的五态之一);`fr` 非空则 `meta["outcome_status"] == MATURE`。`meta` 恒含
-    `outcome_status, reason, calendar_quality, calendar_digest, t1, t2,
-    missing_sessions`;`MATURE` 时另附 `n`/`t5`/`t10`/`fwd5_verified`/`fwd10_verified`
-    (5/10 日旁列的窗口是否可核验——`compute_outcome` 据此在行组装时做 null 门,主尺
-    绝不因此被拖累)。
+    `outcome_status, reason, calendar_quality, calendar_digest, t1, t2, t10,
+    outcome_status_swing, missing_sessions`;`MATURE` 时另附 `n`/`t5`/`fwd5_verified`/
+    `fwd10_verified`(5/10 日旁列的窗口是否可核验——`compute_outcome` 据此在行组装时做
+    null 门,主尺绝不因此被拖累)。`outcome_status_swing` 是 10 日尺的第二枚成熟章
+    (`_swing_status`):主尺 MATURE 时 ∈ `SWING_STATUSES`,且 `MATURE_10` ⇔ `fwd10_verified`。
     """
     if calendar is None:
         from autoresearch.scan import exec_anchor as _anchor
@@ -471,16 +489,19 @@ def market_frame(date: str, *, lake_daily: Path | None = None,
         "calendar_digest": resolved["calendar_digest"],
         "t1": resolved["t1"],
         "t2": resolved["t2"],
+        "t10": resolved["t10"],
         "missing_sessions": [],
     }
     if resolved["status"] != "OK":
+        meta["outcome_status_swing"] = _swing_status(resolved["status"])
         return None, meta
     D, t1, t2 = resolved["analysis_date"], resolved["t1"], resolved["t2"]
     present = set(_panel.lake_trade_days(lake_daily))
     missing = [d for d in (D, t1, t2) if d not in present]
     if missing:
         meta.update(outcome_status=MISSING_MARKET_DATA, missing_sessions=missing,
-                    reason=f"行情缺失(湖无分区):{','.join(missing)}")
+                    reason=f"行情缺失(湖无分区):{','.join(missing)}",
+                    outcome_status_swing=_swing_status(MISSING_MARKET_DATA))
         return None, meta
     # 位置对齐用可信日历的 session 列表(已按 today 截断),不用湖文件列表——
     # 这正是本次修复的核心:湖缺的日子不再让后面的文件顶替成"下一个交易日"。
@@ -491,7 +512,8 @@ def market_frame(date: str, *, lake_daily: Path | None = None,
         close_cols = set(piv.get("close", pd.DataFrame()).columns)
         still_missing = [d for d in (D, t1, t2) if d not in close_cols] or [D, t1, t2]
         meta.update(outcome_status=MISSING_MARKET_DATA, missing_sessions=still_missing,
-                    reason="前向收益帧为空(分区文件存在但内容缺失)")
+                    reason="前向收益帧为空(分区文件存在但内容缺失)",
+                    outcome_status_swing=_swing_status(MISSING_MARKET_DATA))
         return None, meta
     for col, key in (("t1_open", "open"), ("t1_high", "high"), ("t1_low", "low"),
                      ("t1_close", "close"), ("t1_pct_chg", "pct_chg")):
@@ -510,7 +532,24 @@ def market_frame(date: str, *, lake_daily: Path | None = None,
     # `fwd_5_oc`/`fwd_10_oc` 置 null,绝不因此拖累上面已经判定的 `MATURE` 主尺。
     meta["fwd5_verified"] = bool(t5 and t5 <= today_c and t5 in present)
     meta["fwd10_verified"] = bool(t10 and t10 <= today_c and t10 in present)
+    meta["outcome_status_swing"] = _swing_status(MATURE, t10=t10, today_c=today_c,
+                                                 present=present)
     return fr, meta
+
+
+def _swing_status(main_status: str, *, t10: str | None = None, today_c: str = "",
+                  present: set[str] | frozenset[str] = frozenset()) -> str:
+    """10 日尺的成熟章(§5 B1)。主尺 MATURE 时三态:T+10 未到(或日历还答不出)→
+    `PENDING_10`;已到且湖有那天 → `MATURE_10`(与 `fwd10_verified` 同一判据);已到但湖缺
+    → `MISSING_MARKET_DATA`(下一晚再回访,不猜)。主尺非 MATURE:`PENDING_SESSION` →
+    `PENDING_10`(T+2 都没到,T+10 更没到),其余日期级状态原样沿用。"""
+    if main_status == MATURE:
+        if not t10 or t10 > today_c:
+            return PENDING_10
+        return MATURE_10 if t10 in present else MISSING_MARKET_DATA
+    if main_status == PENDING_SESSION:
+        return PENDING_10
+    return main_status
 
 
 def _relative_columns(fr: pd.DataFrame, sectors: dict[str, str]) -> pd.DataFrame:
@@ -625,6 +664,9 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
         "calendar_quality": meta.get("calendar_quality") or "",
         "calendar_digest": meta.get("calendar_digest") or "",
         "t1": meta.get("t1"), "t2": meta.get("t2"),
+        # 10 日尺第二枚成熟章(§5 B1):doc 级单值,`_ledger_rows` 逐行广播(同 t1/t2)。
+        "t10": meta.get("t10"),
+        "outcome_status_swing": meta.get("outcome_status_swing") or "",
         "decision_mode": facts["decision_mode"],
         "rule_version": facts["rule_version"],
         "read_from_shared_staging": facts["used_shared"],
@@ -733,13 +775,16 @@ def _ledger_rows(doc: dict) -> list[dict]:
                if k not in ("run_id", "analysis_date", "mode", "src", "code",
                             "outcome_status", "calendar_quality", "calendar_digest",
                             "t1", "t2", "ruler", "computed_at", "anchor_session",
-                            "exec_lag", "actionability")},
+                            "exec_lag", "actionability", "outcome_status_swing", "t10")},
             "ruler": doc["ruler"],
             # 三列同源于 doc 级 execution(逐行相同):读 BUY 战绩前先看 actionability。
             "anchor_session": anchor.get("first_available_session"),
             "exec_lag": anchor.get("exec_lag"),
             "actionability": anchor.get("actionability_status"),
             "computed_at": stamp,
+            # 10 日尺成熟章(§5 B1):doc 级单值逐行广播。缺键(本波之前写的文档)→ 空 = 未知。
+            "outcome_status_swing": doc.get("outcome_status_swing") or "",
+            "t10": doc.get("t10"),
         })
     return out
 
@@ -827,6 +872,48 @@ def _is_settled(doc: object) -> bool:
             and doc.get("calendar_quality") == TRADE_CAL_QUALITY
             and doc.get("outcome_status") == MATURE
             and bool(doc.get("complete")))
+
+
+def _is_swing_settled(doc: object) -> bool:
+    """第二枚成熟章(§5 B1):10 日尺恰好 `MATURE_10`。缺键(本波之前写的文档)/空/其它
+    状态一律「还没齐」—— 旧行因此按 swing 未完成回填,不会被当成两枚章都已齐。"""
+    return isinstance(doc, dict) and doc.get("outcome_status_swing") == MATURE_10
+
+
+def _swing_projection(doc: dict) -> tuple:
+    """swing 回访「有没有新东西」的可比投影:成熟章 + T+10 + 每只票的两列旁列。"""
+    rows = doc.get("rows") or {}
+    return (doc.get("outcome_status_swing") or "", doc.get("t10"),
+            tuple(sorted((code, *(row.get(c) for c in SWING_SIDE_COLUMNS))
+                         for code, row in rows.items())))
+
+
+def _swing_supplement(run: Path, existing: dict, *, lake_daily: Path | None, calendar,
+                      today: object, now: str | None) -> tuple[dict | None, str]:
+    """主尺已核验、10 日尺未齐 → 只补 10 日尺(`SWING_SIDE_COLUMNS` + 成熟章 + T+10)。
+
+    **主尺冻结**:已核验的 `gap_c1_o2` 及其余列逐字沿用 `existing`,哪怕湖在 T+2 那天被
+    修订过 —— 重写已核验的主尺历史只能走 §6 C3 的可审阅迁移(`--dry-run`/`--run-id`),
+    不能借 swing 回访悄悄发生。返回 `(文档, "")` 表示有新东西要写;`(None, 原因)` 表示
+    本次不写(原因进 `skip_reasons`,不静默)。
+    """
+    fresh = compute_outcome(run, lake_daily=lake_daily, calendar=calendar, today=today)
+    if fresh is None:
+        return None, "swing_revisit:run_or_facts_not_locatable"
+    if fresh.get("outcome_status") != MATURE:
+        return None, f"swing_revisit:main_now_{fresh.get('outcome_status') or 'UNKNOWN'}"
+    merged = json.loads(json.dumps(existing, ensure_ascii=False))
+    merged["outcome_status_swing"] = fresh.get("outcome_status_swing") or ""
+    merged["t10"] = fresh.get("t10")
+    fresh_rows = fresh.get("rows") or {}
+    for code, row in (merged.get("rows") or {}).items():
+        if code in fresh_rows:
+            for col in SWING_SIDE_COLUMNS:
+                row[col] = fresh_rows[code].get(col)
+    if _swing_projection(merged) == _swing_projection(existing):
+        return None, f"swing_not_mature:{merged['outcome_status_swing'] or 'UNKNOWN'}"
+    merged["swing_computed_at"] = now or ""
+    return merged, ""
 
 
 #: 撤回快照(bullet 4)存的字段列表——`_maybe_withdraw` 与两处调用方(朴素增量循环、
@@ -1325,6 +1412,11 @@ def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | No
     跑它的成本只与「昨天新出的 run + 还没被核验通过的老 run」成正比——schema 1、或
     schema 2 但缺日历质量字段的旧文档都不在"安全跳过"之列,会被重新核验(bullet 3)。
 
+    两枚成熟章(2026-09-26 §5 B1):`_is_settled`(主尺)∧ `_is_swing_settled`(10 日尺
+    `MATURE_10`)都齐才永久跳过。只有主尺那枚齐了的 run 走 `_swing_supplement`:只补
+    `SWING_SIDE_COLUMNS` 与成熟章,**主尺冻结不重写**;投影没变(D+3..D+9 还在等)就不写盘,
+    跳过原因写 `swing_not_mature:<状态>`。本波之前写的文档缺成熟章键 → 按 swing 未完成回填。
+
     只要 `compute_outcome` 返回了文档(不是裸 `None`),就会被写盘并计入 `filled`——
     哪怕它不是 `MATURE`:2026-09-12 起,一份带 `outcome_status`/`reason` 的"还没成熟"
     文档本身就是有效产出(ruling #2),不再是"没算出来就什么都不留"。
@@ -1352,9 +1444,24 @@ def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | No
                 existing = json.loads(p.read_text(encoding="utf-8"))
         # `rebuild`:口径变了才需要重算已核验通过的 run。默认关着 —— 每晚跑的成本
         # 必须只与「昨天新出的 + 还没核验通过的」成正比,而不是与历史长度成正比。
+        # 两枚成熟章(§5 B1):主尺那枚齐了、10 日尺那枚没齐 → 只补 10 日尺,主尺冻结。
         if not rebuild and _is_settled(existing):
-            skipped += 1
-            skip_reasons[run.name] = "already_verified_complete"
+            if _is_swing_settled(existing):
+                skipped += 1
+                skip_reasons[run.name] = "already_verified_complete"
+                continue
+            merged, why = _swing_supplement(run, existing, lake_daily=lake_daily,
+                                            calendar=calendar, today=today, now=now)
+            if merged is None:
+                skipped += 1
+                skip_reasons[run.name] = why
+                continue
+            write_outcome(merged, reports_root)
+            n_rows += upsert_ledger(merged, reports_root)
+            filled += 1
+            touched.append(run.name)
+            if limit and filled >= limit:
+                break
             continue
         doc = compute_outcome(run, lake_daily=lake_daily, calendar=calendar, today=today)
         if doc is None:
