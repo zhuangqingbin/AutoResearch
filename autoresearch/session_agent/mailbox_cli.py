@@ -32,14 +32,31 @@ def resolve_max_parallel(handle, explicit: int | None) -> int:
     return value if type(value) is int and value > 0 else 4
 
 
+def _build_executor(args, handle) -> tuple[object, dict | None]:
+    """``(executor, runner timeouts)`` — ``None`` keeps ``executors.base.DEFAULT_TIMEOUTS``."""
+    if args.executor == "mailbox":
+        from autoresearch.session_agent.executors.mailbox import MailboxExecutor
+
+        return MailboxExecutor(handle.staging, poll_seconds=min(args.poll_seconds, 2.0)), None
+    if args.executor == "headless":
+        from autoresearch.session_agent.executors import headless_claude
+
+        if handle.engine != "claude":
+            raise ValueError(
+                f"--executor headless runs `claude -p` and needs a claude run; "
+                f"{args.run_id} is a {handle.engine} run (Codex headless is out of scope)")
+        executor = headless_claude.HeadlessClaudeExecutor(
+            handle.staging, claude_bin=args.claude_bin)
+        return executor, dict(headless_claude.HEADLESS_TIMEOUTS)
+    raise ValueError(f"unknown executor: {args.executor}")  # pragma: no cover - argparse
+
+
 def run_command(args) -> tuple[dict, int]:
     from autoresearch.session_agent import runner
-    from autoresearch.session_agent.executors.mailbox import MailboxExecutor
 
     handle = _handle(args.run_id)
-    if args.executor != "mailbox":  # pragma: no cover - argparse choices guard this
-        raise ValueError(f"unknown executor: {args.executor}")
-    executor = MailboxExecutor(handle.staging, poll_seconds=min(args.poll_seconds, 2.0))
+    executor, timeouts = _build_executor(args, handle)
+    options = {"timeouts": timeouts} if timeouts is not None else {}
     outcome = runner.run_loop(
         args.run_id,
         executor,
@@ -47,6 +64,7 @@ def run_command(args) -> tuple[dict, int]:
         poll_seconds=args.poll_seconds,
         max_rounds=args.max_rounds,
         timeout_multiplier=args.timeout_multiplier,
+        **options,
     )
     return outcome, 0 if outcome.get("finished") else EXIT_NOT_FINISHED
 
@@ -108,7 +126,9 @@ def mailbox_command(args) -> dict:
 def add_parsers(subparsers) -> None:
     run = subparsers.add_parser("run")
     run.add_argument("--run-id", required=True)
-    run.add_argument("--executor", choices=("mailbox",), default="mailbox")
+    run.add_argument("--executor", choices=("mailbox", "headless"), default="mailbox")
+    run.add_argument("--claude-bin", help="headless only: claude CLI path "
+                     "(default $AUTORESEARCH_CLAUDE_BIN, PATH, ~/.local/bin/claude)")
     run.add_argument("--max-parallel", type=int)
     run.add_argument("--poll-seconds", type=float, default=5.0)
     run.add_argument("--timeout-multiplier", type=float, default=1.0)

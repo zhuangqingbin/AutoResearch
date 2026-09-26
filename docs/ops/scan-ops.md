@@ -22,7 +22,35 @@ launchctl list | grep scan-prewarm          # 验证
 launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm   # 手动触发
 ```
 
-夜间补账 `scripts/nightly_close.sh`(交易日 20:45):outcome fill / ledger_views build / populations build / populations rulers / analyze ledger 五步,只记不学,每步带时刻行,`ledger_views` 写 `_health.json`。
+夜间补账 `scripts/nightly_close.sh`(交易日 23:30;2026-09-26 起,原 20:45,排在 21:20 无人值守扫描之后):outcome fill / ledger_views build / populations build / populations rulers / analyze ledger 五步,只记不学,每步带时刻行,`ledger_views` 写 `_health.json`。已装旧模板(20:45)的:`launchctl bootout gui/$(id -u)/com.tradingagents.nightly-close.<引擎>` 后按模板头注重装一次。
+
+## 无人值守扫描(headless · launchd 交易日 21:20 · PILOT)
+
+`scripts/scan_run.sh` → `python -m autoresearch.scan.scan_run`,流程全在 Python(macOS 无 `flock(1)`/`timeout(1)`):
+
+1. **锁** `$CTX/.scan_run.lock`(fcntl,进程死锁即放):被占 → 立刻退出、打印持锁 pid、推「未开」。
+2. **交易日**:今天不是 → 静默退出 0(launchd 只按星期触发,节假日在这里挡)。
+3. **人工场**:同引擎有 ACTIVE 且心跳 90 分钟内的 scan run → 不开,推送。
+4. **湖灌齐** `python -m autoresearch.scan.readiness <日>`:stk_factor_pro ≥5300 行且连续两次不变(5 分钟一次),等到 22:30 仍不齐 → 推「未开」。夜间预热不用这道探针,行为不变。
+5. **begin** `session_agent begin --orchestration session_v1`:请求 `$RPT/_ops/scan_run_<日>.request.json`,宿主 `session_ref=headless-<uuid>`(runner 进程 + 每个推理任务一个 `claude -p` 会话;`force_full=false`,📌 由 SENTINEL_PINNED 兜)。
+6. **runner** `session_agent run --executor headless`:每个推理任务 `claude -p --agent <role> --output-format json --permission-mode bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]`(不传 `--dangerously-skip-permissions`;项目 hook 照常生效)。超时 intel 12m / card·复核 25m / L3 30m → 杀整个进程组,TIMEOUT 以新 attempt 重试一次;结果 JSON 非法 / `is_error` / 退出 0 但产物没落盘 = 该 attempt 失败。整场墙钟 180 分钟(`--run-timeout-minutes`),超时连在飞的 `claude -p` 一起杀。
+7. **收尾**:完成 → `verify-report --level full` → 送达 brief(标题带 ✓ 或 `verify ✗`);未完成 → `capsule finalize FAILED` + 推「FAILED · 阶段 · 一句原因 · run · 日志」。**不自动改代码、不自动重跑第二场。**
+
+- **看什么**:日志 `$RPT/_ops/scan_run_<日>.log`(runner 的 JSON 事件行也在里面;launchd 的 `/tmp/scan-run.log` 只兜启动前的错);摘要 `$RPT/_ops/scan_run_<交易日>.json`;每次 `claude -p` 一份 `<staging>/_dispatch/headless/<task>.a<n>.json`(argv 脱敏、pid、exit、usage、`total_cost_usd`、transcript 路径)+ `.stdout/.stderr`;`token_usage.md` 多一列 `dispatcher`,headless 行成本 = 结果 JSON 的 `total_cost_usd`(transcript 找不到 = UNMEASURED,不计 $0)。
+- **安装**(只装 Claude 引擎;模板 `__REPO__` 占位同 prewarm):
+
+  ```bash
+  sed "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-run.plist \
+    > ~/Library/LaunchAgents/com.tradingagents.scan-run.plist \
+    && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-run.plist
+  launchctl list | grep scan-run                                   # 验证
+  launchctl kickstart gui/$(id -u)/com.tradingagents.scan-run      # 手动触发(= scripts/scan_run.sh)
+  launchctl bootout gui/$(id -u)/com.tradingagents.scan-run        # 卸载
+  ```
+
+- **送达** = `scan_config.jsonc` 的 `delivery.channel`(默认 `none` = 什么都不发)。Bark:在仓库根 `.env`(已 gitignore)加一行 `BARK_TOKEN=<Bark App 里的 key>`,把 channel 改成 `"bark"`,试发 `scripts/notify.sh "测试"`;正文 = brief 原文(超 3000 字节截断)+ 报告路径。mail:`.env` 加 `DELIVERY_MAIL_TO=<地址>`。file:填 `delivery.file_dir`。每次送达落兼容报告目录的 `_delivery.json`(canonical `runs/<run_id>/p1` 是封存的目录哈希,绝不往里写)。送达失败不改 run 状态。
+- **人工会话**开扫前先 `uv run --no-sync python -m autoresearch.scan.run_lock check`:非 0 = 无人值守场在跑,别再开。
+- **失败后**:按推送里的阶段查日志;修代码在另一个会话;补跑 `scripts/scan_run.sh --date <交易日> --skip-readiness`(新 run_id)。
 
 ## user_config 传参铁律
 

@@ -389,5 +389,14 @@
   //   产物推导的下界,区段可能只是 partial;完整性结论仍以 capsule 自己的 completeness
   //   校验为准,不能用这份报告的 enabled/BOUND 替代。
   // 回滚杆 = 本键改回 false(只停止**新增**采集,已落盘的绑定/快照不受影响)。
-  "retention": { "bind_transcripts": true }
+  "retention": { "bind_transcripts": true },
+
+  // ── 送达 · 无人值守场推 brief / FAILED 通知(2026-09-26 daily-engine 批 4,spec §6 C3)──
+  // 【生效点】autoresearch/scan/delivery.configured_delivery → send()(scan_run 成功后推 brief 原文,
+  //   Bark 正文 ≤3000B 超出截断 + 报告路径)与 notify()(未开/FAILED 一句话,scripts/notify.sh 同一
+  //   渠道)。每次 send 落 _delivery.json(兼容报告目录;绝不写进 canonical 发布根)。
+  // channel: "none"(默认 = parity,什么都不发)| "bark"(iOS 推送,token 只放 .env 的 BARK_TOKEN)|
+  //   "mail"(本机 mail,收件人 .env 的 DELIVERY_MAIL_TO)| "file"(brief 复制到 file_dir,如 iCloud/Obsidian)。
+  // 送达失败不改 run 状态、不抛,只记账。凭证一律不进本文件。
+  "delivery": { "channel": "none", "file_dir": null }
 }

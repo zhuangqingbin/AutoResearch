@@ -64,6 +64,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 0. **开场:先领 run_id,再取任何一个数**:
    ```bash
    export AUTORESEARCH_ENGINE=codex   # Claude 会话下无需设置
+   uv run --no-sync python -m autoresearch.scan.run_lock check  # 非 0=无人值守场在跑:拒绝开扫,报持锁 pid
    DATE=$(uv run --no-sync python -m autoresearch.scan.trade_date)
    RUN_JSON=$(uv run --no-sync python -m autoresearch.trace.capsule begin scan-market "$DATE" \
      --engine "$AUTORESEARCH_ENGINE" --config-file .claude/skills/scan-market/scan_config.jsonc \

@@ -240,6 +240,94 @@ def unmeasured_row(ref: TranscriptRef, *, reason: str) -> dict:
     return row
 
 
+#: `session_agent.executors.headless_claude` 的调用记录,相对 run 的 staging(批 4,spec R3)。
+#: headless 场每个推理任务是一个**顶级** `claude -p` 会话(`<projects>/<slug>/<session-id>.jsonl`),
+#: 不在任何宿主 session 的 subagents 目录下 —— 按 session 目录找永远是空表,只能从记录反查。
+HEADLESS_RECORDS = Path("_dispatch") / "headless"
+
+
+def _headless_record_files(source: Path | str) -> list[Path]:
+    """run staging 目录 / 记录目录本身 / 记录文件 glob,三种写法都认。"""
+    import glob as _glob
+
+    path = Path(source)
+    if path.is_dir():
+        folder = path / HEADLESS_RECORDS if (path / HEADLESS_RECORDS).is_dir() else path
+        return sorted(folder.glob("*.json"))
+    return sorted(Path(item) for item in _glob.glob(str(source)) if item.endswith(".json"))
+
+
+def _reported_cost(record: dict) -> float | None:
+    value = record.get("total_cost_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
+    session_id = str(record.get("session_id") or record.get("requested_session_id") or "")
+    agent = str(record.get("agent_type") or "headless")
+    declared = record.get("transcript_path")
+    path = Path(declared) if declared else None
+    if (path is None or not path.is_file()) and session_id:
+        path = find_session_files(session_id, projects_root)[0]
+    cost = _reported_cost(record)
+    if path is None or not path.is_file():
+        row = unmeasured_row(
+            TranscriptRef(engine="claude", path=None, status="GONE", role="headless"),
+            reason=f"headless transcript missing for session {session_id or '—'}",
+        )
+        row["cost_source"] = None
+    else:
+        row = usage_of(path, role="headless")
+        if cost is not None and row["status"] != "UNMEASURED":
+            # CLI 自己算的钱(结果 JSON 的 total_cost_usd)比按 transcript 估的更真。
+            row["estimated_usd"] = cost
+            row["discarded_usd"] = cost if row.get("discarded") else 0.0
+            row["cost_source"] = "result_json"
+        else:
+            row["cost_source"] = "estimate"
+    row.update(
+        agent=agent,
+        dispatcher="headless",
+        task_id=record.get("task_id"),
+        attempt=record.get("attempt"),
+        session_id=session_id or None,
+        reported_cost_usd=cost,
+        exit_code=record.get("exit_code"),
+        call_state=record.get("state"),
+    )
+    return row
+
+
+def collect_headless(
+    source: Path | str,
+    *,
+    projects_root: Path | str | None = None,
+) -> list[dict]:
+    """headless 执行器的调用记录 → 逐次 `claude -p` 的 usage 行(``dispatcher=headless``)。
+
+    token 读 transcript(按 message.id 去重,与 subagent 同一把尺);成本取结果 JSON 的
+    ``total_cost_usd``(没有则按 transcript 估)。transcript 找不到 → UNMEASURED 行,
+    ``reported_cost_usd`` 保留为事实但不计入合计 —— 未计量不是免费,也不是「按自报算」。
+    """
+    rows = []
+    for record_path in _headless_record_files(source):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            row = unmeasured_row(
+                TranscriptRef(engine="claude", path=None, status="GONE", role="headless"),
+                reason=f"unreadable headless record {record_path.name}: {type(exc).__name__}",
+            )
+            row.update(dispatcher="headless", agent="headless", cost_source=None)
+            rows.append(row)
+            continue
+        if isinstance(record, dict) and record.get("task_id"):
+            rows.append(_headless_row(record, projects_root))
+    return sorted(rows, key=lambda r: -r["weighted_in"])
+
+
 def _ordinal_span(ref: TranscriptRef) -> tuple[float, float]:
     start = ref.start_ordinal if ref.start_ordinal is not None else float("-inf")
     end = ref.end_ordinal if ref.end_ordinal is not None else float("inf")
@@ -299,7 +387,13 @@ def collect_run(
         raise FileNotFoundError(f"unknown run_id: {run_id}")
     from autoresearch.trace.capsule import load_run
 
-    session_ref = load_run(run_id).contract.session_ref
+    run = load_run(run_id)
+    session_ref = run.contract.session_ref
+    # headless 场(批 4):每个推理任务一个顶级 `claude -p` 会话,记录在 staging 的
+    # `_dispatch/headless/`;宿主 session 目录里找不到它们。没有记录 = 空列表 = 旧行为。
+    staging = getattr(run, "staging", None)
+    headless_rows = collect_headless(staging) if staging is not None and (
+        Path(staging) / HEADLESS_RECORDS).is_dir() else []
     adapter = adapter_for(resolved_engine)
     identity = RunIdentity(run_id=run_id, engine=resolved_engine, session_ref=session_ref)
     refs = adapter.locate(identity)
@@ -308,7 +402,8 @@ def collect_run(
             unmeasured_row(
                 TranscriptRef(engine="claude", path=None, status="GONE", role="main"),
                 reason="run contract 没有绑定 session_ref，Claude adapter 无法定位 transcript",
-            )
+            ),
+            *headless_rows,
         ]
 
     cache: dict[str, TranscriptSnapshot] = {} if snapshot_cache is None else snapshot_cache
@@ -372,6 +467,7 @@ def collect_run(
         except Exception as exc:  # noqa: BLE001 - 就算整份源文件都读不出来也要留痕
             rows.append(unmeasured_row(combined_ref, reason=f"{type(exc).__name__}: {exc}"))
 
+    rows.extend(headless_rows)
     return sorted(rows, key=lambda r: -r["weighted_in"])
 
 
@@ -382,6 +478,7 @@ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
         "transcripts": len(rows),
         "main_transcripts": sum(r.get("role") == "main" for r in rows),
         "subagent_transcripts": sum(r.get("role") == "subagent" for r in rows),
+        "headless_transcripts": sum(r.get("dispatcher") == "headless" for r in rows),
         "messages": sum(int(r.get("messages") or 0) for r in rows),
         "input": sum(int(r.get("input") or 0) for r in rows),
         "output": sum(int(r.get("output") or 0) for r in rows),
@@ -450,11 +547,22 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
     has_priced = bool(facts["priced_transcripts"])
     total_cost = _usd(facts["estimated_usd"]) if has_priced else "—"
     discarded_cost = _usd(facts["discarded_usd"]) if has_priced else "—"
-    role_note = (
-        f"{facts['main_transcripts']} 主会话 + {facts['subagent_transcripts']} subagent"
-        if has_main
-        else f"{facts['subagent_transcripts']} 个 subagent"
-    )
+    headless = facts["headless_transcripts"]
+    if headless:
+        role_note = " + ".join(
+            part for part in (
+                f"{facts['main_transcripts']} 主会话" if has_main else "",
+                f"{facts['subagent_transcripts']} subagent"
+                if facts["subagent_transcripts"] else "",
+                f"{headless} headless 会话",
+            ) if part
+        )
+    else:
+        role_note = (
+            f"{facts['main_transcripts']} 主会话 + {facts['subagent_transcripts']} subagent"
+            if has_main
+            else f"{facts['subagent_transcripts']} 个 subagent"
+        )
     out += [f"- **{role_note}** · 原始输入 **{_k(tot_billed)}** → "
             f"**加权 {_k(tot_w)}**(cache读 ×{_W_READ}、5m写 ×{_W_WRITE_5M}、1h写 ×{_W_WRITE_1H})· "
             f"输出合计 **{_k(tot_out)}** · cache 命中率 "
@@ -466,12 +574,20 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
             f"未计量 {facts['unmeasured_transcripts']} 份)",
             f"- 价格口径:Claude API standard global list price · "
             f"{PRICE_SOURCE_EFFECTIVE_DATE} 快照 · {PRICE_SOURCE_URL}",
-            "",
-            "| role | agent | model | effort | 状态 | 消息 | 输出 | cache读 | 5m写 | 1h写 | 生输入 | **估算成本** |",
-            "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+            ""]
+    # dispatcher 列只在有 headless 行时出现:宿主场的 token_usage.md 逐字不变(parity)。
+    if headless:
+        out += ["| role | dispatcher | agent | model | effort | 状态 | 消息 | 输出 | cache读 "
+                "| 5m写 | 1h写 | 生输入 | **估算成本** |",
+                "|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    else:
+        out += ["| role | agent | model | effort | 状态 | 消息 | 输出 | cache读 | 5m写 | 1h写 "
+                "| 生输入 | **估算成本** |",
+                "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for r in rows:
+        dispatcher = f"{r.get('dispatcher', 'host')} | " if headless else ""
         out.append(
-            f"| {r.get('role', 'subagent')} | {r['agent']} | {r['model']} | "
+            f"| {r.get('role', 'subagent')} | {dispatcher}{r['agent']} | {r['model']} | "
             f"{r['effort']} | {r.get('status', '—')} | {r['messages']} "
             f"| {_k(r['output'])} | {_k(r['cache_read'])} "
             f"| {_k(r.get('cache_create_5m', 0))} "
@@ -513,7 +629,15 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
         cost = _usd(b["usd"]) if b.get("priced") else "—"
         out.append(f"| {fam} | {b['n']} | {_k(b['w'])} | {mult if mult else '—'} "
                    f"| {adj} | {_k(b['out'])} | {cost} | {b['unpriced']} |")
-    if has_main:
+    if headless:
+        coverage = (
+            "_**覆盖声明**:headless 行 = 每个推理任务一个 `claude -p` 会话(按执行器调用记录"
+            "`_dispatch/headless/*.json` 反查 transcript;成本取该会话结果 JSON 的 "
+            "`total_cost_usd`,缺时按 transcript 估);驱动它们的 runner 是零 LLM 的 Python 进程。"
+            "transcript 找不到的调用记为 UNMEASURED、不计入合计。产物能证明跑过什么,不能证明"
+            "没跑过什么:表里没有的不等于没花钱。_"
+        )
+    elif has_main:
         coverage = (
             "_**覆盖声明**:本表覆盖已定位到的主会话与其 session 目录下 subagent transcript；"
             "跑在别的 session 目录下的 agent 不在内。产物能证明跑过什么,不能证明没跑过什么："
@@ -544,6 +668,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="引擎(与 --run-id 同用;缺省取当前引擎)")
     ap.add_argument("--run-id", default=None,
                     help="run_id(读该 run 的显式 transcript 绑定,与 --dir/--session 互斥)")
+    ap.add_argument("--transcripts-from", default=None,
+                    help="headless 调用记录:run staging 目录、其 _dispatch/headless/ 目录"
+                         "或记录 glob(每条记录的 session_id → 顶级 transcript)")
     ap.add_argument("--out", default=None, help="落盘 md 路径(缺省只打印)")
     ap.add_argument("--json-out", default=None, help="落盘 canonical JSON ledger")
     a = ap.parse_args(argv)
@@ -554,6 +681,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[usage_harvest] run 取数失败:{type(exc).__name__}: {exc}")
             return 1
         source = f"run:{a.run_id}"
+    elif a.transcripts_from:
+        rows = collect_headless(a.transcripts_from)
+        source = f"headless:{a.transcripts_from}"
     elif a.transcripts:
         rows = collect_glob(a.transcripts)
         source = a.transcripts
