@@ -458,6 +458,15 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "w3_grids", "json", "conditional"),
     Artifact("w3_grids_signals", "w3_grids/*/signal_coverage.json", "research_report", "observe",
              "w3_grids", "json", "conditional"),
+    # B2 10 日尺预注册普查(2026-09-26 登记;冻结方案见 docs/research/2026-09-26-swing-ruler-family.spec.json)
+    Artifact("swing_ruler_spec", "swing_ruler/*/spec.json", "research_report", "observe",
+             "swing_ruler_census", "json", "conditional"),
+    Artifact("swing_ruler_cells", "swing_ruler/*/cells.csv", "research_report", "observe",
+             "swing_ruler_census", "csv", "conditional"),
+    Artifact("swing_ruler_manifest", "swing_ruler/*/manifest.json", "research_report", "observe",
+             "swing_ruler_census", "json", "conditional"),
+    Artifact("swing_ruler_readout", "swing_ruler/*/readout.md", "research_report", "observe",
+             "swing_ruler_census", "md", "conditional"),
     # ── 券商成交取数层(08-27 设计稿 §5;不进 lake/,只记不学)──────────────────
     Artifact("broker_trades", "trades.csv", "broker", "observe",
              "broker.ingest", "csv", "gated", required_when="broker ingest 跑过"),
