@@ -640,6 +640,31 @@ def test_wait_with_a_fresh_heartbeat_is_idle_not_dead(tmp_path):
     assert doc["kind"] == "IDLE" and doc["runner_state"] == "RUNNING"
 
 
+# ── M4 (review 2026-09-26): each engine's host dispatches its own project agent ─────
+
+def test_codex_requests_name_the_codex_project_agent():
+    """Codex resolves a project agent by the toml ``name`` field (hook agent_type too);
+    Claude by the ``.claude/agents/<name>.md`` name."""
+    import tomllib
+
+    from autoresearch.session_agent.executors.base import ROLE_DISPATCH, agent_type_for
+
+    for role, (claude_agent, config_role) in ROLE_DISPATCH.items():
+        assert agent_type_for(role, "claude") == claude_agent
+        assert (REPO / ".claude/agents" / f"{claude_agent}.md").is_file()
+        toml_path = REPO / ".codex/agents" / f"{config_role}.toml"
+        if config_role is None or not toml_path.is_file():
+            with pytest.raises(KeyError, match="no Codex project agent"):
+                agent_type_for(role, "codex")
+            continue
+        name = tomllib.loads(toml_path.read_text("utf-8"))["name"]
+        assert agent_type_for(role, "codex") == name, role
+    # The seven scan judgment roles all have a Codex counterpart.
+    for role in ("macro.brief", "sector.brief", "scan.l3", "scan.l3.repair", "scan.l4.intel",
+                 "scan.l4.card", "scan.l4.review"):
+        assert agent_type_for(role, "codex") != ROLE_DISPATCH[role][0]
+
+
 def test_cli_wait_default_stays_under_the_host_bash_timeout():
     from autoresearch.session_agent import __main__ as cli
 

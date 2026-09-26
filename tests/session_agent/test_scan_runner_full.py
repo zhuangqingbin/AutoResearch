@@ -179,8 +179,9 @@ def test_synthetic_full_scan_runs_through_the_runner_to_finish(tmp_path, monkeyp
                             max_rounds=3000, hooks=hooks)
     assert final["finished"] is True, (final["stop_reason"], final["errors"])
     assert finished == ["publish", "finalize"]
+    # Zero general-purpose shells; the harness pins engine=codex → Codex project agents (M4).
     assert sorted({request.agent_type for request in models.requests}) == [
-        "l3-rank", "l4-card", "macro-brief", "sector-brief"]      # zero general-purpose shells
+        "L3 rank", "L4 card", "scan strategist", "sector brief"]
     assert "scan.l4.ticket" not in operations.calls              # tickets are claimed, not run
     assert operations.calls[:2] == ["scan.frame", "scan.prelude"]
     assert operations.calls[-4:] == ["scan.assemble", "scan.gate4", "scan.usage", "scan.observe"]

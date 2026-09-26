@@ -101,7 +101,8 @@ def test_request_carries_the_dispatch_contract_for_executors(tmp_path, monkeypat
     request = ex.requests[0]
     assert request.run_id == run.run_id and request.engine == "codex"
     assert (request.task_id, request.attempt, request.role) == ("synthetic.inference", 1, "stock.card")
-    assert request.agent_type == "l4-card"
+    assert request.agent_type == "L4 card"            # codex run → Codex project agent (M4)
+    assert request.config_role == "l4_card"
     assert request.output_paths == {
         "synthetic.inference.out": str(run.output_path("synthetic.inference.out")),
     }
@@ -109,6 +110,18 @@ def test_request_carries_the_dispatch_contract_for_executors(tmp_path, monkeypat
     assert request.timeout_seconds > 0
     assert request.host_session_ref == "session-main"
     assert DispatchRequest.from_json(json.loads(json.dumps(request.to_json()))) == request
+
+
+def test_claude_run_requests_name_the_claude_agent(tmp_path, monkeypatch):
+    """M4: the engine of the *run* picks the project agent (Claude stays unchanged)."""
+    from . import _runner_support
+
+    monkeypatch.setattr(_runner_support, "ENGINE", "claude")
+    run = _three_task_run(tmp_path, monkeypatch)
+    ex = _FakeExecutor()
+    final = runner.run_loop(run.run_id, ex, poll_seconds=0.01, max_rounds=200, hooks=run.hooks())
+    assert final["finished"] is True
+    assert ex.requests[0].engine == "claude" and ex.requests[0].agent_type == "l4-card"
 
 
 def test_orphan_claimed_inference_is_not_redispatched(tmp_path, monkeypatch):

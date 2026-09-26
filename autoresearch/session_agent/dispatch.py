@@ -17,6 +17,7 @@ from autoresearch.session_agent.executors.base import (
     FALLBACK_TIMEOUT,
     ROLE_DISPATCH,
     DispatchRequest,
+    agent_type_for,
 )
 from autoresearch.session_agent.roles import get_role
 
@@ -199,7 +200,8 @@ def build_request(
     if role_id not in ROLE_DISPATCH:
         raise KeyError(f"no project agent is mapped for session role {role_id}")
     role = get_role(role_id)
-    agent_type, config_role = ROLE_DISPATCH[role_id]
+    _, config_role = ROLE_DISPATCH[role_id]
+    agent_type = agent_type_for(role_id, handle.engine)     # M4: the host engine's agent
     spec, tier, resolution = resolve_agent_spec(handle, config_role)
     inputs = {
         artifact_id: str(artifacts.artifact_path(handle, artifact_id))

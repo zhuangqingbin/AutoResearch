@@ -109,6 +109,11 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
      `<session>/subagents/agent-<agentId>.jsonl`(找不到就显式传 `--transcript-path`),runner 把它绑定进
      capsule —— 复核任务没有绑定会被判 `EVIDENCE_MISSING`。agent 报错时改传
      `--error "<原文>" [--error-class TIMEOUT|CONNECTION|RATE_LIMIT]`(瞬时类会被重试一次)。
+   - **Codex 宿主**(`AUTORESEARCH_ENGINE=codex` 的 run):请求里的 `agent_type` 已是 Codex 项目 agent 的
+     `.codex/agents/*.toml` **`name` 字段**(如 `L4 card`、`scan strategist`、`ensemble review`;Codex 按它派发,
+     hook 里的 `agent_type` 也是它),用 `spawn_agent` 按该名字、干净上下文派发,不要换成 Claude 的
+     `l4-card`;`--context-ref` 传子 agent id。transcript 自动推导只认 Claude 布局,Codex 必须显式传
+     `--transcript-path <子 agent rollout jsonl>`。
    - **并行**:`wait` 一次只交出一个请求且每个请求只交一次;每领到一个就**后台**派出 Agent(不等它),
      继续 `wait`;哪个 Agent 先返回就立刻 `complete` 哪个 —— **不要攒一批再一起 complete**(整批等最慢的那个,
      快的也会被判超时)。超时从 `wait` 领取(`.taken`)起算,不从签发起算。
