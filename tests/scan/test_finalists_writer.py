@@ -191,3 +191,73 @@ def test_write_finalists_pinned_judged_but_benched_keeps_l3_fields(tmp_path):
     assert "保送票" in r["thesis"]
     assert str(r["conviction"]) in ("52", "52.0")     # L3 的 conviction 保留
     assert r["data_missing"] == "False"
+
+
+# ───────── 守卫⑩ max_cards(2026-09-26 l4.max_cards):非 📌 行(含 composite 席位)总数 ≤ max_cards ─────────
+
+def _judged_n(n: int, conv0: int = 90):
+    return [{"code": f"{600000 + i:06d}", "name": f"N{i}", "sector": "S", "lenses": "a",
+             "conviction": conv0 - i, "fragility": "f", "thesis": "t 1", "mechanism": "m",
+             "risk": "r", "catalyst": "c", "triage_lean": "Hold", "lane": "trend",
+             "pct_60d": 1.0, "sentiment": "中性", "finalist": True} for i in range(n)]
+
+
+def _staging(tmp_path, n_judged: int):
+    base = tmp_path
+    d = base / "2026-09-17"
+    d.mkdir()
+    (d / "_l3_judged.json").write_text(json.dumps(_judged_n(n_judged)), encoding="utf-8")
+    codes = [f"{600000 + i:06d}" for i in range(n_judged)] + ["000001", "000002", "000003"]
+    pd.DataFrame({"code": codes, "gbdt_score": [0.1] * n_judged + [0.9, 0.8, 0.7],
+                  "pct_1d": 0.0}).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    return base, d
+
+
+def _cfg(monkeypatch, cfg):
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config", lambda path=None: cfg)
+
+
+def test_max_cards_trims_non_pinned_rows_seats_first(tmp_path, monkeypatch):
+    base, d = _staging(tmp_path, 12)
+    _cfg(monkeypatch, {"l4": {"max_cards": 5}, "l3": {"composite_seat": {"enabled": True, "m": 3}}})
+    res = write_finalists("2026-09-17", budget=2, root=base)          # l3cap=2(=5−3)
+    fin = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    assert len(fin) == 5 and res["max_cards"] == 5 and res["max_cards_cut_n"] == 0
+    assert set(fin[fin["guard"] == "composite_seat"]["code"]) == {"000001", "000002", "000003"}
+    assert list(fin[fin["guard"] != "composite_seat"]["code"]) == ["600000", "600001"]
+    bench = pd.read_csv(d / "_l3_bench.csv", dtype={"code": str})
+    assert (bench["guard"] == "max_cards").sum() == 0                  # 名额恰好配平,无二次截尾
+
+
+def test_max_cards_cuts_even_when_caller_budget_is_loose(tmp_path, monkeypatch):
+    """调用方给了宽 budget(老 run 回退 l4_budget=30):finalist 名额仍按 max_cards−m 截。"""
+    base, d = _staging(tmp_path, 12)
+    _cfg(monkeypatch, {"l4": {"max_cards": 5}, "l3": {"composite_seat": {"enabled": True, "m": 3}}})
+    write_finalists("2026-09-17", budget=30, root=base)
+    fin = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    assert len(fin) == 5
+
+
+def test_max_cards_below_seats_cuts_seats_too_and_keeps_pinned(tmp_path, monkeypatch):
+    base, d = _staging(tmp_path, 4)
+    pin = tmp_path / "pinned.json"
+    pin.write_text(json.dumps([{"code": "688981", "note": "持仓", "expires": "2099-01-01"}]),
+                   encoding="utf-8")
+    _cfg(monkeypatch, {"l4": {"max_cards": 2}, "l3": {"composite_seat": {"enabled": True, "m": 3}}})
+    res = write_finalists("2026-09-17", budget=1, root=base, pinned_path=pin)
+    fin = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    non_pinned = fin[fin["lane"] != "pinned"]
+    assert len(non_pinned) == 2 and "688981" in set(fin["code"])     # 📌 不占额、不被截
+    assert set(non_pinned["guard"]) == {"composite_seat"}             # 席位优先
+    assert res["max_cards_cut_n"] == 2 and res["max_cards_cut"] == ["600000", "000003"]
+    bench = pd.read_csv(d / "_l3_bench.csv", dtype={"code": str})
+    assert (bench["guard"] == "max_cards").sum() == res["max_cards_cut_n"]
+
+
+def test_default_max_cards_is_parity(tmp_path, monkeypatch):
+    """不写 l4 块 = 13 = 原 10 + 3:12 只 finalist + 3 席 → 10 + 3。"""
+    base, d = _staging(tmp_path, 12)
+    _cfg(monkeypatch, {"l3": {"composite_seat": {"enabled": True, "m": 3}}})
+    res = write_finalists("2026-09-17", budget=10, root=base)
+    fin = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    assert len(fin) == 13 and res["max_cards_cut_n"] == 0
