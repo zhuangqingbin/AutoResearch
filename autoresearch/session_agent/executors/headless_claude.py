@@ -24,6 +24,7 @@ records.  ``_dispatch/`` is control traffic, excluded from scan staging bundles.
 from __future__ import annotations
 
 import contextlib
+import glob
 import json
 import os
 import re
@@ -136,17 +137,32 @@ def resolve_claude_bin(explicit: str | None = None) -> str:
     return str(local) if local.exists() else "claude"
 
 
+def _resolved(binary: str) -> str:
+    """The real file behind the CLI (``~/.local/bin/claude`` is a symlink to a versioned
+    build that auto-updates between nights)."""
+    found = binary if os.sep in binary else (shutil.which(binary) or binary)
+    try:
+        return str(Path(found).resolve())
+    except OSError:
+        return found
+
+
 def project_slug(path: Path | str) -> str:
     """Claude Code's projects-directory name for a working directory."""
     return re.sub(r"[^A-Za-z0-9]", "-", str(Path(path).resolve()))
 
 
 def _parse_result(text: str) -> dict | None:
-    """The ``--output-format json`` result object (tolerates a stream array / log lines)."""
+    """The ``--output-format json`` result object (tolerates a stream array / log lines).
+
+    A ``type == "result"`` object wins over any other trailing JSON line; an untyped dict
+    is only the fallback.
+    """
     body = text.strip()
     if not body:
         return None
     candidates = [body, *reversed(body.splitlines())]
+    fallback = None
     for candidate in candidates:
         try:
             value = json.loads(candidate)
@@ -157,8 +173,62 @@ def _parse_result(text: str) -> dict | None:
                        if isinstance(item, dict) and item.get("type") == "result"]
             value = results[-1] if results else None
         if isinstance(value, dict):
-            return value
-    return None
+            if value.get("type") == "result":
+                return value
+            fallback = fallback or value
+    return fallback
+
+
+#: Transient API failures the CLI reports as text (overloaded / 5xx): one retry, like a
+#: dropped connection, instead of AGENT_ERROR → BLOCKED for the whole night (review M4).
+_TRANSIENT_API = re.compile(
+    r"overloaded|API Error:?\s*5\d\d|internal server error|service unavailable|bad gateway",
+    re.I)
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def stop_group(pgid: int, grace: float) -> bool:
+    """SIGTERM a process group, wait up to ``grace`` s, SIGKILL what is left.
+
+    Returns whether the group existed.  Never raises for a vanished group.
+    """
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return False
+    deadline = time.monotonic() + max(0.0, grace)
+    while time.monotonic() < deadline:
+        if not _group_alive(pgid):
+            return True
+        time.sleep(0.05)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGKILL)
+    return True
+
+
+def owns_group(record: Mapping) -> bool:
+    """Is the process group named by a call record still *that* ``claude -p``?
+
+    Leader alive → the recorded start token must match (a pid twin is never signalled);
+    leader gone but group alive → our leftovers (a pgid is not recycled while its group
+    exists).
+    """
+    from autoresearch.trace import process_probe
+
+    pid = record.get("pid")
+    if type(pid) is not int or pid <= 1:
+        return False
+    if process_probe.pid_exists(pid):
+        recorded = record.get("process_started_at")
+        return recorded is None or process_probe.started_at(pid) == recorded
+    return _group_alive(pid)
 
 
 def _excerpt(text: str | None) -> str:
@@ -240,8 +310,15 @@ class HeadlessClaudeExecutor:
                 error=f"headless executor runs `claude -p` only; run engine is {request.engine}")
         session_id = str(uuid.uuid4())
         argv = self.argv(request, session_id)
-        stem = f"{request.task_id}.a{request.attempt}"
         folder = self._record_dir()
+        priors = self._prior_records(folder, request.task_id)
+        superseded = self._stop_orphans(priors, session_id)
+        moved = self._move_aside_stale_outputs(request, folder, session_id, bool(priors))
+        stem = f"{request.task_id}.a{request.attempt}"
+        if (folder / f"{stem}.json").exists():
+            # A restarted runner re-dispatching this attempt: never overwrite the earlier
+            # record (it names the orphan's pid and its cost) — key this call by session.
+            stem = f"{stem}.{session_id[:8]}"
         stdout_path, stderr_path = folder / f"{stem}.stdout", folder / f"{stem}.stderr"
         env, env_stripped = child_env()
         record = {
@@ -258,10 +335,14 @@ class HeadlessClaudeExecutor:
             "session_id": None,
             "host_session_ref": request.host_session_ref,
             "cwd": str(self.cwd),
+            "claude_bin_resolved": _resolved(self.claude_bin),
             "env_stripped": env_stripped,
+            "superseded_pids": superseded,
+            "outputs_moved_aside": moved,
             "timeout_seconds": request.timeout_seconds,
             "state": "STARTING",
             "pid": None,
+            "process_started_at": None,
             "started_at": _now(),
             "ended_at": None,
             "elapsed_s": None,
@@ -274,6 +355,7 @@ class HeadlessClaudeExecutor:
             "usage": None,
             "transcript_path": None,
             "outputs_missing": [],
+            "leftovers_swept": False,
             "error": None,
         }
         started = time.monotonic()
@@ -288,10 +370,15 @@ class HeadlessClaudeExecutor:
             atomic_write_json(folder / f"{stem}.json", record)
             return DispatchResult(ok=False, error_class="AGENT_ERROR",
                                   error=f"cannot start {self.claude_bin}: {exc}")
-        record.update(state="RUNNING", pid=proc.pid)
+        from autoresearch.trace import process_probe
+
+        record.update(state="RUNNING", pid=proc.pid,
+                      process_started_at=process_probe.started_at(proc.pid))
         atomic_write_json(folder / f"{stem}.json", record)
         try:
             exit_code = proc.wait(timeout=float(request.timeout_seconds))
+            # A clean exit can still leave a grandchild in the group (review M1a).
+            record["leftovers_swept"] = stop_group(proc.pid, self.kill_grace_seconds)
         except subprocess.TimeoutExpired:
             self._kill_group(proc)
             record.update(state="KILLED", timed_out=True, exit_code=proc.returncode,
@@ -342,18 +429,73 @@ class HeadlessClaudeExecutor:
     @staticmethod
     def _failure(exit_code: int, doc: dict | None, stdout: str,
                  stderr: str) -> tuple[str | None, str | None]:
-        """``(error, declared_class)``; the class is left to ``classify_error`` on purpose."""
+        """``(error, declared_class)``; the class is left to ``classify_error`` except for
+        transient API errors (overloaded / 5xx), declared CONNECTION = one retry."""
         if exit_code != 0:
             detail = _excerpt((doc or {}).get("result")) or _excerpt(stderr) or _excerpt(stdout)
-            return f"claude -p 失败 exit={exit_code}: {detail}", None
-        if doc is None:
-            return (f"claude -p 退出 0 但结果不可解析: "
-                    f"{_excerpt(stdout) or _excerpt(stderr) or '(空输出)'}"), None
-        subtype = str(doc.get("subtype") or "")
-        if doc.get("is_error") is True or subtype.startswith("error"):
-            return (f"claude -p is_error(subtype={subtype or '—'}): "
-                    f"{_excerpt(doc.get('result')) or _excerpt(stderr)}"), None
-        return None, None
+            error = f"claude -p 失败 exit={exit_code}: {detail}"
+        elif doc is None:
+            error = (f"claude -p 退出 0 但结果不可解析: "
+                     f"{_excerpt(stdout) or _excerpt(stderr) or '(空输出)'}")
+        elif doc.get("is_error") is True or str(doc.get("subtype") or "").startswith("error"):
+            error = (f"claude -p is_error(subtype={doc.get('subtype') or '—'}): "
+                     f"{_excerpt(doc.get('result')) or _excerpt(stderr)}")
+        else:
+            return None, None
+        return error, ("CONNECTION" if _TRANSIENT_API.search(error) else None)
+
+    # ── before launch: orphans of this task, stale outputs (review M9 / M5) ─────────
+    @staticmethod
+    def _prior_records(folder: Path, task_id: str) -> list[tuple[Path, dict]]:
+        found = []
+        for path in sorted(folder.glob(f"{glob.escape(task_id)}.a*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict) and record.get("task_id") == task_id:
+                found.append((path, record))
+        return found
+
+    def _stop_orphans(self, priors: list[tuple[Path, dict]], session_id: str) -> list[int]:
+        """A still-running earlier session of this task (runner restarted) would keep
+        writing the same outputs while the new attempt runs: stop it first."""
+        stopped = []
+        for path, record in priors:
+            if record.get("state") not in {"STARTING", "RUNNING"} or not owns_group(record):
+                continue
+            stop_group(int(record["pid"]), self.kill_grace_seconds)
+            stopped.append(int(record["pid"]))
+            record.update(state="KILLED", superseded_by=session_id, ended_at=_now(),
+                          error=f"superseded by session {session_id} (runner re-dispatched)")
+            atomic_write_json(path, record)
+        return stopped
+
+    @staticmethod
+    def _move_aside_stale_outputs(request: DispatchRequest, folder: Path, session_id: str,
+                                  has_prior: bool) -> list[dict]:
+        """Before a retry, outputs left by an earlier attempt move to ``stale/``.
+
+        Otherwise an attempt that exits 0 without writing passes the missing-output check
+        on the old file, and ``l4-intel`` (no Read tool) cannot overwrite a file it never
+        read.  ``_dispatch/`` is control traffic: never part of a staging bundle.
+        """
+        if request.attempt <= 1 and not has_prior:
+            return []
+        previous = request.attempt - 1 if request.attempt > 1 else request.attempt
+        moved = []
+        for path in request.output_paths.values():
+            source = Path(path)
+            if not source.is_file():
+                continue
+            stale = folder / "stale"
+            stale.mkdir(exist_ok=True)
+            target = stale / f"{request.task_id}.a{previous}.{source.name}.stale"
+            if target.exists():
+                target = stale / f"{request.task_id}.a{previous}.{session_id[:8]}.{source.name}.stale"
+            shutil.move(str(source), str(target))
+            moved.append({"from": str(source), "to": str(target)})
+        return moved
 
     def _kill_group(self, proc: subprocess.Popen) -> None:
         """SIGTERM the whole process group, then SIGKILL whatever is left."""
@@ -375,5 +517,6 @@ class HeadlessClaudeExecutor:
 
 __all__ = [
     "DEFAULT_MAX_TURNS", "HEADLESS_DIR", "HEADLESS_TIMEOUTS", "HeadlessClaudeExecutor",
-    "MAX_TURNS", "TIER_MAX_TURNS", "child_env", "project_slug", "resolve_claude_bin",
+    "MAX_TURNS", "TIER_MAX_TURNS", "child_env", "owns_group", "project_slug",
+    "resolve_claude_bin", "stop_group",
 ]
