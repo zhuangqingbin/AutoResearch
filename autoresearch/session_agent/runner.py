@@ -110,7 +110,13 @@ def bind_transcript_evidence(run_id: str, request: DispatchRequest, result: Disp
     from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
     snapshot = capture_snapshot(Path(result.transcript_path), engine=request.engine)
-    if snapshot.last_ordinal is None:
+    # Codex rollout rows carry an explicit ``ordinal``; Claude JSONL rows do not, so a
+    # Claude transcript (subagent or headless ``claude -p`` session) is bound whole by
+    # row index — without this fallback no Claude transcript was ever bound.
+    end_ordinal = snapshot.last_ordinal
+    if end_ordinal is None and snapshot.rows:
+        end_ordinal = len(snapshot.rows) - 1
+    if end_ordinal is None:
         return ()
     bound = bind_task_transcript(
         run_id,
@@ -121,7 +127,7 @@ def bind_transcript_evidence(run_id: str, request: DispatchRequest, result: Disp
         parent_context_ref=parent,
         session_ref=result.session_ref or request.host_session_ref,
         start_ordinal=0,
-        end_ordinal=snapshot.last_ordinal,
+        end_ordinal=end_ordinal,
         context_source="SUBAGENT",
         handle_loader=handle_loader,
     )

@@ -280,6 +280,59 @@ def test_resolve_claude_bin_prefers_explicit_then_env(tmp_path, monkeypatch):
     assert hc.resolve_claude_bin(None) == "/opt/x/claude"
 
 
+# ── runner × headless: transcript evidence binding (batch 4 Task 2) ────────────
+
+def test_runner_binds_the_headless_transcript_as_independent_review_evidence(tmp_path, monkeypatch):
+    """The runner's existing evidence hook (not a second binder) turns a headless session
+    into ``host-binding`` evidence: context = the ``claude -p`` session, parent = the run's
+    host ref, so an independent review passes on the process boundary."""
+    from autoresearch.session_agent import host_evidence, runner
+
+    from . import _runner_support as support
+
+    monkeypatch.setattr(support, "ENGINE", "claude")
+    run = support.begin_synthetic_run(
+        tmp_path, monkeypatch,
+        [support.inf("synthetic.review", role="scan.l4.review", subject="600519",
+                     independent=True, inputs=("synthetic.prompt",))],
+        host=support.profile(independent_context=True, session_ref="headless-host"),
+    )
+    out = run.output_path("synthetic.review.out")
+    projects = tmp_path / "projects"
+    body = f"""\
+        mkdir -p "{out.parent}"; printf 'card' > "{out}"
+        mkdir -p "{projects}"
+        printf '{{"type":"user"}}\\n{{"type":"assistant","message":{{"id":"m1"}}}}\\n' > "{projects}/$sid.jsonl"
+        echo "{{\\"is_error\\":false,\\"session_id\\":\\"$sid\\",\\"total_cost_usd\\":0.4,\\"usage\\":{{\\"output_tokens\\":7}},\\"result\\":\\"ok\\"}}"
+        """
+    bound, receipts = [], []
+
+    def fake_bind(run_id, task_id, attempt, source_path, **kwargs):
+        bound.append({"task_id": task_id, "attempt": attempt, "source": str(source_path), **kwargs})
+        return {"evidence_ref": "host-binding:" + "2" * 64}
+
+    monkeypatch.setattr(host_evidence, "bind_task_transcript", fake_bind)
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
+                        lambda handle, task, receipt: receipts.append(receipt) or [receipt])
+    ex = hc.HeadlessClaudeExecutor(run.handle.staging, claude_bin=_fake_claude(tmp_path, body),
+                                   cwd=tmp_path, transcript_root=projects)
+    final = runner.run_loop(run.run_id, ex, poll_seconds=0.01, max_rounds=200, hooks=run.hooks())
+    assert final["finished"] is True, final
+    [binding] = bound
+    session_id = binding["context_ref"]
+    assert binding["source"] == str(projects / f"{session_id}.jsonl")
+    assert binding["session_ref"] == session_id and binding["parent_context_ref"] == "headless-host"
+    assert (binding["context_source"], binding["start_ordinal"], binding["end_ordinal"]) == (
+        "SUBAGENT", 0, 1)
+    [receipt] = receipts
+    assert receipt["context_ref"] == session_id != receipt["parent_context_ref"]
+    assert receipt["evidence_refs"] == ["host-binding:" + "2" * 64]
+    ledger = [json.loads(line) for line in (Path(run.handle.staging) / "_dispatch" / "ledger.jsonl")
+              .read_text(encoding="utf-8").splitlines()]
+    assert ledger[-1]["usage"] == {"output_tokens": 7}
+    assert ledger[-1]["transcript_path"] == binding["source"]
+
+
 # ── registration & bundle isolation of _dispatch/headless/ ─────────────────────
 
 def test_headless_call_records_are_registered_staging_artifacts():
