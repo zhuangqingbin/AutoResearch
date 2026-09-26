@@ -496,6 +496,45 @@ def render_readout(spec: dict, cells: list[dict], manifest: dict) -> str:
     return "\n".join(lines)
 
 
+def _measure(*, rule: dict, test_range: tuple[str, str], since: str | None, scan: Path,
+             lake: Path | None) -> tuple:
+    """账本 → 人口 → 市场基准 → 分格(`run_census` 与 `census_sizes` 共用同一条路径)。"""
+    ledger_path = _outcome.ledger_root(scan) / _outcome.LEDGER_CSV
+    if not ledger_path.is_file():
+        raise FileNotFoundError(f"账本不存在:{ledger_path}")
+    population, counts = select_population(_read_ledger(ledger_path), test_range=test_range,
+                                           since=since, scan_root=scan)
+    pairs = {_compact(r.get("analysis_date")): (_compact(r.get("t1")), _compact(r.get("t10")))
+             for r in population}
+    baselines = market_baselines(pairs, lake_daily=lake)
+    frames, h4, drops = hypothesis_frames(population, baselines, rule)
+    return ledger_path, population, counts, baselines, frames, h4, drops
+
+
+def census_sizes(*, spec_path: Path | str, since: str | None = None,
+                 scan_root: Path | str | None = None, reports_root: Path | str | None = None,
+                 lake_daily: Path | str | None = None) -> dict:
+    """样本量探针:只报每格 `n_days`/`n_rows` 与 H1 是否到样本门,**不报任何收益、不建目录**。
+
+    stop_rule 规定 B4 只采用「冻结窗结束后第一次 H1 n_days ≥ 样本门」的读数,而读数目录是
+    一次性的(已存在即拒)。这个探针让人知道那一刻到没到,又不消耗目录、不泄露读数。
+    """
+    spec = validate_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
+    verify_engine(spec)
+    rule = registered_rule(spec)
+    min_days = parse_maturity_policy(spec["maturity_policy"])
+    rpt = Path(reports_root) if reports_root is not None else ws.reports_root()
+    scan = Path(scan_root) if scan_root is not None else rpt / "scan"
+    _path, _pop, _counts, _base, frames, h4, _drops = _measure(
+        rule=rule, test_range=registered_test_range(spec), since=since, scan=scan,
+        lake=Path(lake_daily) if lake_daily is not None else None)
+    sizes = {h: {"n_days": int(frames[h]["analysis_date"].nunique()), "n_rows": int(len(frames[h]))}
+             for h in DIRECTIONAL}
+    sizes[H4] = {"n_days": int(h4["analysis_date"].nunique()) if len(h4) else 0,
+                 "n_rows": int(len(h4))}
+    return {"sizes": sizes, "min_days": min_days, "h1_ready": sizes[H1]["n_days"] >= min_days}
+
+
 def run_census(*, spec_path: Path | str, since: str | None = None,
                scan_root: Path | str | None = None, reports_root: Path | str | None = None,
                lake_daily: Path | str | None = None,
@@ -517,17 +556,9 @@ def run_census(*, spec_path: Path | str, since: str | None = None,
     rpt = Path(reports_root) if reports_root is not None else ws.reports_root()
     scan = Path(scan_root) if scan_root is not None else rpt / "scan"
     lake = Path(lake_daily) if lake_daily is not None else None
-    ledger_path = _outcome.ledger_root(scan) / _outcome.LEDGER_CSV
-    if not ledger_path.is_file():
-        raise FileNotFoundError(f"账本不存在:{ledger_path}")
+    ledger_path, population, counts, baselines, frames, h4, drops = _measure(
+        rule=rule, test_range=test_range, since=since, scan=scan, lake=lake)
     registered = not since or _compact(since) <= test_range[0]
-
-    population, counts = select_population(_read_ledger(ledger_path), test_range=test_range,
-                                           since=since, scan_root=scan)
-    pairs = {_compact(r.get("analysis_date")): (_compact(r.get("t1")), _compact(r.get("t10")))
-             for r in population}
-    baselines = market_baselines(pairs, lake_daily=lake)
-    frames, h4, drops = hypothesis_frames(population, baselines, rule)
     cells = build_cells(frames, h4, spec=spec, rule=rule, min_days=min_days,
                         registered=registered)
 
@@ -569,8 +600,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--reports-root", type=Path, default=None, help="缺省 = reports_<engine>/")
     ap.add_argument("--scan-root", type=Path, default=None, help="账本与 run 目录根,缺省 = <reports-root>/scan")
     ap.add_argument("--lake", type=Path, default=None, help="lake/daily,缺省 = lake/daily")
+    ap.add_argument("--sizes-only", action="store_true",
+                    help="只报每格 n_days/n_rows 与 H1 是否到样本门;不报收益、不建目录")
     args = ap.parse_args(argv)
     try:
+        if args.sizes_only:
+            sizes = census_sizes(spec_path=args.spec, since=args.since, scan_root=args.scan_root,
+                                 reports_root=args.reports_root, lake_daily=args.lake)
+            print(json.dumps({"ok": True, **sizes}, ensure_ascii=False))
+            return 0
         out = run_census(spec_path=args.spec, since=args.since, scan_root=args.scan_root,
                          reports_root=args.reports_root, lake_daily=args.lake)
     except FileExistsError as exc:

@@ -273,6 +273,20 @@ def test_every_file_the_census_writes_is_a_registered_artifact(tmp_path):
         assert any(fnmatch(rel, pattern) for pattern in registered), rel
 
 
+def test_sizes_probe_reports_sample_sizes_only_and_consumes_nothing(tmp_path, capsys):
+    """stop_rule 说 B4 只用「第一次 H1 n_days ≥ 40」的读数,而读数目录一次性(已存在即拒)。
+    `--sizes-only` 只报每格 n_days/n_rows 与是否到门,不报任何收益、不建目录。"""
+    lake, scan_root, rpt = _world(tmp_path)
+    argv = ["--spec", str(_spec(tmp_path)), "--scan-root", str(scan_root),
+            "--reports-root", str(rpt), "--lake", str(lake), "--sizes-only"]
+    assert sc.main(argv) == 0
+    got = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert got["sizes"]["swing_h1_hold_plus_finalists"] == {"n_days": 45, "n_rows": 68}
+    assert got["h1_ready"] is True and got["min_days"] == 40
+    assert "mean_pp" not in json.dumps(got) and "excess" not in json.dumps(got)
+    assert not (rpt / "research").exists()
+
+
 def test_cli_refuses_an_existing_directory_with_exit_1(tmp_path, capsys):
     lake, scan_root, rpt = _world(tmp_path, n_days=41, n_pending=0)
     argv = ["--spec", str(_spec(tmp_path)), "--scan-root", str(scan_root),
