@@ -5,10 +5,11 @@
 
 ```bash
 uv run --no-sync python -m autoresearch.research.swing_ruler_census \
-    --spec docs/research/2026-09-26-swing-ruler-family.spec.json --sizes-only
+    --spec docs/research/2026-09-26-swing-ruler-family-v2.spec.json --sizes-only
 ```
 
 - 读数只采用一次:探针到门后跑**唯一一次**正式普查(登记的停机规则;目录已存在即拒),不挑时点、不重跑到好看为止。
+- **登记是 v2**(`FAM_SWING_RULER_V2_20260926`,2026-09-26 复审 I1):v1 `FAM_SWING_RULER_20260926` 的判读检验在 40 天 / 块长 10 上没校准(名义 5% 实际假阳 27–29%,整条规则单格约 20%),已被取代、代码拒跑;v2 只换判读检验(HAC t + 同一 n 上 MA(9) 重叠零假设的模拟临界值,区间与 p 值同源),假设 / 人口 / 样本门 / 分支全部照旧。见 `docs/research/2026-09-26-swing-ruler-census.md` §0。
 
 ## 0. 裁决问题与预注册分支
 
@@ -18,20 +19,20 @@ uv run --no-sync python -m autoresearch.research.swing_ruler_census \
 | B 维持 + 观察席只展示 | H1 ≠ POSITIVE 且 H2 = POSITIVE | 不换尺;§12/⑦ 保留为展示 |
 | C 关闭 B 线 | H1 与 H2 同时不成立 | 停机规则:观察席只展示不推;memory 记负结果;不追加第五个假设 |
 
-「不成立」= 判读不是 POSITIVE(UNPROVEN / NEGATIVE / INSUFFICIENT 都算);H1 若为 NEGATIVE 属**反向证伪**,要在 §6 明写。
+「不成立」= 判读不是 POSITIVE(UNPROVEN / NEGATIVE / INSUFFICIENT 都算)。只有 v2 校准检验在正式读数里**判出** H1 = NEGATIVE,才叫反向证伪、要在 §6 明写;基线点估计为负、或未校准的块 bootstrap 区间排除 0,都**不算**(§1 基线列即此例)。UNPROVEN 不等于已证无效:40 天时真效应 0.5σ 的检出率约 16%(登记 `purge_rule`)。
 
 ## 1. 普查读数表(填)
 
-来源:`$RPT/research/swing_ruler/FAM_SWING_RULER_20260926/cells.csv`(唯一一次正式读数)。基线列是 2026-09-26 在回填账本副本上的首跑(`docs/research/2026-09-26-swing-ruler-census.md`),只作对照。
+来源:`$RPT/research/swing_ruler/FAM_SWING_RULER_V2_20260926/cells.csv`(唯一一次正式读数)。基线列是 2026-09-26 在回填账本副本上用 v2 检验跑的基线(`docs/research/2026-09-26-swing-ruler-census.md` §2.1),只作对照。
 
-| 假设 | 预期 | 基线(09-26 副本) | n_days | n_rows | 均值 pp | 块10 CI pp | q_BY | 判读 |
-|---|---|---|---|---|---|---|---|---|
-| H1 非 📌 finalist ∩ ≥Hold | positive | 34d · −2.55 · [−5.93, −1.03] · INSUFFICIENT | | | | | | |
-| H2 lane = lowturn | positive | 6d · −3.11 · INSUFFICIENT | | | | | | |
-| H3 UW / Sell | negative | 28d · −3.72 · [−6.12, −0.50] · INSUFFICIENT | | | | | | |
-| H4 E6 BUY 两尺符号一致 | 描述性 | 7 笔 · 71% | — | | — | — | — | DESCRIPTIVE |
+| 假设 | 预期 | 基线(09-26 副本,v2) | n_days | n_rows | 均值 pp | 校准 CI pp | p | q_BY | 判读 |
+|---|---|---|---|---|---|---|---|---|---|
+| H1 非 📌 finalist ∩ ≥Hold | positive | 34d · −2.55 · [−9.15, +4.05] · p 0.33 · INSUFFICIENT | | | | | | | |
+| H2 lane = lowturn | positive | 6d · −3.11 · INSUFFICIENT | | | | | | | |
+| H3 UW / Sell | negative | 28d · −3.72 · [−13.39, +5.95] · p 0.31 · INSUFFICIENT | | | | | | | |
+| H4 E6 BUY 两尺符号一致 | 描述性 | 7 笔 · 71% | — | | — | — | — | — | DESCRIPTIVE |
 
-块长敏感性(块 1 / 5 / 10 全报,判读只看块 10):从 `readout.md`「块长敏感性」节抄录。
+块 bootstrap 敏感性(块 1 / 5 / 10 全报,**未校准,不判读**):从 `readout.md`「块 bootstrap 敏感性」节抄录。v1 基线曾用块 10 区间 [−5.93, −1.03] 作决策区间 —— 那是 4 块重采样的伪精确,不作任何方向证据。
 
 ## 2. 观察席 40 日命中(填)
 
@@ -44,7 +45,7 @@ uv run --no-sync python -m autoresearch.research.swing_ruler_census \
 3. 每行减同日全湖 D+1 开盘可买票的 fwd_10_oc 中位(`swing_ruler_census.market_baselines` 同一实现),先日内等权再跨日等权;
 4. 未成熟 / 缺值行计数剔除,不当 0。
 
-| 窗口 | 场数 | 席位行 | 成熟行 | 席内超额均值 pp | 命中率(超额 > 0 的日占比) | 块10 CI pp |
+| 窗口 | 场数 | 席位行 | 成熟行 | 席内超额均值 pp | 命中率(超额 > 0 的日占比) | 校准 CI pp(`swing_ruler_decision.overlap_test`) |
 |---|---|---|---|---|---|---|
 | 冻结窗后首 40 个成熟日 | | | | | | |
 
@@ -94,5 +95,5 @@ grep -rn "gap_c1_o2\|c1→o2" .claude                          # 快照:6 处(l4
 - 读数日期 / run: 
 - 分支:☐ A 提案换尺 ☐ B 维持 + 只展示 ☐ C 关闭 B 线
 - 理由(一句):
-- H1 是否反向证伪:☐ 否 ☐ 是(写进 memory 负结果)
+- H1 是否被 v2 校准检验判为 NEGATIVE(反向证伪;点估计为负不算):☐ 否 ☐ 是(写进 memory 负结果)
 - 裁决人 / 日期:
