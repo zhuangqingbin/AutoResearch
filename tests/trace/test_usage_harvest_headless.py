@@ -80,6 +80,19 @@ def test_missing_transcript_is_an_unmeasured_row_not_zero(tmp_path, monkeypatch)
     assert "— (UNMEASURED)" in lost_line and "$0.0000" not in lost_line
 
 
+def test_spawn_failed_records_are_not_sessions_so_not_unmeasured_rows(tmp_path, monkeypatch):
+    """A `claude` that never started ran no session: no row at all (review M11a)."""
+    monkeypatch.setattr(U, "PROJECTS_ROOT", tmp_path / "projects")
+    staging = _staging(tmp_path)
+    (staging / "_dispatch" / "headless" / "scan.l4.review.600000.a1.json").write_text(
+        json.dumps({"schema_version": 1, "task_id": "scan.l4.review.600000", "attempt": 1,
+                    "agent_type": "l4-card", "state": "SPAWN_FAILED",
+                    "requested_session_id": "ffffffff-0000-0000-0000-000000000000"}),
+        encoding="utf-8")
+    rows = U.collect_headless(staging)
+    assert len(rows) == 3 and all(row["status"] != "UNMEASURED" for row in rows)
+
+
 def test_transcript_found_by_session_id_when_the_record_has_no_path(tmp_path, monkeypatch):
     staging = _staging(tmp_path)
     record = staging / "_dispatch" / "headless" / "scan.l3.a1.json"
