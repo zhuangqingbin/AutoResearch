@@ -18,6 +18,8 @@
 
 `exec_anchor._resolve_approved_at` 把 manifest 存储块里带 `+08:00` 的时刻与 `gate4.json` 换算出的 naive 本地时刻直接比较 → `TypeError`。2026-09-17 起的新 manifest 都带时区,而 `outcome.fill` 按目录序逐个 run 处理,于是**每晚的 fill 在 `20260917-0917_2152` 处中断**:生产账本停在分析日 2026-09-15,之后的 run(以及 B1 的 swing 回访)永远进不了账本。修法只改比较口径,返回值不变;测试 `tests/scan/test_exec_anchor.py::test_tz_aware_*`。
 
+现场证据(只读):生产 `_ledger/views/_health.json` 的 `last_success_at` 停在 2026-09-17T12:59:43Z,`last_attempt_at` 一直走到 2026-09-26T05:28:40Z;`recommendations.csv` 最后修改于 09-17 20:59(本地),早于 09-17 那一场 21:52 的发布 —— 夜间任务每晚都在跑、每晚都没成功。
+
 ## 2. 读数(预注册判读)
 
 窗口 `[2026-06-18, 2026-12-31)` · 样本门 n_days ≥ 40 · 决策区间 = 块长 10 的块 bootstrap 95% · H1–H3 一族 BY(arbitrary)q ≤ 0.05 · 行值 = fwd_10_oc − 同日全湖 D+1 开盘可买票 fwd_10_oc 中位(pp)。
