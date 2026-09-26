@@ -187,6 +187,15 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "json", "conditional", required_when="session_v1 runner 跑过"),
     Artifact("dispatch_ledger", "_dispatch/ledger.jsonl", "staging", "l4", "session_agent.runner",
              "json", "conditional", required_when="session_v1 runner 结清过至少一次派发"),
+    # 2026-09-26 批 4(spec §6 C1):headless 执行器每次 `claude -p` 一份调用记录(argv 脱敏、pid、
+    # exit、usage、total_cost_usd、session_id、transcript 路径)+ 原始 stdout/stderr;
+    # usage_harvest 按记录计量 headless 场。与邮箱同在 `_dispatch/` 下 → 同样不进 staging bundle。
+    Artifact("dispatch_headless_calls", "_dispatch/headless/*.json", "staging", "l4",
+             "session_agent.headless_claude", "json", "conditional",
+             required_when="session_v1 runner 以 headless 执行器派发推理任务"),
+    Artifact("dispatch_headless_streams", "_dispatch/headless/*.std*", "staging", "l4",
+             "session_agent.headless_claude", "txt", "conditional",
+             required_when="session_v1 runner 以 headless 执行器派发推理任务"),
     # 2026-09-26 §4 A3:intel 死票门判决(旋钮 l4_intel.skip_when_dead 关 = 不落文件)
     Artifact("intel_gate", "_intel_gate.json", "staging", "l4", "intel_gate", "json", "gated",
              required_when="l4_intel.skip_when_dead=true"),
