@@ -196,6 +196,15 @@ launchd 21:20 ──► scripts/scan_run.sh ──► python -m autoresearch.sca
 - 离线验收(A3-1):对 8 个真跑日 81 张卡回放谓词 —— 命中率、命中卡的最终评级分布、命中卡里 intel 事件段是否曾提供 ≥Hold 的催化。命中卡中出现过 ≥OW 或 T0 负面硬信号 → 谓词收窄或放弃。
 - 上线(A3-2):冻结窗后;首场真跑对照 P3 早停率与 intel 数。
 
+### A6 L4 卡数旋钮(2026-09-26 用户追加需求)
+
+用户原话:「`scan_config.jsonc` 里需要可以配置最终进入 L4 card 的个数的配置,并确保真实能够按这个生效。」
+
+- 现状(2026-09-26 实测):决定卡数的是四处互不知道的数字 —— `menu.l4_budget`(五面旗 30/22/15,只降不升)、`scan-market.js:456` 写死的 `Math.min(10, l4Budget)`、`l3.finalist_max`(10)、`l3.composite_seat.m`(3,「不占名额」)。实际非 📌 卡数 = min(10, 旗后预算, finalist_max) + 席位 3;把 `finalist_max` 改成 15 **不会**生效(JS 的 10 先截),改成 5 会。
+- 设计:单键 `l4.max_cards`(非 📌 卡上限,含席位;📌 持仓恒出卡不占额)+ `l4.budget_flags`(true = 再与五面旗取小,默认;false = 忽略旗)。唯一算法 `scan/l4/card_count.effective_caps` 由 GATE1 算一次并回显 `l3cap`/`max_cards`,Workflow 与 session_agent 都只读;`write_finalists` 加守卫⑩按 `max_cards` 截尾(席位优先、conviction 次之,被截进 bench `guard="max_cards"`);`self_review` 加发布前对账探针(任务簿非 📌 票数 > max_cards → warn);`l3.finalist_max` 退役(写了即报错指路)。默认 13 = 10 + 3,逐字 parity,冻结窗内可合入。
+- 「真实生效」的证据链:单测(算法/守卫/门/探针)→ 09-17 冻结 staging 离线回放(`max_cards=5` 得 5;`=13` 与源 finalists.csv byte 相同)→ 下一场真跑三处数字一致(GATE1 播报 / 任务簿 `stats` / brief ②)。
+- 计划:`docs/superpowers/plans/2026-09-26-l4-card-count-knob.md`(批 1.5,独立于驱动器,可先做)。
+
 ### A4 主会话纪律(交互模式)
 
 - 扫描会话只做:`capsule begin` → 起 driver(后台)→ Monitor 邮箱与 `l4_watch` → 派 Agent → 转播 CP → 读 brief。不 Read STAGES.md、不 Read scan_config.jsonc(driver 自己读)。
@@ -275,15 +284,17 @@ launchd 21:20 ──► scripts/scan_run.sh ──► python -m autoresearch.sca
 
 ## 7. 任务总表与批次
 
-| 批 | 任务 | 依赖 | 冻结窗 | 估时 |
-|---|---|---|---|---|
-| 0 | A1-0 + C0 探针;B0 裁定进 memory 与 `common/ruler.py` 注释;A5 冻结声明进 `docs/PANORAMA.md` 头 | — | 可做 | 1 天 |
-| 1 | A2-1…A2-8 文档瘦身 | — | 可做(零行为) | 1–2 天 |
-| 2 | A1-1…A1-4 驱动器(host 模式)+ A1-6 + A1-7 | 批 0 | 可做,每场 replay byte 对账 | 4–6 天 |
-| 3 | A1-5 交互模式接线 + 一场真跑;A1-8 Workflow 降级;A1-9 Codex 一场 | 批 2 | 可做 | 2 天 |
-| 4 | C1 headless 执行器 + C2 调度 + C3 送达;5 日无人值守验收 | 批 3 | 可做 | 3–4 天 + 5 交易日 |
-| 5 | B1 + B2 普查 + B3 影子席 | 批 0(与批 1–4 并行) | 可做(离线/影子) | 2–3 天 |
-| 6 | A3-1 离线验收 → A3-2 上线;B4 裁决 | 冻结窗结束 + B3 ≥40 日 | 窗后 | 各 1 天 + 裁决 |
+| 批 | 任务 | 依赖 | 冻结窗 | 估时 | 计划文件 / 状态 |
+|---|---|---|---|---|---|
+| 0 | A1-0 + C0 探针;B0 裁定进 memory 与 `common/ruler.py` 注释;A5 冻结声明进 `docs/PANORAMA.md` 头 | — | 可做 | 1 天 | `plans/2026-09-26-daily-engine-batch0-1-docs-and-ruler.md` —— **已完成**(分支 `daily-engine-batch0-1`;探针 ①–④ PASS,⑤ 留批 2) |
+| 1 | A2-1…A2-8 文档瘦身 | — | 可做(零行为) | 1–2 天 | 同上 —— **已完成**(SKILL 36→16KB、STAGES 63→23KB、l4-card 23→19KB、l3-rank 14→8KB;字节预算守卫) |
+| 1.5 | **A6 L4 卡数旋钮**(用户 09-26 追加) | — | 可做(默认 parity) | 1 天 + 一场真跑验证 | `plans/2026-09-26-l4-card-count-knob.md` —— 待开发 |
+| 2–3 | A1-1…A1-9:session_v1 runner + mailbox 执行器(host)+ 审计补洞 + 一场真跑 + Workflow 降级 + Codex 一场 | 批 0 | 可做,每场 replay byte 对账 | 6–8 天 | `plans/2026-09-26-daily-engine-batch2-3-driver.md` —— 待开发 |
+| 4 | C1 headless 执行器 + C2 调度 + C3 送达;5 日无人值守验收 | 批 3 | 可做 | 3–4 天 + 5 交易日 | `plans/2026-09-26-daily-engine-batch4-headless-scheduler.md` —— 待开发 |
+| 5 | B1 + B2 普查 + B3 影子席 | 批 0(与批 1–4 并行) | 可做(离线/影子) | 2–3 天 | `plans/2026-09-26-daily-engine-batch5-swing-shadow.md` —— 待开发 |
+| 6 | A3 intel 死票门(离线验收 → 窗后上线);B4 裁决包 | 冻结窗结束 + B3 ≥40 日 | 窗后 | 各 1 天 + 裁决 | `plans/2026-09-26-daily-engine-batch6-intel-gate.md` —— 待开发 |
+
+**§3.3 内核决策更新(2026-09-26 晚,写计划时核过 `session_agent` 真实 API 面)**:`service.py` 已有 `begin/next/claim/execute/submit/finish/resume/fail/retry_l4`,`executor.py` 用 `trace.exec_capture` 进程内跑确定性操作,`operations.py` 登记了扫描全链 60+ 个操作,`legacy_scan.py` 适配 L4 任务簿——**缺的只是自动转圈的 runner 与兑现推理任务的执行器**。因此批 2 直接以 session_agent 为内核(不再「两场时间盒后再定」),薄驱动器只在批 2 Task 6 真跑两场不通时才写设计。
 
 每批结束都要:两引擎全量测试(`uv run --no-sync pytest -q`)、变异探针(把新守卫删掉测试要红)、真跑读数进 memory。
 
@@ -293,9 +304,9 @@ launchd 21:20 ──► scripts/scan_run.sh ──► python -m autoresearch.sca
 
 | # | 风险 | 处置 |
 |---|---|---|
-| R1 | `claude -p --agent` 不装载项目 agent 或 hooks | 用 `--agents <json>` 内联 agent 定义 + `--settings` 指向项目 settings;A1-0 决定 |
-| R2 | 交互会话内不能嵌套起 `claude -p` | host 执行器本就不依赖嵌套;headless 只在 launchd 下跑 |
-| R3 | headless 会话不计入 usage_harvest 现有目录约定 | A1-7 显式 session 列表;计量缺席写 `UNMEASURED` 不写 $0(现规则) |
+| R1 | `claude -p --agent` 不装载项目 agent 或 hooks | **已解除**(2026-09-26 探针②:frontmatter model 生效、输入边界 hook 在 headless 下拦截) |
+| R2 | 交互会话内不能嵌套起 `claude -p` | **已解除**(探针①:嵌套无限制) |
+| R3 | headless 会话不计入 usage_harvest 现有目录约定 | **已解除方向**(探针③:结果 JSON 自带 usage/成本,transcript 按 `--session-id` 可定位);批 4 T2 接线,缺席写 `UNMEASURED` 不写 $0 |
 | R4 | session_agent 内核过重、真跑返工 | §3.3 时间盒:两场;超时降级薄驱动器 |
 | R5 | 订阅额度(5 小时窗)被夜跑吃掉,白天没额度 | headless 每场 ≤$15 等价;调度时段固定 21:20;`--max-turns` 兜底;超预算旗只告警 |
 | R6 | B 线被读成「换主尺已定」 | B0 明写:不替换;B4 单独裁决 |
