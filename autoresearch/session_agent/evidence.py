@@ -124,12 +124,22 @@ def _owner_attempt(task: dict) -> int | None:
     return int(match.group(1)) if match else None
 
 
+#: Legs a deterministic attempt cannot have when an operator failed it as a stale orphan
+#: (``fail --error-class STALE_TASK``) and its command never completed.
+_STALE_EXEMPT = frozenset({"command_capture", "source_receipts"})
+
+
 def _requirements(task: dict, state: str) -> list[str]:
     if state == "NOT_REACHED":
         return []
     required = ["claim"]
     if task["input_artifact_ids"]:
         required.append("input_snapshot")
+    if task["owner"] == "L4_TASKBOOK":
+        # N3 ruling: a ticket is a coordination record — claimed, never executed or
+        # accepted.  Its frozen claim (handoff + input snapshots) is its evidence; the
+        # outputs, commands and transcripts are its child tasks' own legs.
+        return required
     if state == "SUCCEEDED":
         required.extend(["outputs", "accepted_receipt"])
     if task["kind"] == "DETERMINISTIC":
@@ -143,6 +153,26 @@ def _requirements(task: dict, state: str) -> list[str]:
         if "WEB" in get_role(task["role"])["tool_policy"].split("_"):
             required.extend(["tool_results", "source_receipts"])
     return required
+
+
+def _command_invocation_id(task: dict, attempt: int) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", task["task_id"])
+    return f"session-{safe}-a{attempt}"
+
+
+def _stale_orphan(handle, task: dict, attempt: int, state: str) -> bool:
+    """A deterministic attempt an operator failed as ``STALE_TASK`` whose command never
+    completed: its frozen failure is the recorded reason no capture can exist."""
+    if task["kind"] != "DETERMINISTIC" or state == "SUCCEEDED":
+        return False
+    path = _attempt_record_path(handle, task["task_id"], attempt, "failure")
+    if not path.is_file() or (_read_json(path).get("error") or {}).get("code") != "STALE_TASK":
+        return False
+    index = Path(handle.capsule) / "events/invocations.json"
+    invocation = (_read_json(index) if index.is_file() else {}).get(
+        _command_invocation_id(task, attempt)
+    )
+    return not (isinstance(invocation, dict) and invocation.get("status") == "COMPLETED")
 
 
 def _replacement(tasks: list[dict], task: dict, attempt: int) -> dict | None:
@@ -196,7 +226,13 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
                     item for item in requirements
                     if item not in _ABANDONED_EXEMPT or (late and item == "transcript")
                 ]
-            keys.append({
+            evidence_kind = None
+            if task["owner"] == "L4_TASKBOOK":
+                evidence_kind = "OWNER_TICKET"
+            elif _stale_orphan(handle, task, attempt, state):
+                evidence_kind = "STALE_ORPHAN"
+                requirements = [item for item in requirements if item not in _STALE_EXEMPT]
+            key = {
                 "task_id": task["task_id"],
                 "attempt": attempt,
                 "owner": task["owner"],
@@ -204,7 +240,10 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
                 "state": state,
                 "superseded_by": superseded_by,
                 "requirements": requirements,
-            })
+            }
+            if evidence_kind is not None:
+                key["evidence_kind"] = evidence_kind
+            keys.append(key)
     value = {
         "schema_version": 1,
         "engine": handle.engine,
@@ -402,8 +441,7 @@ def _json_ref(
 
 
 def _command_ref(handle, task: dict, attempt: int, root: Path) -> tuple[dict | None, list[str]]:
-    safe = re.sub(r"[^A-Za-z0-9_-]", "-", task["task_id"])
-    invocation_id = f"session-{safe}-a{attempt}"
+    invocation_id = _command_invocation_id(task, attempt)
     index_path = Path(handle.capsule) / "events/invocations.json"
     try:
         invocation = _read_json(index_path)[invocation_id]
@@ -509,9 +547,18 @@ def _task_evidence(handle, task: dict, key: dict, entry: dict | None) -> dict:
     abandonment = read_abandonment(handle, task["task_id"], key["attempt"])
     if abandonment is not None:                  # the recorded reason travels with it
         atomic_write_json(root / "abandoned.json", abandonment)
+    if key.get("evidence_kind") == "STALE_ORPHAN":
+        atomic_write_json(
+            root / "failure.json",
+            _read_json(_attempt_record_path(handle, task["task_id"], key["attempt"], "failure")),
+        )
 
     command_ref = None
-    if task["kind"] == "DETERMINISTIC" and key["state"] != "NOT_REACHED":
+    if (
+        task["kind"] == "DETERMINISTIC"
+        and task["owner"] != "L4_TASKBOOK"           # a ticket never runs a command
+        and key["state"] != "NOT_REACHED"
+    ):
         command_ref, command_reasons = _command_ref(handle, task, key["attempt"], root)
         reasons.extend(command_reasons)
 

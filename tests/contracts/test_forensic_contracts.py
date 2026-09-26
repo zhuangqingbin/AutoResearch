@@ -187,6 +187,34 @@ def test_evidence_plan_hash_excludes_only_itself():
         validate_evidence_plan(value)
 
 
+def test_evidence_kind_is_an_optional_closed_label_with_owner_rules():
+    """N3: a key may say why its legs differ (OWNER_TICKET / STALE_ORPHAN); plans frozen
+    before the field existed stay valid, and an owner-ticket label cannot be pinned on a
+    SESSION task or used to drop the frozen claim."""
+    assert "evidence_kind" not in _evidence_plan()["task_keys"][0]
+    validate_evidence_plan(_evidence_plan())
+
+    def plan_with(**changes):
+        value = _evidence_plan()
+        value["task_keys"][0].update(changes)
+        value["evidence_plan_hash"] = evidence_plan_hash(value)
+        return value
+
+    ticket = {"task_id": "l4.600519.a1", "owner": "L4_TASKBOOK", "subject": "600519",
+              "evidence_kind": "OWNER_TICKET", "requirements": ["claim", "input_snapshot"]}
+    validate_evidence_plan(plan_with(**ticket))
+    validate_evidence_plan(plan_with(evidence_kind="STALE_ORPHAN",
+                                     requirements=["claim", "input_snapshot"]))
+    for bad, match in (
+        ({**ticket, "evidence_kind": "WHATEVER"}, "evidence_kind"),
+        ({**ticket, "owner": "SESSION"}, "OWNER_TICKET"),
+        ({**ticket, "requirements": ["input_snapshot"]}, "OWNER_TICKET"),
+        ({**ticket, "requirements": ["claim", "command_capture"]}, "OWNER_TICKET"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            validate_evidence_plan(plan_with(**bad))
+
+
 def test_duplicate_task_attempt_is_rejected():
     value = _evidence_plan()
     value["task_keys"].append(deepcopy(value["task_keys"][0]))

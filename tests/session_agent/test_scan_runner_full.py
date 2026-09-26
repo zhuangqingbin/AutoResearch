@@ -354,6 +354,24 @@ def _baseline_missing(tmp_path, monkeypatch, *, branchy=False, host=None, user_c
     return missing
 
 
+def test_l4_owner_ticket_is_evidenced_by_its_frozen_claim_only(tmp_path, monkeypatch):
+    """N3 ruling: ``l4.<code>.a<n>`` is a coordination record — claimed, never executed
+    or accepted — so its key needs the frozen claim (handoff + input snapshots) and
+    relies on the child tasks' own evidence; the plan says why (OWNER_TICKET)."""
+    missing = _baseline_missing(tmp_path, monkeypatch)
+    handle_capsule = tmp_path / "baseline/context_codex/scan_runs" / RUN_ID / "capsule"
+    plan = json.loads((handle_capsule / "evidence/evidence_plan.json").read_text("utf-8"))
+    tickets = [key for key in plan["task_keys"] if key["owner"] == "L4_TASKBOOK"]
+    assert [(key["task_id"], key["evidence_kind"], key["requirements"]) for key in tickets] == [
+        (f"l4.{CODE}.a1", "OWNER_TICKET", ["claim", "input_snapshot"])]
+    assert not [item for item in missing if f"l4.{CODE}.a1:" in item
+                or f"session-l4-{CODE}-a1-a1" in item], missing
+    evidence = json.loads((handle_capsule / f"evidence/tasks/l4.{CODE}.a1/a1/evidence.json")
+                          .read_text("utf-8"))
+    assert evidence["status"] == "PRESENT" and evidence["claim_ref"] is not None
+    assert evidence["command_ref"] is None and evidence["reasons"] == []
+
+
 def _abandonment(handle, task_id: str, attempt: int) -> dict:
     path = (Path(handle.capsule) / "evidence/attempt_records" / task_id / f"a{attempt}"
             / "abandoned.json")

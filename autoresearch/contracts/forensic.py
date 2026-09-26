@@ -27,6 +27,15 @@ TASK_KEY_FIELDS = frozenset({
     "task_id", "attempt", "owner", "subject", "state", "superseded_by",
     "requirements",
 })
+#: Optional on a task key, present only when its legs differ from the kind/state rule
+#: (plans frozen before the label existed stay valid):
+#: - ``OWNER_TICKET``: an L4 taskbook ticket is a coordination record — claimed, never
+#:   executed or accepted — evidenced by its frozen claim; its children carry the rest.
+#: - ``STALE_ORPHAN``: an operator ``fail --error-class STALE_TASK`` on a deterministic
+#:   attempt whose command never completed; the frozen failure records why.
+TASK_KEY_OPTIONAL_FIELDS = frozenset({"evidence_kind"})
+EVIDENCE_KINDS = frozenset({"OWNER_TICKET", "STALE_ORPHAN"})
+_OWNER_TICKET_LEGS = frozenset({"claim", "input_snapshot"})
 TASK_EVIDENCE_FIELDS = frozenset({
     "schema_version", "engine", "run_id", "task_id", "attempt", "owner", "subject",
     "input_refs", "output_refs", "claim_ref", "receipt_ref", "command_ref",
@@ -237,7 +246,8 @@ def validate_execution_origin(value: dict) -> dict:
 
 
 def _validate_task_key(value: dict) -> dict:
-    require_exact_fields(value, TASK_KEY_FIELDS)
+    optional = TASK_KEY_OPTIONAL_FIELDS & set(value) if isinstance(value, dict) else set()
+    require_exact_fields(value, TASK_KEY_FIELDS | optional)
     _required_string(value["task_id"], "task_id", pattern=_ID_RE)
     _positive_int(value["attempt"], "attempt")
     if value["owner"] not in TASK_OWNERS:
@@ -256,6 +266,15 @@ def _validate_task_key(value: dict) -> dict:
     unknown = set(requirements) - EVIDENCE_REQUIREMENTS
     if unknown:
         raise ValueError(f"unknown requirements: {sorted(unknown)}")
+    kind = value.get("evidence_kind")
+    if "evidence_kind" in value and kind not in EVIDENCE_KINDS:
+        raise ValueError("invalid evidence_kind")
+    if kind == "OWNER_TICKET" and (
+        value["owner"] != "L4_TASKBOOK"
+        or not set(requirements) <= _OWNER_TICKET_LEGS
+        or (value["state"] != "NOT_REACHED" and "claim" not in requirements)
+    ):
+        raise ValueError("OWNER_TICKET key must be an L4_TASKBOOK claim-only key")
     return value
 
 
@@ -495,11 +514,13 @@ __all__ = [
     "ACCEPTANCE_EVIDENCE_KINDS",
     "ACCEPTANCE_RECORD_FIELDS",
     "ARTIFACT_REF_FIELDS",
+    "EVIDENCE_KINDS",
     "EVIDENCE_PLAN_FIELDS",
     "EXECUTION_ORIGIN_FIELDS",
     "HOST_EVIDENCE_BINDING_FIELDS",
     "OPERATION_EVIDENCE_FIELDS",
     "TASK_EVIDENCE_FIELDS",
+    "TASK_KEY_OPTIONAL_FIELDS",
     "VERIFICATION_RESULT_FIELDS",
     "evidence_plan_hash",
     "host_evidence_binding_hash",
