@@ -973,6 +973,18 @@ def _expansion_snapshot(handle, artifact_id: str) -> dict:
     return {"artifact_id": value["artifact_id"], "sha256": value["sha256"]}
 
 
+def inapplicable_templates(handle) -> frozenset[str]:
+    """Sentinel modes skip L3 entirely, so the L3-repair template (expanded only after
+    ``scan.l3.lint``) can never expand; everything else still must."""
+    try:
+        mode = _load_artifact_json(handle, "scan.run_mode")
+    except (KeyError, ValueError, RuntimeError, OSError):
+        return frozenset()
+    if mode.get("mode") in {run_mode.SENTINEL_EMPTY, run_mode.SENTINEL_PINNED}:
+        return frozenset({"scan.l3.repair"})
+    return frozenset()
+
+
 def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list[dict]:
     del request
     if task["task_id"] == "scan.gate1":
@@ -1344,6 +1356,7 @@ __all__ = [
     "publish_scan",
     "prepare_scan_bundle",
     "expansions_after_task",
+    "inapplicable_templates",
     "register_scan_artifacts",
     "register_scan_expansion_artifacts",
     "sector_artifact_ids",

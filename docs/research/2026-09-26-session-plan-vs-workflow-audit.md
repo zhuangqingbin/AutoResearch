@@ -19,7 +19,7 @@
 | S3 | prelude(362,detached)∥ market_view;L2 缺 → `--skip consensus` 重跑一次(383–391) | `scan.prelude`(缺 summary/L2 即失败)∥ `scan.market_view`;runner 重试一次(不带 `--skip consensus`) | 重试参数不同(多跑一次 consensus 取数) | 降级可接受 |
 | S4 | market_view(macro-brief)失败/缺席 → L3 无地形段、L5 走确定性脉搏回退(B 级) | `scan.market_view` 推理任务;GATE1 依赖它;输出过 `macro.brief.v1` 校验 | **校验器与 agent 模板不一致:12/13 场真实 market_view 被拒 → 整场在 GATE1 前 BLOCKED**(§3);另:agent 失败 → BLOCKED(legacy 降级) | **阻断**(校验器)/ 非阻断·高风险(agent 失败) |
 | S5 | GATE1 四态 + l4_budget 守卫(396–422) | `scan.gate1` → `run_mode.json` → `sector_expansion` 分模式展开;`scan_gate1` 对非法 l4_budget 失败 | 一致 | 无缺口 |
-| S6 | SENTINEL_EMPTY → 跳 L3/L4,主会话收尾(423–427) | `scan.sector.skip` → `scan.gate2.skip` → `scan.l4.skip` → `scan.reviews.skip` → `scan.review3.skip` → L5 | 一致 | 无缺口 |
+| S6 | SENTINEL_EMPTY → 跳 L3/L4,主会话收尾(423–427) | `scan.sector.skip` → `scan.gate2.skip` → `scan.l4.skip` → `scan.reviews.skip` → `scan.review3.skip` → L5 | 链一致,但 `scan.l3.repair` 模板不可达 → 永远到不了 DONE(见 §5 阻断 3,已修) | **阻断**(已修) |
 | S7 | SENTINEL_PINNED → gate2 skip + **只跑 prompts**(无四生产者、无任务簿)(428–440) | `scan.gate2.skip` 写持仓 finalists → `scan.l4.prepare`(**跑四生产者** + prompts + 任务簿) | 持仓哨兵档的 L4 任务包多了 pledge/seats/consensus/fund_hold 素材 → prompt 与 legacy 不逐字相同 | 降级可接受(Task 6 replay 时记账) |
 | S8 | l3cap 守卫(451–456;控制器分支改为 GATE1 回显 `l3cap`/`max_cards`) | `dispatch.l3_bounds`:读冻结 `gate1.json` 的 `l3cap`,缺则 `min(10, l4_budget)`;`l3lo=min(7,l3cap)` | 一致(控制器口径) | 无缺口 |
 | S9 | sector reuse + pack + 待写清单(463–470);brief 派发(478–491) | `scan.sector.prepare`(`select_briefing_sectors(k=sector.max_briefs)` + `find_reusable/apply_reuse` + pack 冻结进 `session_inputs/sectors/`)→ 每个未复用行业一个 `sector.brief` 推理任务 | 选行业口径:legacy = CTX/sector/<date> 下「无 brief 的 pack」;session = `select_briefing_sectors`;brief 读冻结 pack 路径(提示词措辞相同,路径不同) | 降级可接受 |
@@ -85,6 +85,11 @@ artifact 登记/任务簿 ticket/生产输出校验器,只把确定性操作(假
 不能做 hash 冻结的 artifact)→ `service.execute("scan.l4.prepare")` 在绑定输出时 `KeyError` → **所有带 L4 票的
 模式(FULL/FORCED_FULL/SENTINEL_PINNED)真跑必在 L4-prep 停住**。Task 5 已修:从冻结图的 artifact 清单里拿掉
 任务簿(ticket 的认领证据本来就是冻结的 preflight 回执),合成全链先红后绿;变异(放回输出清单)即红。
+
+**阻断 3**:哨兵模式(SENTINEL_EMPTY / SENTINEL_PINNED)的图里没有 `scan.l3.lint`,`scan.l3.repair` 模板永远不会展开,
+而 `service._state` 要求**全部**模板展开才给 `DONE` → 哨兵日的 session_v1 run 永远停在 `WAITING/EXPANSION_PENDING`。
+Task 5 已修:扫描工作流按冻结的 `run_mode` 声明「本模式不可达的模板」(`workflows.inapplicable_templates`),
+`_state` 不再等它们;合成 SENTINEL_EMPTY / SENTINEL_PINNED 全链先红后绿,变异(去掉声明)即红。
 
 **阻断 1**:S4 校验器 —— `validation._macro_brief` 要求 6 节全部加粗,而 macro-brief agent 模板第 6 节不加粗。
 可合成复现、改动局部(只动 session_v1 校验器,不碰 legacy 路径与评级)→ **Task 5 已修**:

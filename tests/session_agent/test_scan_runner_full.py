@@ -37,9 +37,10 @@ def _write(path: Path, payload) -> None:
 class _FakeScanOperations:
     """Stand-in for the ``domain_ops`` subprocesses: writes each task's declared outputs."""
 
-    def __init__(self, handle, *, branchy: bool = False):
+    def __init__(self, handle, *, branchy: bool = False, mode: str = "FULL"):
         self.handle = handle
         self.branchy = branchy      # intel on + L3 repair + pinned SELL double review
+        self.mode = mode
         self.calls: list[str] = []
 
     def _content(self, operation: str, artifact_id: str):
@@ -50,7 +51,7 @@ class _FakeScanOperations:
         trigger = "sell_review" if branchy else None
         special = {
             "scan.gate1.result": {"ok": True, "l4_budget": 13, "l3cap": 10, "max_cards": 13},
-            "scan.run_mode": {"mode": "FULL", "pinned_codes": []},
+            "scan.run_mode": {"mode": self.mode, "pinned_codes": []},
             "scan.sector.list": {"schema_version": 1, "mode": "FULL", "sectors": [
                 {"industry": SECTOR, "key": _sector_key(SECTOR), "reused": False}]},
             "scan.l3.validation": {"ok": not branchy},
@@ -72,6 +73,9 @@ class _FakeScanOperations:
                  "same_tier": True if branchy else None, "review3_required": False}]},
             "scan.l3.effective.judged": judged.read_text("utf-8") if judged.is_file() else "[]",
         }
+        if self.mode == "SENTINEL_EMPTY":
+            special.update({"scan.review.plan": {"schema_version": 1, "reviews": []},
+                            "scan.review.decision": {"schema_version": 1, "decisions": []}})
         if artifact_id in special:
             return special[artifact_id]
         return {"schema_version": 1, "artifact": artifact_id, "operation": operation}
@@ -264,3 +268,36 @@ def test_a_failed_expansion_sync_stops_the_run_instead_of_crashing_the_runner(
     assert final["finished"] is False
     assert final["stop_reason"] == "STALLED"
     assert any("simulated crash" in str(error.get("message")) for error in final["errors"])
+
+
+def test_synthetic_sentinel_empty_scan_takes_only_skip_operations(tmp_path, monkeypatch):
+    handle = _scan_run(tmp_path, monkeypatch)
+    operations = _FakeScanOperations(handle, mode="SENTINEL_EMPTY")
+    models = _FakeScanModels()
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=operations,
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=2000, hooks=hooks)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    assert [request.role for request in models.requests] == ["macro.brief"]
+    assert operations.calls == [
+        "scan.frame", "scan.prelude", "scan.gate1", "scan.sector.skip", "scan.gate2.skip",
+        "scan.l4.skip", "scan.review.skip", "scan.review3.skip", "scan.assemble",
+        "scan.gate4", "scan.usage", "scan.observe"]
+
+
+def test_synthetic_sentinel_pinned_scan_reviews_holdings_and_finishes(tmp_path, monkeypatch):
+    handle = _scan_run(tmp_path, monkeypatch)
+    operations = _FakeScanOperations(handle, mode="SENTINEL_PINNED")
+    models = _FakeScanModels()
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=operations,
+        event_recorder=lambda *args, **kwargs: None, validator=None,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=2000, hooks=hooks)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    assert [request.role for request in models.requests] == ["macro.brief", "scan.l4.card"]
+    assert "scan.l3.prepare" not in operations.calls and "scan.gate2.skip" in operations.calls
