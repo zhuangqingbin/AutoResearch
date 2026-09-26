@@ -49,7 +49,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | growth | 112/40 | 成长加速 |
 | healthy | 112/40 | 质量上涨(0<pct60<40 且主力净流入>0 且 cmf>0) |
 
-- **配额覆盖**:`funnel.channel_quotas` 六键全写(value 312 / momentum 188 / heat 112 / healthy 112 / growth 112 / main_fund 150);兜底读取在 `universe.run` 本体(`_funnel_overlay`),显式参数/CLI flag 恒优先,任一键缺省回落注册表默认而非维持覆盖值。
+- **配额覆盖**:`funnel.channel_quotas` 8 键全写(value 312 / momentum 188 / heat 112 / healthy 112 / growth 112 / main_fund 150 / reversal_confirm 150 / lowturn 120);兜底读取在 `universe.run` 本体(`_funnel_overlay`),显式参数/CLI flag 恒优先,任一键缺省回落注册表默认而非维持覆盖值。
 - **rz 因子组**:融资买入强度 `rz_buy_intensity` 独立第 10 因子组(情绪接力资金代理,非基本面确认)。
 - **权重档**(`funnel.weight_profile`,唯一入口 `common.scoring.resolve_weights`):`"calibrated"` 读 `weights.json` 的 IC 校准权重并按当日 regime 取块(`common/regime.py`:breadth≥0.55 且 pct_60d>0 → trend;breadth≤0.30 且 pct_60d<0 → risk_off;其余 range;缺块回退 flat);**生产现档 `"preference"`**:固定符号「上涨趋势 + 有支撑 + 主力真在 + 散户不拥挤」,量级是产品裁定不是拟合,`regime_aware` 无操作(meta 记 `regime_applied=None`),`weights.json` 自此仅供研究。`weights_used.json`/`meta.json.weights_source` 记 profile + `config_sha256`。
 

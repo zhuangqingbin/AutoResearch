@@ -84,7 +84,7 @@
 | A | 研究 agent 数 | 29 | 不变(±复核) | 同上 |
 | A | 墙钟 | 53–74 min | ≤ 35 min | `render --view timing` |
 | A | brief.md 与改造前 | — | **除计量段外 byte 相同**(同输入回放) | `capsule replay` + diff |
-| A | 主会话每轮上下文增量(交互模式) | SKILL 13.5k + STAGES 24k | ≤ 6k + 8k | token 估算脚本 |
+| A | 主会话装载的 skill 文档 | SKILL 36KB + STAGES 63KB | SKILL ≤16KB + STAGES ≤26KB(实施后 15.4KB / 22.6KB) | `tests/test_doc_budgets.py` 字节预算 |
 | C | 连续无人值守成功 | 0 | **5 个交易日** | `_ops/scan_run_<date>.log` + capsule `completeness_ok` |
 | C | 人工介入次数 / 5 日 | — | 0(FAILED 通知除外) | 日志 |
 | B | 10 日尺影子账本 | 无 | ≥40 交易日、预注册假设有读数 | `views/stage_rulers.csv` + 普查稿 |
@@ -179,10 +179,10 @@ launchd 21:20 ──► scripts/scan_run.sh ──► python -m autoresearch.sca
 | # | 文件 | 现 | 目标 | 做法 |
 |---|---|---|---|---|
 | A2-1 | 四个 SKILL.md 的 `session_v1 编排入口` 段 | 4 × 12 行 | 各 1 行指针 | 指向 `docs/session-agent/README.md` |
-| A2-2 | `scan-market/SKILL.md` | 288 行 / 13.5k | ≤110 行 / ≤6k | 留:核心原理表、前置、六段流程(改为 driver 口径)、CP0–CP7、铁律、常见坑 5 条。删:配置大表(jsonc 注释即文档)、每键回滚杆、capsule 核验节(→ `docs/ops/forensics.md`)、L5 路径解析 15 行注释(→ 代码)、所有事故日期 |
-| A2-3 | `scan-market/STAGES.md` | 426 行 / 24k | 现行机制 ≤130 行 / ≤8k | 「已被实证否决的方向」「历史产物」「开放线头」→ `docs/research/scan-negative-results.md`;「运维细节」→ `docs/ops/scan-ops.md`;「行为变更的入口」压成 10 行 |
-| A2-4 | `agents/l4-card.md` | 168 行 / 9.7k(×11/场) | ≤105 行 / ≤6k | 删 `pr_2026*`/`fb_2026*` 编号、「由来」段、执行线的 5 行证据叙述(留 2 行规则 + 1 行出处指针)、重复的「读盘边界一毫米不动」×3 → 1 |
-| A2-5 | `agents/l3-rank.md` | 55 行 / 5.5k | ≤40 行 / ≤3.5k | 硬约束 A–I 每条保留规则句,沿革理由压成半句或指针 |
+| A2-2 | `scan-market/SKILL.md` | 288 行 / 36KB | ≤16KB(实施后 15.4KB) | 留:核心原理表、前置、六段流程(改为 driver 口径)、CP0–CP7、铁律、常见坑 5 条。删:配置大表(jsonc 注释即文档)、每键回滚杆、capsule 核验节(→ `docs/ops/forensics.md`)、L5 路径解析 15 行注释(→ 代码)、所有事故日期 |
+| A2-3 | `scan-market/STAGES.md` | 426 行 / 63KB | 现行机制 ≤26KB(实施后 22.6KB) | 「已被实证否决的方向」「历史产物」「开放线头」→ `docs/research/scan-negative-results.md`;「运维细节」→ `docs/ops/scan-ops.md`;「行为变更的入口」压成 10 行 |
+| A2-4 | `agents/l4-card.md` | 168 行 / 23.4KB(×11/场) | ≤20KB(模板+机读口径+评级规则 ≈13KB 是契约;实施后 19.1KB) | 删 `pr_2026*`/`fb_2026*` 编号、「由来」段、执行线的 5 行证据叙述(留 2 行规则 + 1 行出处指针)、重复的「读盘边界一毫米不动」×3 → 1 |
+| A2-5 | `agents/l3-rank.md` | 55 行 / 13.7KB | ≤8KB(实施后 8.0KB) | 硬约束 A–I 每条保留规则句,沿革理由压成半句或指针 |
 | A2-6 | 双源合并 | lite-playbook ↔ l4-card;macro-playbook lite 节 ↔ macro-brief;sector-playbook lite 段 ↔ sector-brief | agent 文件为唯一真身 | playbook 对应节改为「见 `.claude/agents/<x>.md`」;`session_agent/roles.py` 与 `contracts/artifacts.py:566`、`scan/retention.py:72`、`self_review.py:878` 的引用改指 agent 文件;新增测试:playbook 不得再含契约模板正文(变异:粘回去 → 红) |
 | A2-7 | `scan_config.jsonc` 注释 | 376 行 | 保留(它是配置的文档) | 只把 SKILL 大表里独有的「生效点」补进对应键注释 |
 | A2-8 | Codex 镜像 | `.codex/agents/*.toml` | 同步 A2-4/A2-5 | 双引擎 diff 脚本进测试 |

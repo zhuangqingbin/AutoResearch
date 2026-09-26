@@ -10,7 +10,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 
 ## 核心原理
 
-对 ~5,500 只逐个跑深度报告不可行。本 skill 用**搜索/推荐系统式六段漏斗**:确定性层(零 token)收窄到 ~200 → Claude holistic 精排到 7–10 → 只对这几只跑 **stock-research lite 档决策卡** → 整合。**token 只跟最终深挖的几只成正比;省 token 靠早停,不靠降模型。**
+对 ~5,500 只逐个跑深度报告不可行。本 skill 用**搜索/推荐系统式六段漏斗**:确定性层(零 token)收窄到 ~200 → Claude holistic 精排到 7–10 → 只对这几只跑 **stock-research lite 档决策卡** → 整合。**token 只跟最终深挖的几只成正比;省 token 靠早停,不靠降模型。**(A股;港股/美股全市场本期不支持。)
 
 | 段 | 引擎 | 作用 | 进→出 |
 |---|---|---|---|
@@ -40,7 +40,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 
 > **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep)→ ② 主会话**一次性全派** `.claude/workflows/l4-stock.js` → ③ 步骤 5 整合。以下命令留作调参/单步重跑入口。
 >
-> **会话纪律**:扫描只在干净的新会话里开;run 失败要改代码时,先冻结 FAILED 并结束本会话,在另一个会话里修,重跑再开新会话。改过 hook、agent 定义或 settings 要整个退出 Claude Code 再启动(`/clear` 不重载)。
+> **会话纪律**:扫描只在干净的新会话里开;run 失败要改代码时,先冻结 FAILED 并结束本会话,在另一个会话里修,重跑再开新会话。改过 hook、agent 定义或 settings 要整个退出 Claude Code 再启动(`/clear` 不重载)。Codex 同理:改过 `.codex/agents` 或 `.codex/hooks.json` 要重开 Codex,新 hook 要在启动审查里批准一次才生效。
 >
 > ### 过程直播契约(必做)
 >
@@ -57,7 +57,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | **`brief.md` 原文全量转播** + 产物路径 + 分段耗时 + token 真计量 | Read `$RPT/scan/<run_id>/brief.md` + `render --view timing` + `usage_harvest` |
 >
-> **唤醒纪律**:派发一次性全派、收通知只领不播,不出分析文字。L4 派发后挂 Monitor:`uv run --no-sync python -m autoresearch.scan.l4_watch <date> --watch`(只认 `_l4_tasks.json` 终态:SUCCEEDED 播评级,FAILED/BLOCKED 播错误类;**BLOCKED = 该票废了,不是出了卡**;进度记 `outbox/l4_watch_cursor.json`,重挂不重播)。
+> **唤醒纪律**:派发一次性全派、收通知只领不播,不出分析文字。L4 派发后挂 Monitor(`timeout_ms: 3600000, persistent: false`):`uv run --no-sync python -m autoresearch.scan.l4_watch <date> --watch`(只认 `_l4_tasks.json` 终态:SUCCEEDED 播评级,FAILED/BLOCKED 播错误类;**BLOCKED = 该票废了,不是出了卡**;进度记 `outbox/l4_watch_cursor.json`,重挂不重播,重播须 `--replay-all`,游标损坏报错退出要求人工选择;别照卡片评级下结论,`sell_review`/`ow_review` 折回在 assemble 之后)。
 
 0. **开场:先领 run_id,再取任何一个数**:
    ```bash
@@ -68,7 +68,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
      --legacy-reason "<为何走 legacy workflow,如:session_v1 真实宿主验收 INCOMPLETE>")
    RUN_ID=$(printf '%s' "$RUN_JSON" | jq -r .run_id); export AUTORESEARCH_RUN_ID="$RUN_ID"
    ```
-   `begin` 先落 RunContract + 代码/环境/prompt 身份快照再公布 run 目录;`RUN_ID` 随 `Workflow args.run_id` 传给 `scan-market.js`,再透传每个 `l4-stock`;staging 按 run 分区 `$CTX/scan_runs/<run_id>/staging/<date>/`。上一次被打断的 run 由 prelude/prewarm 开头自动冻结。
+   `begin` 先落 RunContract + 代码/环境/prompt 身份快照再公布 run 目录;`RUN_ID` 随 `Workflow args.run_id` 传给 `scan-market.js`,再透传每个 `l4-stock`;staging 按 run 分区 `$CTX/scan_runs/<run_id>/staging/<date>/`。上一次被打断的 run 由 prelude/prewarm 开头自动冻结,也可手动 `uv run --no-sync python -m autoresearch.trace.capsule recover`。
 0.1. **前奏一键**:`uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>` —— 全部确定性前奏(顺序与去留的单一事实源 = `prelude.STEP_NAMES`:consensus / temperature / universe(L0-L2)/ calendar / catalyst / menu / l4_rejection / outcome_fill / ledger_views / dossier_pool / news_catalog / overseas);末尾汇总屏含 ⚡tripwire 持仓盯梢行(仅人看,勿贴给 agent)。夜间 19:30 launchd 预热,看汇总屏「预热(夜间)」行。
 0.5. **市场研判**:`uv run --no-sync python -m autoresearch.scan.frame <日期> --json-out $CTX/scan/<日期>/market_pack.json` → `Agent(subagent_type='macro-brief')` 写 `market_view.md`。⚠️ **配置必传**:`user_config`(真身 `scan_config.jsonc`,**.jsonc 非 .json**)随 `args.config` 传入,步骤 4 每股 `args.cfg` 原样透传。
 1. **L0+L1+L2**:`uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD]`(旋钮全吃 `scan_config.jsonc`,CLI flag 只作单次覆盖)。
@@ -89,7 +89,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 5. **L5 整合**(全部 l4-stock 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里)。**五条在一个 shell 批次里 `&&` 链跑完再播 CP7**,`<run_id>` 是 assemble 打印的报告目录名:
    ```bash
    CTX=context_${AUTORESEARCH_ENGINE:-claude}; RPT=reports_${AUTORESEARCH_ENGINE:-claude}
-   # 计量 JSON 落点由 AUTORESEARCH_RUN_ID 决定:有 RUN_ID(正常跑动)→ run 分区;无(单步重跑)→ --json-out $CTX/scan/<date>/_token_usage.json
+   # 计量 JSON 落点由 AUTORESEARCH_RUN_ID 决定:有 RUN_ID(正常跑动)→ run 分区;无(单步重跑)→ --json-out $CTX/scan/<date>/_token_usage.json;落错根时读侧读不到,CP7 会**静默**写 UNMEASURED,没有报错替你发现
    STAGING=${AUTORESEARCH_RUN_ID:+$CTX/scan_runs/$AUTORESEARCH_RUN_ID/staging}; STAGING=${STAGING:-$CTX/scan}
    uv run --no-sync python -m autoresearch.scan.assemble <date> && \
    uv run --no-sync python -m autoresearch.scan.gates gate4 <date> && \
@@ -120,3 +120,5 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 - `context_*/`、`reports_*/`、`lake/` 已 gitignore;裸 `context/`、`reports/` 重新出现 = 有代码绕过了 `common/workspace.py`,按 bug 处理。
 - 壳回报 pending/running 不可信:slim 门读任务簿真值;`ok:true` 的 pending 立刻停该票 workflow、`l4_tasks failure --error-class TIMEOUT` 释放、attempt=2 重派。
 - 同一会话失败重跑会把主会话上下文撑爆(实测 61k→494k):新会话。
+- **召回权重 / L2 采样**:`weights.json` 缺失 → 内置先验(弱,仅 `weight_profile:"calibrated"` 档读它);改因子后重跑 `uv run --no-sync python -m autoresearch.research.factor_lab` 的 `harvest`→`calibrate`→`eval` 只喂研究/回滚路径,生产档不读。
+- **一致预期**:`uv run --no-sync python -m autoresearch.research.consensus pull <date>` 限频 1 次/小时;prelude 的 consensus 步已跑,单步重跑才手动。

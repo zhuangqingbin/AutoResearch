@@ -52,9 +52,9 @@ REL_GAP_RULER = "gap_c1_o2"      # 字面量,REL_MARKET/REL_SECTOR 的唯一口�
 # "相对表现"读数(均值/中位在右偏分布下相差 10-30bp 是常态),这是已知、记账在案的口径
 # 分裂,不是遗漏同步——跨模块比较前必须先确认在读同一条线。
 
-_LEGACY_ENTRY_FLAG = "buyable"   # fwd_2_oc(D+1 开盘买腿)对应旗;换尺前一直如此,不改名
+_LEGACY_ENTRY_FLAG = "buyable"   # D+1 开盘买腿家族(fwd_2_oc / fwd_5_oc / fwd_10_oc=SWING_RULER)共用旗;名字沿用,不改名
 
-# 2026-09-26 用户裁定(daily-engine-consolidation §5 B0):新增**第二把一等尺**,不替换主尺。
+# 2026-09-26 用户答「全部都做」后立(daily-engine-consolidation §5 B0;措辞待稿 §11-3 确认):新增**第二把一等尺**,不替换主尺。
 # 隔夜尺管 T+1 尾盘入场 / T+2 开盘退出与 E6 BUY;10 日尺管「观察席」与持仓周级判断。
 # 冻结窗内只影子 + 预注册普查;是否换 MAIN_RULER 留 B4 由用户裁,这里不预设。
 # 口径与 research.edge_census.RULERS 同一实现(D+1 开盘买 → D+10 收盘卖),不另造定义。

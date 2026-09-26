@@ -85,6 +85,9 @@ def test_playbooks_are_pointers_not_second_copies():
     macro = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
     assert ".claude/agents/macro-brief.md" in macro, "macro-playbook 缺指向 macro-brief.md 的指针"
     assert "首席策略师 prompt(模板)" not in macro, "macro-playbook 仍含 lite prompt 模板"
+    # 终审 I-2:只查标题会被「贴回正文不贴标题」绕过 —— 再钉两句正文
+    assert "你是一名**资深 A 股投资大师" not in macro, "macro-playbook 仍含 lite prompt 正文"
+    assert "写一段 ~300–400 字的市场研判" not in macro, "macro-playbook 仍含 lite prompt 正文"
     sector = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
     assert ".claude/agents/sector-brief.md" in sector, "sector-playbook 缺指向 sector-brief.md 的指针"
     assert "- **链定位一句**" not in sector, "sector-playbook 仍含 lite 模板正文"
@@ -431,7 +434,7 @@ def test_macro_brief_consumes_new_pack_blocks():
     """Wave5 ③A:新接的 cross_money/index_val 必须有**消费者**契约。
 
     生产者接线了、消费者没接是本仓 FN-1 家族的常客(pack 多两块、market_view 照样只复述
-    老 24 个标量 = 白接)。锚同时钉 agent def 与 playbook 真值源。
+    老 24 个标量 = 白接)。锚只钉 agent def(2026-09-26 起 playbook 只剩指针)。
     """
     agent = _agent_text("macro-brief")
     # 2026-09-26 A2-6:消费者契约只钉 agent 文件(playbook 只剩指针,不再是第二真值源)
@@ -683,3 +686,26 @@ def test_all_workflows_consume_resolved_agent_config():
             continue
         assert "resolved_agents" in src, f"{p.name} 没消费 cfg.resolved_agents"
         assert "RESOLVED[role]" in src, f"{p.name} 的 AG(role) 没有 resolved 优先分支"
+
+
+def test_scan_skill_keeps_codex_restart_discipline():
+    """终审 I-1(2026-09-26):会话纪律的 Codex 半边不得随瘦身丢失 —— 改过 `.codex/agents` 或
+    `.codex/hooks.json` 要重开 Codex,新 hook 要在启动审查里批准一次才生效(用户长期裁定:两引擎都修都验)。"""
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    assert ".codex/agents" in skill and "重开 Codex" in skill, "SKILL.md 会话纪律缺 Codex 半边"
+    assert "批准一次" in skill, "SKILL.md 缺「新 hook 要在启动审查里批准一次」"
+
+
+def test_stages_channel_quota_listing_matches_config():
+    """终审 M-8(2026-09-26):STAGES.md 的配额行必须与 scan_config.jsonc 的 channel_quotas 逐键同值。
+
+    变异验证:把 jsonc 里任一键的值改掉、或从 STAGES 删掉一键 → 红。
+    """
+    from autoresearch.scan.user_config import load_user_config
+    cfg = load_user_config(SKILLS / "scan-market" / "scan_config.jsonc")
+    quotas = cfg["funnel"]["channel_quotas"]
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    assert len(quotas) >= 8, quotas
+    for key, value in quotas.items():
+        assert f"{key} {value}" in stages, f"STAGES.md 配额行缺或不等:{key} {value}"
+    assert f"{len(quotas)} 键全写" in stages, "STAGES.md 配额行的键数与 jsonc 不符"

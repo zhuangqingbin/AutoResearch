@@ -19,6 +19,7 @@
 - **`stable_context_blocks` 共享块置前**:预估节省 4% < 10% 门,不值得双路维护。
 - **`performance.sector_brief_mode` A/B**:`finalist_only` 会让 L3 看不到判断型行业 brief、可能改变 finalists,按「性能开关不拥有评级」铁律它不是性能开关。
 - **涨停数据做打板/隔日溢价信号**:负结果,只进温度计。
+- **`_l3_calibration.md`(L3 因子方向经验校准块)**:2026-08-21 随 learning 层退役删除;它没有生产者,此前却被写成 l3-rank 的必读硬约束。勿恢复,除非先有真实生产者。
 - **L3.5 收窄层**:用户裁定完全移除;回测结论「只有 conviction≥70 有 T+2 edge」已内化为行为化定义。
 
 ## L1 默认停用的 4 路(及理由)

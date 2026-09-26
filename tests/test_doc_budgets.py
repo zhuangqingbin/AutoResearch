@@ -16,7 +16,9 @@ BUDGETS_BYTES = {
     # 预算留给它 + 5KB 操作铁律。原 23.4KB 里被搬走的 4.3KB 全是事故编号与沿革。
     ".claude/agents/l4-card.md": 20_000,
     ".claude/agents/l3-rank.md": 8_000,
-    ".claude/skills/scan-market/SKILL.md": 16_000,
+    # 终审修复轮(2026-09-26)补回 6 条被误删的操作指令(Codex 重启纪律 / Monitor 参数 /
+    # capsule recover / factor_lab 链 / consensus 限频 / UNMEASURED 静默告警)+1KB → 17KB。
+    ".claude/skills/scan-market/SKILL.md": 17_000,
     ".claude/skills/scan-market/STAGES.md": 26_000,
     ".claude/skills/stock-research/lite-playbook.md": 4_000,
 }
