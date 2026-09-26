@@ -5,7 +5,9 @@ design: docs/superpowers/specs/2026-09-26-daily-engine-consolidation-design.md �
 
 `common.ruler.SWING_RULER`(fwd_10_oc:D+1 开盘进 → D+10 收盘出)的**影子产品面**:当日
 finalist 里 非 📌 ∩ 卡评级 ≥Hold ∩ 卡面入场 ≠ 禁止 的票,按 conviction 降序,附一行
-`stage_rulers.csv` 的 10 日尺历史读数(L3 finalist−bench 在 fwd_10 上的 ALL 行)。
+`stage_rulers.csv` 的 10 日尺参考格(L3 finalist−bench 在 fwd_10 上的 ALL 行 —— **不是**
+本席战绩)。那一行由 prelude 冻结进 staging(`freeze_readout` → `_swing_readout.json`),
+L5 只读冻结副本:夜间重建的活视图不在 L5 重放单元里,读它会让重放的 summary 漂(复审 M4)。
 
 它**不是决策**:不进任何门、不进账本 role、不喂任何 prompt,不改评级 / BUY / E6 / 主尺
 (冻结窗内可上,spec §3.4)。文案因此不许出现「BUY/买入/可买」(`BANNED_WORDS`,
@@ -30,6 +32,8 @@ from autoresearch.contracts import artifacts as _artifacts
 SCHEMA_VERSION = 1
 SWING = _ruler.SWING_RULER
 SEAT_FILENAME = _artifacts.by_name("swing_seat").path
+#: 读数行的冻结副本(prelude 写、L5 读;复审 M4)。
+READOUT_FILENAME = _artifacts.by_name("swing_readout").path
 SECTION_TITLE = "## 10 日观察席(影子)"
 #: 卡评级 ≥Hold(五档里 Hold 及以上)。
 SEAT_RATINGS = ("Buy", "Overweight", "Hold")
@@ -108,8 +112,34 @@ def ruler_readout(path: Path | None = None) -> dict:
     return {**out, "status": "THIN" if thin else "OK"}
 
 
-def build_swing_seat(scan_dir: Path | str, *, stage_rulers_path: Path | None = None) -> dict:
-    """finalists.csv × _final_ratings.json × 卡面入场行 → 席位;+ stage_rulers 读数行。"""
+def freeze_readout(scan_dir: Path | str, *, stage_rulers_path: Path | None = None) -> dict:
+    """prelude 专用:把 `stage_rulers.csv` 的读数行抄进本 run 的 staging(`READOUT_FILENAME`)。
+
+    先删旧副本再写(同日 staging 共享,同 `refresh_swing_seat` 的理由);读不到那一行照样落
+    一份 `ABSENT`,「冻结时没有」本身就是要冻结的事实。返回落盘的 dict。
+    """
+    path = Path(scan_dir) / READOUT_FILENAME
+    path.unlink(missing_ok=True)
+    readout = ruler_readout(stage_rulers_path)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(readout, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
+                   encoding="utf-8")
+    tmp.replace(path)
+    return readout
+
+
+def load_frozen_readout(scan_dir: Path | str) -> dict:
+    """L5 读数行的唯一来源:prelude 冻结的副本;缺/坏 → `NOT_FROZEN`(不回退去读活视图)。"""
+    with contextlib.suppress(OSError, ValueError):
+        doc = json.loads((Path(scan_dir) / READOUT_FILENAME).read_text(encoding="utf-8"))
+        if isinstance(doc, dict) and doc.get("status") and doc.get("metric") == READOUT_METRIC:
+            return doc
+    return {"status": "NOT_FROZEN", "metric": READOUT_METRIC, "file": READOUT_FILENAME,
+            "locator": f"metric={READOUT_METRIC}"}
+
+
+def build_swing_seat(scan_dir: Path | str) -> dict:
+    """finalists.csv × _final_ratings.json × 卡面入场行 → 席位;+ prelude 冻结的读数行。"""
     scan = Path(scan_dir)
     with (scan / "finalists.csv").open(encoding="utf-8-sig", newline="") as fh:
         finalists = [r for r in csv.DictReader(fh) if _s(r.get("code"))]
@@ -138,9 +168,10 @@ def build_swing_seat(scan_dir: Path | str, *, stage_rulers_path: Path | None = N
             {"field": f"seat.{r['code']}.entry", "value": str(r["entry_stance"]),
              "file": f"details/{r['code']}.md", "locator": "**入场** 行(parse_card_context)"},
         ]
-    readout = ruler_readout(stage_rulers_path)
+    readout = load_frozen_readout(scan)
     src.append({"field": "seat.readout", "value": readout.get("value", "—"),
-                "file": readout["file"], "locator": readout["locator"]})
+                "file": READOUT_FILENAME,
+                "locator": f"value(冻结自 {readout.get('file')} {readout.get('locator')})"})
     return {"schema_version": SCHEMA_VERSION, "date": scan.name, "ruler": SWING,
             "rows": rows, "n": len(rows), "readout": readout, "_src": src}
 
@@ -183,7 +214,10 @@ def load_swing_seat(scan_dir: Path | str) -> dict | None:
 
 
 def _readout_line(readout: dict | None) -> str:
-    head = "10 日尺历史读数(stage_rulers `" + READOUT_METRIC + "` ALL 行):"
+    head = ("10 日尺参考格(L3 finalist − bench 同日 fwd_10 差,不是本席战绩;stage_rulers `"
+            + READOUT_METRIC + "` ALL 行,prelude 冻结):")
+    if readout and readout.get("status") == "NOT_FROZEN":
+        return head + "读数未冻结(本场 prelude 的 ledger_views 步没跑到),L5 不读活视图、不猜。"
     if not readout or readout.get("status") == "ABSENT":
         return head + "stage_rulers 暂无这一格(视图未重建或特性未上线),不猜。"
     if readout.get("status") == "THIN":

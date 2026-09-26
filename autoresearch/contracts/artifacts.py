@@ -102,6 +102,10 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("prelude_summary", "_prelude_summary.md", "staging", "prelude", "prelude", "md", "always"),
     Artifact("l4_rejection_readout", "_l4_rejection_readout.json", "staging", "prelude", "prelude", "json", "gated",
              required_when="有已发布 run 可读(滚动 40 日)"),
+    # 2026-09-26 复审 M4:§12 读数行的冻结副本 —— prelude 的 ledger_views 步(stage_rulers 刚重建
+    # 之后)抄一行进 staging,L5 只读它(夜间重建的活视图不在重放单元里,读它会漂)
+    Artifact("swing_readout", "_swing_readout.json", "staging", "prelude", "prelude", "json", "gated",
+             required_when="prelude 的 ledger_views 步跑过(--skip ledger_views 时缺席,§12 写「未冻结」)"),
     Artifact("prewarm", "_prewarm.json", "staging", "prelude", "prewarm", "json", "gated",
              required_when="夜间预热跑过"),
     Artifact("market_view", "market_view.md", "staging", "prelude", "strategist", "md", "always"),
