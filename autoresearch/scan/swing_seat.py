@@ -196,7 +196,7 @@ def render_section(seat: dict | None) -> list[str]:
            f"_影子面:10 日尺 `{SWING}`(D+1 开盘进 → D+10 收盘出);非 📌 finalist ∩ 评级 ≥Hold"
            " ∩ 入场≠禁止,按 conviction 排;只展示,不进任何门、账本或 prompt_"]
     if not seat or not isinstance(seat.get("rows"), list):
-        out.append("未生成(观察席今天没有产出 —— 这不是「没有票」,见 `_swing_seat.json`)")
+        out.append(f"未生成(观察席今天没有产出 —— 这不是「没有票」,见 `{SEAT_FILENAME}`)")
         out.append(_readout_line(None))
         return out
     if not seat["rows"]:
