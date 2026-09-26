@@ -261,14 +261,43 @@ def _env(run_id: str | None = None) -> dict:
     return env
 
 
+def terminate_inflight(records_dir: Path | str, sig: int = signal.SIGTERM) -> list[int]:
+    """Signal every headless call still recorded as STARTING/RUNNING (its own process group).
+
+    The runner's ``claude -p`` children live in their own sessions (``start_new_session``),
+    so killing the runner does not stop them.  The executor
+    (``session_agent.executors.headless_claude``) records ``state`` + ``pid`` (= pgid)
+    before it waits; scan sits below session_agent in the layering, so the record is read
+    as data through its registered path, never by importing the executor.
+    """
+    killed = []
+    for path in sorted(Path(records_dir).glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        pid = record.get("pid")
+        if record.get("state") not in {"STARTING", "RUNNING"} or type(pid) is not int or pid <= 1:
+            continue
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            continue
+        killed.append(pid)
+    return killed
+
+
 def _terminate_inflight_headless(run_id: str) -> list[int]:
-    from autoresearch.session_agent.executors.headless_claude import terminate_inflight
+    from autoresearch.contracts import artifacts as registry
 
     root = ws.find_run_root(run_id)
     if root is None:
         return []
+    records = Path(registry.by_name("dispatch_headless_calls").path).parent
     killed = []
-    for folder in root.glob("staging/*/_dispatch/headless"):
+    for folder in sorted(root.glob(f"staging/*/{records.as_posix()}")):
         killed += terminate_inflight(folder)
     return killed
 
@@ -482,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "LIVE_RUN_WINDOW", "OpsLog", "RUN_TIMEOUT_MINUTES",
     "Steps", "build_headless_request", "default_steps", "failure_point", "live_scan_runs",
-    "locate_brief", "main", "ops_dir", "run_once",
+    "locate_brief", "main", "ops_dir", "run_once", "terminate_inflight",
 ]
 
 

@@ -314,6 +314,52 @@ def test_default_runner_timeout_is_a_failed_outcome_not_a_hang(roots, monkeypatc
     assert killed == [RUN_ID] and "2 个在飞" in outcome["errors"][0]["message"]
 
 
+def test_terminate_inflight_kills_running_claude_groups_from_the_records(tmp_path):
+    """A runner killed by the wall clock leaves ``claude -p`` sessions behind (their own
+    process groups); the executor's call records name them, so they can be stopped."""
+    import subprocess
+
+    folder = tmp_path / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    running = subprocess.Popen(["/bin/sh", "-c", "sleep 30"], start_new_session=True)
+    finished = subprocess.Popen(["/bin/sh", "-c", "sleep 30"], start_new_session=True)
+    (folder / "a.a1.json").write_text(json.dumps(
+        {"task_id": "a", "state": "RUNNING", "pid": running.pid}), encoding="utf-8")
+    # an EXITED record whose pid now belongs to some live process must be left alone
+    (folder / "b.a1.json").write_text(json.dumps(
+        {"task_id": "b", "state": "EXITED", "pid": finished.pid}), encoding="utf-8")
+    try:
+        assert scan_run.terminate_inflight(folder) == [running.pid]
+        assert running.wait(timeout=10) is not None
+        assert finished.poll() is None
+    finally:
+        for proc in (running, finished):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+def test_inflight_records_are_found_under_the_registered_path(roots, monkeypatch):
+    from autoresearch.contracts import artifacts as ca
+
+    run_root = roots / "context_claude" / "scan_runs" / RUN_ID
+    folder = run_root / "staging" / DATE / Path(ca.by_name("dispatch_headless_calls").path).parent
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(ws, "find_run_root", lambda run_id: run_root)
+    seen = []
+    monkeypatch.setattr(scan_run, "terminate_inflight", lambda path: seen.append(path) or [7])
+    assert scan_run._terminate_inflight_headless(RUN_ID) == [7]
+    assert seen == [folder]
+
+
+def test_scan_layer_never_imports_session_agent():
+    """scan sits below session_agent (tests/contracts/test_layering.py); scan_run talks to
+    session_agent only through its CLI and the registered record path."""
+    text = (Path(scan_run.__file__)).read_text(encoding="utf-8")
+    assert "from autoresearch.session_agent" not in text
+    assert "import autoresearch.session_agent" not in text
+
+
 def test_call_kills_the_whole_process_group_on_timeout(tmp_path):
     pidfile = tmp_path / "child.pid"
     code, _ = scan_run._call(

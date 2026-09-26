@@ -280,24 +280,17 @@ def test_resolve_claude_bin_prefers_explicit_then_env(tmp_path, monkeypatch):
     assert hc.resolve_claude_bin(None) == "/opt/x/claude"
 
 
-def test_terminate_inflight_kills_running_claude_groups_from_the_records(tmp_path):
-    """A runner killed by the scan_run wall clock leaves ``claude -p`` sessions behind
-    (their own process groups); the records name them, so they can be stopped."""
-    import subprocess
-
-    folder = tmp_path / "_dispatch" / "headless"
-    folder.mkdir(parents=True)
-    running = subprocess.Popen(["/bin/sh", "-c", "sleep 30"], start_new_session=True)
-    (folder / "a.a1.json").write_text(json.dumps(
-        {"task_id": "a", "state": "RUNNING", "pid": running.pid}), encoding="utf-8")
-    (folder / "b.a1.json").write_text(json.dumps(
-        {"task_id": "b", "state": "EXITED", "pid": 1}), encoding="utf-8")
-    try:
-        assert hc.terminate_inflight(folder) == [running.pid]
-        assert running.wait(timeout=10) is not None
-    finally:
-        if running.poll() is None:
-            running.kill()
+def test_call_record_names_the_process_group_while_running(tmp_path):
+    """The record is written with state RUNNING + pid (= pgid, own session) before the
+    wait, so ``scan.scan_run`` can stop in-flight sessions if the runner is killed."""
+    body = f"""\
+        cat "{tmp_path / 'staging' / '_dispatch' / 'headless' / (TASK + '.a1.json')}" > "{tmp_path / 'seen.json'}"
+        """
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body))
+    ex.dispatch(_request(tmp_path))
+    seen = json.loads((tmp_path / "seen.json").read_text(encoding="utf-8"))
+    assert seen["state"] == "RUNNING" and isinstance(seen["pid"], int) and seen["pid"] > 1
+    assert os.getpgid(os.getpid()) != seen["pid"]      # its own group, not the runner's
 
 
 # ── runner × headless: transcript evidence binding (batch 4 Task 2) ────────────
