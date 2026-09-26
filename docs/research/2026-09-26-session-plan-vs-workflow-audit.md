@@ -72,6 +72,7 @@
 | R3 | 超时后迟到结果 | 只认本 attempt 的 result 文件,迟到结果永不被接收;但超时的 subagent 不会被杀,可能迟到覆写同一产物文件 | 降级可接受(超时给得宽;README 写明) |
 | R4 | host_profile 能力声明 | review 需 `independent_context=true`,intel 需 `web_search/web_fetch=true`;声明不足 → claim 期 HostCapabilityError → runner 以 CLAIM_ERROR 释放 → 同 L9 | 非阻断(begin 时一次性声明对即可) |
 | R5 | 确定性车道与图读取并发 | execute 先落 expansion 文件、后同步 artifact/store;loop 线程在窗口内读图会看到 store 不认识的 READY 任务(合成 FULL 扫描首跑即崩)| **已修**(Task 5:车道忙时不读图 + 未同步任务跳过本轮;同步失败 → STALLED 并保留根因)|
+| R6 | host 模式 effort 透传不了 | Claude Code `Agent` 工具只收 subagent_type/prompt/model,**不收 effort**;legacy Workflow 用 `AG(role)` 显式传配置解释值。host 模式生效的是 agent frontmatter:macro-brief high(配置 max)、sector-brief high(xhigh)、L3 修补走 l3-rank 的 max(配置 medium)、l4-card 与复核 xhigh(max);l3-rank、l4-intel 两边都是 max。请求里的 `effort` 在 host 模式只作记录;批 4 headless 用 `--effort` 透传即可消除 | 降级可接受(判断深度差异,Task 6 对照时知情;要消除只能改 frontmatter,属冻结窗内的行为改动,不在本批做) |
 
 ## 5. 结论与处置
 

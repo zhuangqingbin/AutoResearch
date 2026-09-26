@@ -92,9 +92,11 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
    uv run --no-sync python -m autoresearch.session_agent mailbox wait --run-id "$RUN_ID" --timeout 540
    ```
 
-   - `kind=REQUEST`:原样执行 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`。model/effort 已由
-     runner 经 `resolve_agent_bundle` 解释并写在请求里(`model`/`effort`/`agent_spec`),不要改 prompt、
-     不要另加指令。agent 返回后:
+   - `kind=REQUEST`:原样执行 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`(请求带 `model` 时一并传)。
+     model/effort 已由 runner 经 `resolve_agent_bundle` 解释并写在请求里(`model`/`effort`/`agent_spec`),
+     不要改 prompt、不要另加指令。注意:Claude Code 的 `Agent` 工具不收 effort,host 模式下生效的是
+     agent 定义 frontmatter 的 effort(legacy Workflow 显式传配置值;两者今天有差,见审计 R6);
+     headless 执行器(批 4)用 `--effort` 透传。agent 返回后:
 
      ```bash
      uv run --no-sync python -m autoresearch.session_agent mailbox complete --run-id "$RUN_ID" \
