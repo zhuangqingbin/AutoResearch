@@ -304,6 +304,20 @@ def test_default_begin_and_run_call_the_session_agent_cli(roots, monkeypatch):
     assert run_env["AUTORESEARCH_RUN_ID"] == RUN_ID
 
 
+def test_default_wait_ready_also_guards_the_lake_partition(roots, monkeypatch):
+    """Readiness is about tushare; the scan reads the lake — a half prewarm partition is
+    quarantined right after readiness passes (review I1)."""
+    from autoresearch.scan import readiness
+
+    seen = []
+    monkeypatch.setattr(readiness, "factor_rows_ready",
+                        lambda *a, **k: pytest.fail("must guard the lake, not only probe"))
+    monkeypatch.setattr(readiness, "wait_and_guard",
+                        lambda date, **kw: seen.append((date, kw.get("deadline"))) or True)
+    assert scan_run.default_steps(_args(), log=None).wait_ready(DATE, "22:30") is True
+    assert seen == [(DATE, "22:30")]
+
+
 def test_default_runner_timeout_is_a_failed_outcome_not_a_hang(roots, monkeypatch):
     monkeypatch.setattr(scan_run, "_call", lambda argv, **kw: (None, ""))
     killed = []

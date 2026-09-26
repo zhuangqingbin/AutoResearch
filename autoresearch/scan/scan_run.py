@@ -320,7 +320,8 @@ def default_steps(args, log: OpsLog | None) -> Steps:
             return None
 
     def wait_ready(date: str, deadline: str) -> bool:
-        return readiness.factor_rows_ready(date, deadline=deadline, log=emit)
+        # tushare 灌齐 + 湖分区对账(预热半载分区隔离,扫描重取)—— 复审 I1
+        return readiness.wait_and_guard(date, deadline=deadline, log=emit)
 
     def begin(request_path: Path) -> str:
         code, out = _call(_session_agent("begin", "--orchestration", "session_v1",
