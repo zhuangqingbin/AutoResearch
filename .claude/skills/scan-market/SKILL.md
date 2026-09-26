@@ -5,20 +5,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 
 # scan-market — 全 A股六段漏斗扫描(挖掘个股 + 板块,零付费 API)
 
-## session_v1 编排入口
-
-开发/验收期显式选择新编排时使用
-`python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`，执行
-`begin → next → claim → execute/宿主研究 → submit → finish`。扫描的动态行业、L3、L4 和复核
-任务由冻结 expansion 生成；原 gate、taskbook、评级和发布器仍是业务真值。宿主能力不足会在创建
-run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy` 只返回
-`LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧 Workflow；确需回退必须显式进入标为
-`LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并记录原因，不能给旧执行贴 `session_v1` 标签。
-当前双宿主真实验收为 `INCOMPLETE`，新入口仅作显式 PILOT，默认仍保留 legacy fallback；
-四种 run mode 的合成重放通过不等于真实宿主放行。`finish` 后必须对机器返回的 canonical
-报告路径运行 `uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`，
-按结果分别声明编排、发布、完整性与重放；未绑定改写返回 `UNBOUND_REPORT`。
-
+> session_v1 编排入口(PILOT,默认仍 legacy):见 `docs/session-agent/README.md`;`finish` 后用 `session_agent verify-report --level full` 的机器结果交付。
 > 沿革见 git log;本文件 = 编排入口,机制/参数/实证读数快照见 `STAGES.md`(冲突以源码为准)。
 
 ## 核心原理

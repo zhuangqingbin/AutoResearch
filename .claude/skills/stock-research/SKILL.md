@@ -7,19 +7,7 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 
 # stock-research — 单标的研究:full 全量报告 / lite 决策卡(一个 skill,两档)
 
-## session_v1 编排入口
-
-开发/验收期显式选择新编排时使用
-`python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`，执行
-`begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE 的研究角色、输出正文、
-评级校验和发布器继续复用本 skill 的契约。宿主能力不足会在创建 run 前返回
-`HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy` 只返回
-`LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧流程；回退必须显式进入下文 legacy 入口并记录原因。
-当前双宿主真实验收为 `INCOMPLETE`，因此新入口仅作显式 PILOT，默认仍保留 legacy fallback；
-不得用合成测试自行切换。`finish` 后必须对返回的 canonical 报告路径执行
-`uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`，
-最终答复逐项引用机器结果；`UNBOUND_REPORT` 或任何完整性缺项都不能写成“法证完全可复现”。
-
+> session_v1 编排入口(PILOT,默认仍 legacy):见 `docs/session-agent/README.md`;`finish` 后用 `session_agent verify-report --level full` 的机器结果交付。
 ## 核心原理
 同一免费数据层(yfinance/FRED/akshare/tushare)+ Claude(本 session)当引擎,零 LLM API。
 - **full 档** = v4 全量报告(决策主线+证据附录;`harvest` 全量 ~90KB context)。
