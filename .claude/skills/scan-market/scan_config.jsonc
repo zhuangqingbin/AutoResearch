@@ -287,6 +287,11 @@
   //   scan/l4/intel_guard.py(超顶稿件 .rejected 弃用,只拒稿不拒票)=代码常量不入 config。
   "l4_intel": {
     "enabled": true,           // 2026-07-12 开启(P1 波验收过);false=干净回滚(卡内网查兜底)
+    // 2026-09-26 §4 A3 intel 死票门【生效点】scan/l4/intel_gate.decide(true → 落 _intel_gate.json:
+    //   主力净额/cmf_20/obv_mom_20 三线同负 ∧ 无 📅 日历催化/近 10 日事件 ∧ 非 📌/证据席 → 不派 intel)。
+    //   派发接线(l4-stock.js / runner 读该文件)是批 6 Task 3,冻结窗后才做 —— 在那之前开它不少派任何 intel。
+    //   false = 不落文件、逐字 parity;离线回放证据见 docs/research/2026-09-26-intel-gate-replay.md。
+    "skip_when_dead": false,
     "max_queries": 20          // 15→20(Wave8 W8-13):对齐实测中位,让 warn 重新变信号
   },
 

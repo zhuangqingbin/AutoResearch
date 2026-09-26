@@ -114,7 +114,9 @@ _SUB_WHITELIST = {
     "l2": {"sector_cap", "floors", "knife_cap", "sector_seats"},
     "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
-    "l4_intel": {"enabled", "max_queries"},
+    "l4_intel": {"enabled", "max_queries",
+                 # 2026-09-26 §4 A3 intel 死票门(默认 false = parity;派发接线冻结窗后)
+                 "skip_when_dead"},
     "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn", "composite_seat"},
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
@@ -190,6 +192,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # `index_events.harvest_index_events`(`with_flow=knob(...)`)。只填一个 calendar.csv 的括注
     # 数字,不进任何门/排序/评级——回滚杆就是这一个键。
     ("calendar", "index_rebalance_flow"): (_t_bool, "boolean"),
+    # intel 死票门(2026-09-26 daily-engine §4 A3):true → `scan/l4/intel_gate.decide` 落
+    # `_intel_gate.json`(slim 三线同负 ∧ 无 📅/事件催化 ∧ 非 📌/证据席 的票不派 intel);
+    # false(默认)= 不落文件、逐字 parity。派发两条路径读该文件是批 6 Task 3(冻结窗后)。
+    ("l4_intel", "skip_when_dead"): (_t_bool, "boolean"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),

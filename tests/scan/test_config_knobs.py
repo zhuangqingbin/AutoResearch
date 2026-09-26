@@ -312,6 +312,33 @@ def test_knob_calendar_index_rebalance_defaults_off():
     assert knob("calendar", "index_rebalance", False, False, cfg={"calendar": {"index_rebalance": True}}) is False
 
 
+# ───────────────────────── 白名单:intel 死票门(2026-09-26 daily-engine §4 A3,默认关) ─────────────────────────
+
+
+def test_l4_intel_skip_when_dead_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l4_intel": {"enabled": True, "max_queries": 20,
+                                          "skip_when_dead": True}}), encoding="utf-8")
+    assert load_user_config(p)["l4_intel"]["skip_when_dead"] is True
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None, {"on": True}])
+def test_l4_intel_skip_when_dead_must_be_bool(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l4_intel": {"skip_when_dead": bad}}), encoding="utf-8")
+    # 锚类型校验本身(「须为 boolean」),不是「未知子键」那条也会带上键名的报错
+    with pytest.raises(ValueError, match=r"l4_intel\.skip_when_dead=.*须为 boolean"):
+        load_user_config(p)
+
+
+def test_production_config_keeps_the_intel_dead_gate_off():
+    """冻结窗内默认关 = 逐字 parity;开旋钮是用户动作(派发接线在批 6 Task 3,冻结窗后)。"""
+    from pathlib import Path
+    cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
+    assert cfg["l4_intel"]["skip_when_dead"] is False
+    assert knob("l4_intel", "skip_when_dead", None, False, cfg={}) is False
+
+
 # ───────────────────────── 白名单:flow_adv_days 描述字段(2026-09-25 §2.2 批 B3) ─────────────────────────
 
 

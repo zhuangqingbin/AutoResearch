@@ -175,6 +175,9 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("l4_cards", "details/*.md", "staging", "l4", "l4-card", "md", "always"),
     Artifact("ensemble", "_ensemble_*.json", "staging", "l4", "l4-ensemble", "json", "conditional",
              required_when="有 ≥OW 卡或 📌 SELL 提案"),
+    # 2026-09-26 §4 A3:intel 死票门判决(旋钮 l4_intel.skip_when_dead 关 = 不落文件)
+    Artifact("intel_gate", "_intel_gate.json", "staging", "l4", "intel_gate", "json", "gated",
+             required_when="l4_intel.skip_when_dead=true"),
     # ---- L5 ---------------------------------------------------------------
     Artifact("early_stop", "_early_stop.json", "staging", "l5", "assemble", "json", "always"),
     Artifact("final_ratings", "_final_ratings.json", "staging", "l5", "assemble", "json", "always"),
