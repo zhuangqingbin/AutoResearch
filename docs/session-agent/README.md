@@ -14,6 +14,10 @@
 
 样例中的 `session_ref`、能力和 `evidence_refs` 必须替换成本次会话实际观测值。能力未知写 `null` 或 `false`，不能从旧配置推断为可用。
 
+## 控制环(四个用户 skill 共用;2026-09-26 起只在此处讲一遍,SKILL.md 只留指针)
+
+开发/验收期显式选择新编排时使用 `python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`,宿主循环为 `begin → next → claim → execute/宿主研究 → submit → finish`。冻结计划、artifact、attempt、回执和发布由 Python 验证,推理仍发生在订阅会话。宿主能力不足会在创建 run 前返回 `HOST_CAPABILITY_REQUIRED`;`session_agent --orchestration legacy` 只返回 `LEGACY_ENTRYPOINT_REQUIRED`,绝不代跑旧 Workflow——确需回退必须显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并记录原因(`--legacy-reason`),不能给旧执行贴 `session_v1` 标签。当前双宿主真实验收为 `INCOMPLETE`,新入口仅作显式 PILOT,默认仍保留 legacy fallback;合成重放通过不等于真实宿主放行。`finish` 后必须对机器返回的 canonical 报告路径运行 `uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`,按结果分别声明编排、发布、完整性与重放;未绑定改写返回 `UNBOUND_REPORT`,不得借同一 run_id 或旧 ROOT 归因。
+
 ## Codex 与 Claude Code 启动
 
 每个新 shell 第一条命令都要固定引擎：

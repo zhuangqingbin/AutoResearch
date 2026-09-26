@@ -7,7 +7,7 @@
 > `## 地形段` 抽取),勿改字。2026-08-19 D6(⚖A6):研判段已整段砍除——brief 只产出
 > 地形段(纯事实),行业方向叙事改由确定性 top3(`market.py` 的 `sector_healthy_top3`)独扛。
 
-## lite brief(scan-market Stage 1;每行业一个 `sector-brief` agent)
+## lite brief 模板(指针;scan-market Stage 1,每行业一个 `sector-brief` agent)
 
 **单段模板(`## 地形段`)、六条读数行、铁律(地形段禁方向词、数字全出 pack、♻️ banner 保留)与有界实时网查(≤2 条,标『实时网查』)的唯一真身是 `.claude/agents/sector-brief.md`**。本节只记接口事实:输入 `$CTX/sector/<date>/<行业>.json`(字段 n_market/n_l2/median_pct_60d/median_pe/pe_p25/pe_p75/median_pb/median_np_yoy/median_roe/main_pos_frac/main_net_sum_yi/healthy_n/median_winner/leaders/calendar),落点 `$CTX/scan/<date>/sector_briefs/<行业>.md`;标题 `## 地形段` 是 `sector/brief.py` 的 `TERRAIN_HDR`,勿改字。
 
