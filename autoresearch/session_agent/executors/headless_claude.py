@@ -12,6 +12,10 @@ from the :class:`DispatchRequest` verbatim.  The executor's own checks are about
 JSON must parse and must not be an error, and every declared output file must exist after
 a clean exit — an agent saying "I wrote it" is not a file.
 
+The child gets an explicit environment (:func:`child_env`): no ``ANTHROPIC_*`` / routing
+switches / project secrets, so a key in ``.env`` or a proxy shell can never move the run off
+the subscription login; the call record lists the dropped NAMES, never values.
+
 Every call leaves ``<staging>/_dispatch/headless/<task_id>.a<attempt>.json`` (argv with the
 prompt redacted, pid, exit code, usage, cost, session id, transcript path) plus the raw
 ``.stdout`` / ``.stderr`` streams; ``trace.usage_harvest`` meters headless runs from the
@@ -20,6 +24,7 @@ records.  ``_dispatch/`` is control traffic, excluded from scan staging bundles.
 from __future__ import annotations
 
 import contextlib
+import glob
 import json
 import os
 import re
@@ -40,6 +45,8 @@ from autoresearch.session_agent.executors.base import (
     DispatchResult,
     ExecutorTimeout,
 )
+from autoresearch.trace import process_probe
+from autoresearch.trace.process_probe import owns_group, stop_group
 
 #: Sub-directory of ``<staging>/_dispatch/`` holding one record per headless call.
 HEADLESS_DIR = "headless"
@@ -77,6 +84,38 @@ TIER_MAX_TURNS: Mapping[str, int] = MappingProxyType({
 DEFAULT_MAX_TURNS = 60
 EXCERPT_CHARS = 500
 
+#: Environment never handed to ``claude -p`` (review I2).  The project rule is zero paid
+#: LLM API: every ``ANTHROPIC_*`` variable (API key, auth token, base URL, model overrides)
+#: and the CLI's own routing switches would silently move the run off the subscription
+#: login (``.env`` from the retired paid framework, a ``cc-ds`` shell).  Project secrets
+#: (``*_API_KEY`` / ``*_TOKEN`` / ``*_SECRET``: tushare, Bark, FRED, …) are not the agents'
+#: business either.  ``CLAUDECODE`` / ``CLAUDE_CODE_ENTRYPOINT`` belong to a parent Claude
+#: session (a manual trigger from inside one); the child sets its own.
+_ENV_DROP_PREFIXES = ("ANTHROPIC_",)
+_ENV_DROP_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET")
+_ENV_DROP_NAMES = frozenset({
+    "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "DELIVERY_MAIL_TO",
+    "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+})
+#: ``claude setup-token`` subscription login for non-interactive use — the opposite of
+#: moving billing, so it is kept.
+_ENV_KEEP_NAMES = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
+
+
+def _drops(name: str) -> bool:
+    if name in _ENV_KEEP_NAMES:
+        return False
+    return (name in _ENV_DROP_NAMES or name.startswith(_ENV_DROP_PREFIXES)
+            or name.endswith(_ENV_DROP_SUFFIXES))
+
+
+def child_env(parent: Mapping[str, str] | None = None) -> tuple[dict[str, str], list[str]]:
+    """``(environment for claude -p, sorted NAMES of what was dropped)`` — never values."""
+    source = os.environ if parent is None else parent
+    env = {key: value for key, value in source.items() if not _drops(key)}
+    return env, sorted(key for key in source if _drops(key))
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -100,17 +139,32 @@ def resolve_claude_bin(explicit: str | None = None) -> str:
     return str(local) if local.exists() else "claude"
 
 
+def _resolved(binary: str) -> str:
+    """The real file behind the CLI (``~/.local/bin/claude`` is a symlink to a versioned
+    build that auto-updates between nights)."""
+    found = binary if os.sep in binary else (shutil.which(binary) or binary)
+    try:
+        return str(Path(found).resolve())
+    except OSError:
+        return found
+
+
 def project_slug(path: Path | str) -> str:
     """Claude Code's projects-directory name for a working directory."""
     return re.sub(r"[^A-Za-z0-9]", "-", str(Path(path).resolve()))
 
 
 def _parse_result(text: str) -> dict | None:
-    """The ``--output-format json`` result object (tolerates a stream array / log lines)."""
+    """The ``--output-format json`` result object (tolerates a stream array / log lines).
+
+    A ``type == "result"`` object wins over any other trailing JSON line; an untyped dict
+    is only the fallback.
+    """
     body = text.strip()
     if not body:
         return None
     candidates = [body, *reversed(body.splitlines())]
+    fallback = None
     for candidate in candidates:
         try:
             value = json.loads(candidate)
@@ -121,8 +175,19 @@ def _parse_result(text: str) -> dict | None:
                        if isinstance(item, dict) and item.get("type") == "result"]
             value = results[-1] if results else None
         if isinstance(value, dict):
-            return value
-    return None
+            if value.get("type") == "result":
+                return value
+            fallback = fallback or value
+    return fallback
+
+
+#: Transient API failures the CLI reports as text (overloaded / 5xx): one retry, like a
+#: dropped connection, instead of AGENT_ERROR → BLOCKED for the whole night (review M4).
+_TRANSIENT_API = re.compile(
+    r"overloaded|API Error:?\s*5\d\d|internal server error|service unavailable|bad gateway",
+    re.I)
+
+
 
 
 def _excerpt(text: str | None) -> str:
@@ -204,9 +269,17 @@ class HeadlessClaudeExecutor:
                 error=f"headless executor runs `claude -p` only; run engine is {request.engine}")
         session_id = str(uuid.uuid4())
         argv = self.argv(request, session_id)
-        stem = f"{request.task_id}.a{request.attempt}"
         folder = self._record_dir()
+        priors = self._prior_records(folder, request.task_id)
+        superseded = self._stop_orphans(priors, session_id)
+        moved = self._move_aside_stale_outputs(request, folder, session_id, bool(priors))
+        stem = f"{request.task_id}.a{request.attempt}"
+        if (folder / f"{stem}.json").exists():
+            # A restarted runner re-dispatching this attempt: never overwrite the earlier
+            # record (it names the orphan's pid and its cost) — key this call by session.
+            stem = f"{stem}.{session_id[:8]}"
         stdout_path, stderr_path = folder / f"{stem}.stdout", folder / f"{stem}.stderr"
+        env, env_stripped = child_env()
         record = {
             "schema_version": 1,
             "run_id": request.run_id,
@@ -221,9 +294,14 @@ class HeadlessClaudeExecutor:
             "session_id": None,
             "host_session_ref": request.host_session_ref,
             "cwd": str(self.cwd),
+            "claude_bin_resolved": _resolved(self.claude_bin),
+            "env_stripped": env_stripped,
+            "superseded_pids": superseded,
+            "outputs_moved_aside": moved,
             "timeout_seconds": request.timeout_seconds,
             "state": "STARTING",
             "pid": None,
+            "process_started_at": None,
             "started_at": _now(),
             "ended_at": None,
             "elapsed_s": None,
@@ -236,6 +314,7 @@ class HeadlessClaudeExecutor:
             "usage": None,
             "transcript_path": None,
             "outputs_missing": [],
+            "leftovers_swept": False,
             "error": None,
         }
         started = time.monotonic()
@@ -243,17 +322,20 @@ class HeadlessClaudeExecutor:
             with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
                 proc = subprocess.Popen(  # noqa: S603 - argv list, no shell
                     argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                    cwd=str(self.cwd), start_new_session=True)
+                    cwd=str(self.cwd), env=env, start_new_session=True)
         except OSError as exc:
             record.update(state="SPAWN_FAILED", ended_at=_now(),
                           error=f"{type(exc).__name__}: {exc}")
             atomic_write_json(folder / f"{stem}.json", record)
             return DispatchResult(ok=False, error_class="AGENT_ERROR",
                                   error=f"cannot start {self.claude_bin}: {exc}")
-        record.update(state="RUNNING", pid=proc.pid)
+        record.update(state="RUNNING", pid=proc.pid,
+                      process_started_at=process_probe.started_at(proc.pid))
         atomic_write_json(folder / f"{stem}.json", record)
         try:
             exit_code = proc.wait(timeout=float(request.timeout_seconds))
+            # A clean exit can still leave a grandchild in the group (review M1a).
+            record["leftovers_swept"] = stop_group(proc.pid, self.kill_grace_seconds)
         except subprocess.TimeoutExpired:
             self._kill_group(proc)
             record.update(state="KILLED", timed_out=True, exit_code=proc.returncode,
@@ -304,18 +386,73 @@ class HeadlessClaudeExecutor:
     @staticmethod
     def _failure(exit_code: int, doc: dict | None, stdout: str,
                  stderr: str) -> tuple[str | None, str | None]:
-        """``(error, declared_class)``; the class is left to ``classify_error`` on purpose."""
+        """``(error, declared_class)``; the class is left to ``classify_error`` except for
+        transient API errors (overloaded / 5xx), declared CONNECTION = one retry."""
         if exit_code != 0:
             detail = _excerpt((doc or {}).get("result")) or _excerpt(stderr) or _excerpt(stdout)
-            return f"claude -p 失败 exit={exit_code}: {detail}", None
-        if doc is None:
-            return (f"claude -p 退出 0 但结果不可解析: "
-                    f"{_excerpt(stdout) or _excerpt(stderr) or '(空输出)'}"), None
-        subtype = str(doc.get("subtype") or "")
-        if doc.get("is_error") is True or subtype.startswith("error"):
-            return (f"claude -p is_error(subtype={subtype or '—'}): "
-                    f"{_excerpt(doc.get('result')) or _excerpt(stderr)}"), None
-        return None, None
+            error = f"claude -p 失败 exit={exit_code}: {detail}"
+        elif doc is None:
+            error = (f"claude -p 退出 0 但结果不可解析: "
+                     f"{_excerpt(stdout) or _excerpt(stderr) or '(空输出)'}")
+        elif doc.get("is_error") is True or str(doc.get("subtype") or "").startswith("error"):
+            error = (f"claude -p is_error(subtype={doc.get('subtype') or '—'}): "
+                     f"{_excerpt(doc.get('result')) or _excerpt(stderr)}")
+        else:
+            return None, None
+        return error, ("CONNECTION" if _TRANSIENT_API.search(error) else None)
+
+    # ── before launch: orphans of this task, stale outputs (review M9 / M5) ─────────
+    @staticmethod
+    def _prior_records(folder: Path, task_id: str) -> list[tuple[Path, dict]]:
+        found = []
+        for path in sorted(folder.glob(f"{glob.escape(task_id)}.a*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict) and record.get("task_id") == task_id:
+                found.append((path, record))
+        return found
+
+    def _stop_orphans(self, priors: list[tuple[Path, dict]], session_id: str) -> list[int]:
+        """A still-running earlier session of this task (runner restarted) would keep
+        writing the same outputs while the new attempt runs: stop it first."""
+        stopped = []
+        for path, record in priors:
+            if record.get("state") not in {"STARTING", "RUNNING"} or not owns_group(record):
+                continue
+            stop_group(int(record["pid"]), self.kill_grace_seconds)
+            stopped.append(int(record["pid"]))
+            record.update(state="KILLED", superseded_by=session_id, ended_at=_now(),
+                          error=f"superseded by session {session_id} (runner re-dispatched)")
+            atomic_write_json(path, record)
+        return stopped
+
+    @staticmethod
+    def _move_aside_stale_outputs(request: DispatchRequest, folder: Path, session_id: str,
+                                  has_prior: bool) -> list[dict]:
+        """Before a retry, outputs left by an earlier attempt move to ``stale/``.
+
+        Otherwise an attempt that exits 0 without writing passes the missing-output check
+        on the old file, and ``l4-intel`` (no Read tool) cannot overwrite a file it never
+        read.  ``_dispatch/`` is control traffic: never part of a staging bundle.
+        """
+        if request.attempt <= 1 and not has_prior:
+            return []
+        previous = request.attempt - 1 if request.attempt > 1 else request.attempt
+        moved = []
+        for path in request.output_paths.values():
+            source = Path(path)
+            if not source.is_file():
+                continue
+            stale = folder / "stale"
+            stale.mkdir(exist_ok=True)
+            target = stale / f"{request.task_id}.a{previous}.{source.name}.stale"
+            if target.exists():
+                target = stale / f"{request.task_id}.a{previous}.{session_id[:8]}.{source.name}.stale"
+            shutil.move(str(source), str(target))
+            moved.append({"from": str(source), "to": str(target)})
+        return moved
 
     def _kill_group(self, proc: subprocess.Popen) -> None:
         """SIGTERM the whole process group, then SIGKILL whatever is left."""
@@ -337,5 +474,6 @@ class HeadlessClaudeExecutor:
 
 __all__ = [
     "DEFAULT_MAX_TURNS", "HEADLESS_DIR", "HEADLESS_TIMEOUTS", "HeadlessClaudeExecutor",
-    "MAX_TURNS", "TIER_MAX_TURNS", "project_slug", "resolve_claude_bin",
+    "MAX_TURNS", "TIER_MAX_TURNS", "child_env", "owns_group", "project_slug",
+    "resolve_claude_bin", "stop_group",
 ]

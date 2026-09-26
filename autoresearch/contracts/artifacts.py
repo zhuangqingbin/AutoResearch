@@ -200,6 +200,11 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("dispatch_headless_streams", "_dispatch/headless/*.std*", "staging", "l4",
              "session_agent.headless_claude", "txt", "conditional",
              required_when="session_v1 runner 以 headless 执行器派发推理任务"),
+    # 批 4 复审 M5:重试(attempt>1 或同任务已有调用记录)开跑前,上一次留下的产物挪到这里
+    # (`<task>.a<n-1>.<原文件名>.stale`),免得「退出 0 没写」拿旧文件蒙混过关。
+    Artifact("dispatch_headless_stale", "_dispatch/headless/stale/*.stale", "staging", "l4",
+             "session_agent.headless_claude", "txt", "conditional",
+             required_when="headless 执行器重试一个上次已写过产物的推理任务"),
     # 2026-09-26 §4 A3:intel 死票门判决(旋钮 l4_intel.skip_when_dead 关 = 不落文件)
     Artifact("intel_gate", "_intel_gate.json", "staging", "l4", "intel_gate", "json", "gated",
              required_when="l4_intel.skip_when_dead=true"),

@@ -152,8 +152,11 @@ intel 15m / card·复核 30m,**从 `.taken` 起算**;没人领的请求 4× 后�
 bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]` 子进程(独立顶级会话 = 独立上下文;
 项目 agent 定义与 hook 照常装载,见 `docs/research/2026-09-26-headless-driver-probes.md`)。只接 claude 引擎的
 run。超时按角色(intel 12m / card·复核 25m / L3 30m)杀整个进程组;结果 JSON 非法、`is_error`、或退出 0 但
-声明的输出文件不在 = 该 attempt 失败。每次调用落 `<staging>/_dispatch/headless/<task>.a<n>.json`(argv 脱敏、
-usage、`total_cost_usd`、session id、transcript 路径)。runner 把 `~/.claude/projects/<slug>/<session-id>.jsonl`
+声明的输出文件不在 = 该 attempt 失败。子进程环境显式构造:`ANTHROPIC_*`、模型/effort/Bedrock/Vertex 路由开关与
+`*_API_KEY`/`*_TOKEN`/`*_SECRET`(`CLAUDE_CODE_OAUTH_TOKEN` 除外)不传,记录只列被剥的名字。重试(attempt>1 或
+同任务已有调用记录)前,上一次的产物挪到 `_dispatch/headless/stale/`、同任务仍在跑的旧会话先停;正常退出后也扫一遍
+进程组。每次调用落 `<staging>/_dispatch/headless/<task>.a<n>.json`(同 attempt 重派时多一段 session 前缀,不覆盖;
+argv 脱敏、pid + 启动时刻、usage、`total_cost_usd`、session id、transcript 路径)。runner 把 `~/.claude/projects/<slug>/<session-id>.jsonl`
 整份绑定为 `host-binding` 证据(复核的独立上下文由进程边界满足),`usage_harvest` 按调用记录计量
 (`dispatcher=headless`)。执行器不能重挂在飞的 `claude -p`:runner 崩了之后已认领的 attempt 报 orphan
 (STALLED)。无人值守整场(锁、交易日、湖就绪、begin、送达、FAILED 通知、launchd)见

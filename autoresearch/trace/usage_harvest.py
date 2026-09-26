@@ -323,7 +323,9 @@ def collect_headless(
             row.update(dispatcher="headless", agent="headless", cost_source=None)
             rows.append(row)
             continue
-        if isinstance(record, dict) and record.get("task_id"):
+        # SPAWN_FAILED = the CLI never started: no session ran, nothing to meter.
+        if (isinstance(record, dict) and record.get("task_id")
+                and record.get("state") != "SPAWN_FAILED"):
             rows.append(_headless_row(record, projects_root))
     return sorted(rows, key=lambda r: -r["weighted_in"])
 

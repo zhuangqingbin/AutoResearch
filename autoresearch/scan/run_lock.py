@@ -8,6 +8,10 @@ Python 进程,进程在锁在、进程死锁自动释放(内核回收,不会留�
 人工会话开扫前先问一次(scan-market SKILL 步骤 0):
 
   uv run --no-sync python -m autoresearch.scan.run_lock check   # 0=空闲;3=被占(打印持锁 pid)
+
+问询不再只是建议(批 4 复审 I3):``capsule begin scan-market`` 与 ``session_agent begin``
+(scan 请求)在锁被占时也拒绝(退出 3、打印持锁 pid),除非显式 ``--ignore-scan-lock``。
+读侧(``holder`` / ``describe`` / ``lock_path``)在 ``common.scan_lock``,这里再导出。
 """
 from __future__ import annotations
 
@@ -19,15 +23,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-LOCK_NAME = ".scan_run.lock"
-#: ``check`` / ``scan_run`` 的「锁被占」退出码。
-EXIT_HELD = 3
-
-
-def lock_path() -> Path:
-    from autoresearch.common import workspace as ws
-
-    return ws.context_root() / LOCK_NAME
+from autoresearch.common.scan_lock import EXIT_HELD, LOCK_NAME, describe, holder, lock_path
 
 
 class ScanRunLock:
@@ -72,29 +68,6 @@ def try_acquire(path: Path | str | None = None, *, note: str | None = None) -> S
     }, ensure_ascii=False))
     stream.flush()
     return ScanRunLock(target, stream)
-
-
-def holder(path: Path | str | None = None) -> dict | None:
-    """锁空闲 → ``None``;被占 → 持锁者自报信息(读不出也返回 ``{"pid": None}``)。"""
-    target = Path(path) if path is not None else lock_path()
-    if not target.exists():
-        return None
-    with target.open("r", encoding="utf-8") as stream:
-        try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            try:
-                value = json.loads(stream.read() or "{}")
-            except json.JSONDecodeError:
-                value = {}
-            return {"pid": None, **value} if isinstance(value, dict) else {"pid": None}
-        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-    return None
-
-
-def describe(info: dict) -> str:
-    return (f"扫描锁被占:pid {info.get('pid')}(since {info.get('started_at') or '?'}"
-            f"{' · ' + info['note'] if info.get('note') else ''})")
 
 
 def main(argv: list[str] | None = None) -> int:

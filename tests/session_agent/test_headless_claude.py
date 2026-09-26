@@ -353,9 +353,11 @@ def test_headless_call_records_are_registered_staging_artifacts():
 
     calls = ca.by_name("dispatch_headless_calls")
     streams = ca.by_name("dispatch_headless_streams")
+    stale = ca.by_name("dispatch_headless_stale")
     assert (calls.root, calls.path, calls.kind) == ("staging", "_dispatch/headless/*.json", "json")
     assert (streams.root, streams.path) == ("staging", "_dispatch/headless/*.std*")
-    assert calls.presence == streams.presence == "conditional"
+    assert (stale.root, stale.path) == ("staging", "_dispatch/headless/stale/*.stale")
+    assert calls.presence == streams.presence == stale.presence == "conditional"
 
 
 def test_scan_staging_bundles_never_capture_headless_records(tmp_path):
@@ -422,3 +424,221 @@ def test_cli_run_headless_refuses_a_codex_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(runner, "run_loop", lambda *a, **k: pytest.fail("must not run"))
     assert cli.main(["run", "--run-id", run.run_id, "--executor", "headless"]) == 2
     assert "claude" in json.loads(capsys.readouterr().out)["errors"][0]["message"]
+
+
+# ── child environment: no auth routing, no project secrets (review I2) ─────────
+
+_ROUTING_AND_SECRETS = {
+    "ANTHROPIC_API_KEY": "sk-ant-api-SECRET-VALUE-1",
+    "ANTHROPIC_AUTH_TOKEN": "SECRET-VALUE-2",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.example/anthropic",
+    "ANTHROPIC_MODEL": "deepseek-chat-model-x",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-reasoner-model-x",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-chat-model-y",
+    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-chat-model-z",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-subagent-model",
+    "CLAUDE_CODE_EFFORT_LEVEL": "low-effort-override",
+    "CLAUDE_CODE_USE_BEDROCK": "bedrock-on",
+    "CLAUDE_CODE_USE_VERTEX": "vertex-on",
+    "BARK_TOKEN": "SECRET-VALUE-3",
+    "DELIVERY_MAIL_TO": "someone@example.invalid",
+    "TUSHARE_TOKEN": "SECRET-VALUE-4",
+    "FRED_API_KEY": "SECRET-VALUE-5",
+    "OPENAI_API_KEY": "SECRET-VALUE-6",
+    "GITHUB_TOKEN": "SECRET-VALUE-7",
+}
+
+
+def test_child_env_drops_auth_routing_and_secrets_and_records_only_names(tmp_path, monkeypatch):
+    """`claude -p` must bill the subscription login: an API key / base URL / model override
+    inherited from `.env` or a `cc-ds` shell would silently move the nightly scan."""
+    for key, value in _ROUTING_AND_SECRETS.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "subscription-oauth-value")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    body = f"""\
+        env > "{tmp_path / 'child_env.txt'}"
+        """ + _success_body(tmp_path)
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body))
+    assert ex.dispatch(_request(tmp_path)).ok is True
+    seen = dict(line.split("=", 1) for line in
+                (tmp_path / "child_env.txt").read_text(encoding="utf-8").splitlines()
+                if "=" in line)
+    leaked = sorted(set(_ROUTING_AND_SECRETS) & set(seen))
+    assert leaked == [], f"leaked into claude -p: {leaked}"
+    for kept in ("HOME", "PATH", "LANG", "CLAUDE_CODE_OAUTH_TOKEN"):
+        assert kept in seen, kept
+    rec = _record(tmp_path)
+    assert set(_ROUTING_AND_SECRETS) <= set(rec["env_stripped"])
+    text = json.dumps(rec, ensure_ascii=False)
+    for value in (*_ROUTING_AND_SECRETS.values(), "subscription-oauth-value"):
+        assert value not in text, "a stripped value reached the call record"
+
+
+def _records(tmp_path: Path) -> list[dict]:
+    folder = tmp_path / "staging" / "_dispatch" / "headless"
+    return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*.json"))]
+
+
+def _attempt(request: DispatchRequest, attempt: int) -> DispatchRequest:
+    return DispatchRequest.from_json({**request.to_json(), "attempt": attempt})
+
+
+def _live_group(tmp_path: Path, *, ignore_term: bool = False):
+    import subprocess
+
+    script = ("trap '' TERM; " if ignore_term else "") + "sleep 30"
+    return subprocess.Popen(["/bin/sh", "-c", script], start_new_session=True)
+
+
+# ── re-dispatch of an attempt number: never overwrite, stop the orphan (review M9) ──
+
+def test_redispatch_of_the_same_attempt_never_overwrites_the_earlier_record(tmp_path):
+    ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
+    first = ex.dispatch(_request(tmp_path))
+    second = ex.dispatch(_request(tmp_path))          # a restarted runner, same attempt
+    assert first.ok and second.ok and first.session_ref != second.session_ref
+    sessions = sorted(rec["session_id"] for rec in _records(tmp_path))
+    assert sessions == sorted([first.session_ref, second.session_ref])
+    assert _record(tmp_path)["session_id"] == first.session_ref       # original untouched
+
+
+def test_prelaunch_stops_a_still_running_session_of_the_same_task(tmp_path):
+    from autoresearch.trace import process_probe
+
+    orphan = _live_group(tmp_path)
+    folder = tmp_path / "staging" / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    (folder / f"{TASK}.a1.json").write_text(json.dumps({
+        "task_id": TASK, "attempt": 1, "state": "RUNNING", "pid": orphan.pid,
+        "process_started_at": process_probe.started_at(orphan.pid)}), encoding="utf-8")
+    try:
+        ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
+        assert ex.dispatch(_attempt(_request(tmp_path), 2)).ok is True
+        assert orphan.wait(timeout=10) is not None, "the orphaned session kept running"
+        old = json.loads((folder / f"{TASK}.a1.json").read_text(encoding="utf-8"))
+        assert old["state"] == "KILLED" and old["superseded_by"]
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+            orphan.wait()
+
+
+def test_prelaunch_leaves_other_tasks_and_pid_twins_alone(tmp_path):
+    other, twin = _live_group(tmp_path), _live_group(tmp_path)
+    folder = tmp_path / "staging" / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    (folder / "scan.l4.card.600001.a1.json").write_text(json.dumps({
+        "task_id": "scan.l4.card.600001", "state": "RUNNING", "pid": other.pid}),
+        encoding="utf-8")
+    (folder / f"{TASK}.a1.json").write_text(json.dumps({   # pid reused by an unrelated process
+        "task_id": TASK, "state": "RUNNING", "pid": twin.pid,
+        "process_started_at": "Thu Jan  1 00:00:00 1970"}), encoding="utf-8")
+    try:
+        ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
+        assert ex.dispatch(_attempt(_request(tmp_path), 2)).ok is True
+        assert other.poll() is None and twin.poll() is None
+    finally:
+        for proc in (other, twin):
+            proc.kill()
+            proc.wait()
+
+
+# ── retries never accept a stale output (review M5) ─────────────────────────────
+
+def test_retry_moves_a_stale_output_aside_so_exit_zero_without_writing_fails(tmp_path):
+    card = tmp_path / "staging" / "details" / "600000.md"
+    card.parent.mkdir(parents=True)
+    card.write_text("written by attempt 1, which then timed out", encoding="utf-8")
+    body = """\
+        echo "{\\"type\\":\\"result\\",\\"is_error\\":false,\\"session_id\\":\\"$sid\\",\\"usage\\":{},\\"result\\":\\"done\\"}"
+        """
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body))
+    result = ex.dispatch(_attempt(_request(tmp_path), 2))
+    assert result.ok is False and result.error_class == "CONTRACT_ERROR"
+    assert not card.exists()
+    [moved] = [rec for rec in _records(tmp_path) if rec.get("attempt") == 2][0]["outputs_moved_aside"]
+    assert moved["from"] == str(card)
+    stale = Path(moved["to"])
+    assert stale.read_text(encoding="utf-8").startswith("written by attempt 1")
+    assert stale.name.endswith(".stale") and ".a1." in stale.name
+    assert stale.parent == tmp_path / "staging" / "_dispatch" / "headless" / "stale"
+
+
+def test_retry_output_written_fresh_is_accepted(tmp_path):
+    card = tmp_path / "staging" / "details" / "600000.md"
+    card.parent.mkdir(parents=True)
+    card.write_text("stale", encoding="utf-8")
+    ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
+    assert ex.dispatch(_attempt(_request(tmp_path), 2)).ok is True
+    assert card.read_text(encoding="utf-8") == "card"
+
+
+def test_first_attempt_leaves_a_preexisting_output_in_place(tmp_path):
+    card = tmp_path / "staging" / "details" / "600000.md"
+    card.parent.mkdir(parents=True)
+    card.write_text("pre", encoding="utf-8")
+    ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
+    assert ex.dispatch(_request(tmp_path)).ok is True
+    assert _record(tmp_path)["outputs_moved_aside"] == []
+
+
+# ── a clean exit still sweeps the process group (review M1a) ────────────────────
+
+def test_normal_exit_sweeps_leftover_processes_in_the_group(tmp_path):
+    pidfile = tmp_path / "leftover.pid"
+    body = f"""\
+        sleep 30 &
+        echo $! > "{pidfile}"
+        """ + _success_body(tmp_path)
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body), kill_grace_seconds=0.5)
+    assert ex.dispatch(_request(tmp_path)).ok is True
+    leftover = int(pidfile.read_text(encoding="utf-8").strip())
+    assert _dead(leftover, time.monotonic() + 5), "a grandchild outlived its claude -p"
+
+
+# ── transient API errors are retried once (review M4) ────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    "API Error: 500 Internal server error",
+    "API Error: 503 Service Unavailable",
+])
+def test_transient_api_errors_are_classified_as_connection(tmp_path, text):
+    payload = json.dumps({"type": "result", "is_error": True, "subtype": "success",
+                          "result": text}).replace('"', '\\"')
+    body = f"""\
+        echo "{payload}"
+        exit 1
+        """
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body))
+    result = ex.dispatch(_request(tmp_path))
+    assert result.ok is False
+    assert classify_error(result.error, result.error_class) == "CONNECTION"
+
+
+# ── small items (review M11) ─────────────────────────────────────────────────────
+
+def test_result_parsing_prefers_the_result_object_over_trailing_json(tmp_path):
+    doc = hc._parse_result('{"type":"result","is_error":false,"session_id":"s"}\n'
+                           '{"type":"system","subtype":"hook"}\n')
+    assert doc["type"] == "result"
+    assert hc._parse_result('{"is_error":false}')["is_error"] is False   # untyped fallback
+
+
+def test_call_record_names_the_resolved_cli_binary(tmp_path):
+    real = _fake_claude(tmp_path, _success_body(tmp_path))
+    link = tmp_path / "claude-link"
+    link.symlink_to(real)
+    ex = _executor(tmp_path, str(link))
+    assert ex.dispatch(_request(tmp_path)).ok is True
+    assert _record(tmp_path)["claude_bin_resolved"] == str(Path(real).resolve())
+
+
+def test_child_env_keeps_the_login_basics():
+    env, stripped = hc.child_env({"HOME": "/h", "PATH": "/p", "USER": "u", "TMPDIR": "/t",
+                                  "LANG": "C", "CLAUDE_CONFIG_DIR": "/c",
+                                  "AUTORESEARCH_ENGINE": "claude", "ANTHROPIC_API_KEY": "x"})
+    assert env == {"HOME": "/h", "PATH": "/p", "USER": "u", "TMPDIR": "/t", "LANG": "C",
+                   "CLAUDE_CONFIG_DIR": "/c", "AUTORESEARCH_ENGINE": "claude"}
+    assert stripped == ["ANTHROPIC_API_KEY"]
