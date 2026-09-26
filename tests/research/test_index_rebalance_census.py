@@ -264,7 +264,13 @@ def test_six_index_whitelist_key_sets_agree_across_modules():
     同一个对象,值不会分叉,但路径本身就是一条会漂移的边。这里把散落的几份表都拴在一起:
     `contracts.INDEX_WHITELIST`(六位代码)、census 的 `INDEXES`(点分 ts_code)、census 的
     `_NOMINAL_SIZE`(minor-6 后同样按 ts_code 键控)、`QUARTERLY` 子集,以及 `index_flow` 的
-    导入路径本身。"""
+    导入路径本身。
+
+    限定范围复核(final whole-branch review 之后,2026-09-26)补第六处:`index_flow.
+    BENCHMARK_PATTERNS`(benchmark 名称 → 正则,`flow_adv_days` 描述字段的入口)是一张独立
+    维护的字面量字典,不像 `INDEX_WHITELIST` 那样靠转手导入共享同一个对象——键会真的漂移,
+    漂移的后果正是 `index_flow.py` 自己 docstring 警告的那种「看起来是算出来的数字」的半成品
+    (某个指数缺一个 key,那个指数的贡献悄悄从 flow 里消失,不报错、不留痕)。"""
     from autoresearch.contracts.index_whitelist import INDEX_WHITELIST
     from autoresearch.scan import index_flow
 
@@ -272,3 +278,4 @@ def test_six_index_whitelist_key_sets_agree_across_modules():
     assert set(cen._NOMINAL_SIZE) == set(cen.INDEXES)
     assert set(cen.INDEXES) >= cen.QUARTERLY
     assert index_flow.INDEX_WHITELIST is INDEX_WHITELIST      # 同一个对象,不是各自一份拷贝
+    assert set(index_flow.BENCHMARK_PATTERNS) == set(INDEX_WHITELIST)   # 第六处:独立字面量表,会真的漂移

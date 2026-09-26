@@ -212,6 +212,33 @@ def test_harvest_calendar_third_leg_exception_does_not_lose_the_other_two_legs(t
     assert not (df["kind"] == "index_rebalance").any()          # 第三腿本身诚实地什么都没贡献
 
 
+_EV_PARTIAL_THEN_BOOM = pd.DataFrame([
+    {"code": "000001", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260529",
+     "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+    {"code": "000002", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260529",
+     "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": "boom"},
+], columns=ie.EVENT_COLS)
+
+
+def test_harvest_calendar_third_leg_does_not_leak_partial_rows_when_it_fails_midway(tmp_path, monkeypatch):
+    """final whole-branch review 限定范围复核(2026-09-26):此前第三腿的循环直接往共享的
+    `rows` 累加器 append——000001 先被成功处理并追加进 `rows`,000002 那一行的 `flow_adv_days`
+    是脏数据(`float("boom")` 会抛 `ValueError`),循环跑到一半才炸,被下面的 except 接住、
+    记一笔「本次不产出 index_rebalance 行」的降级,但旧代码从不撤销 000001 已经追加的那一行
+    ——`calendar.csv` 与降级记录的措辞互相矛盾:文件里确实有一行,记录却说没有。"""
+    from autoresearch.data.contracts import clear_degradations, degradations
+    from autoresearch.scan import calendar as cal
+    _offline(monkeypatch)
+    clear_degradations()
+
+    def fake_harvest(date, outdir, **k):
+        return _EV_PARTIAL_THEN_BOOM
+    monkeypatch.setattr(ie, "harvest_index_events", fake_harvest)
+    df = cal.harvest_calendar("2026-06-11", {"000001", "000002"}, root=tmp_path, index_rebalance=True)
+    assert not (df["kind"] == "index_rebalance").any()      # 000001 的部分产出不能只因 000002 炸了就漏进表
+    assert any(d.get("endpoint") == "index_events" for d in degradations())   # 降级确实留痕了
+
+
 def _mk_index(tmp_path, date="2026-06-11"):
     d = tmp_path / date
     d.mkdir(parents=True, exist_ok=True)

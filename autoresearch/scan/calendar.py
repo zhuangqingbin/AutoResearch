@@ -110,15 +110,24 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
             from autoresearch.scan import index_events as _ie
 
             ev = _ie.harvest_index_events(date, outdir)
+            # final whole-branch review 限定范围复核(2026-09-26):此前直接往共享的 `rows`
+            # 累加器 append——若异常在循环跑到一半时才炸(如某一行 `r.flow_adv_days` 之外的
+            # 属性访问撞上了湖分区缺列),前面几次迭代已经贡献的行仍留在 `rows` 里,连同上面
+            # 两腿的行一起写进 `calendar.csv`,而下面 except 里的降级记录却断言「本次不产出
+            # index_rebalance 行」——记录与实际写盘的产物互相矛盾。先收进本腿自己的局部列表,
+            # 循环全程无异常才并入 `rows`:要么这一腿的行完整地进最终表,要么一行都不进,与
+            # 降级记录的措辞永远一致。
+            leg_rows: list[dict] = []
             if ev is not None:
                 for r in ev.itertuples(index=False):
                     eff = r.eff_close_date
                     if r.code not in want or r.phase == "unknown_eff" or not isinstance(eff, str) or not eff:
                         continue
                     flow = None if r.flow_adv_days is None or pd.isna(r.flow_adv_days) else float(r.flow_adv_days)
-                    rows.append({"code": r.code, "kind": "index_rebalance", "event_date": str(eff)[:8],
-                                 "detail": f"{r.index_name} {'调入' if r.side == 'add' else '调出'}|{r.phase}",
-                                 "ratio": flow})
+                    leg_rows.append({"code": r.code, "kind": "index_rebalance", "event_date": str(eff)[:8],
+                                     "detail": f"{r.index_name} {'调入' if r.side == 'add' else '调出'}|{r.phase}",
+                                     "ratio": flow})
+            rows.extend(leg_rows)
         except Exception as exc:  # noqa: BLE001 — 第三腿的失败不得连累上面两腿已收集的行
             from autoresearch.data.contracts import record_degradation
             # `record_degradation` 自己就会打一行 stderr(数据契约的既有姿势),不必再手写一条

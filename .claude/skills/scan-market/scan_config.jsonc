@@ -347,9 +347,9 @@
   //   build_decision(rebalance_gate=…, index_events=盘上 index_events.csv 按 code 分组)→
   //   `_hard_gate` 第⑤段 rebalance_close:扫描日 = 调样生效前夜(index_events.csv 里
   //   phase=="passive_close_eve")的调样票(调入/调出、六指数任一,E2 裁定一刀不分)否决;
-  //   独立计数、不并入 no_redflag;决策文件多顶层 index_events 块(source ok|absent|error、
-  //   gate_evaluated、n_rows、hits)、field_usage.hard_gate.fields 变五项。源缺席/读取失败
-  //   → 门放行 + source=absent|error 留痕(「没看见」≠「没事件」,两者门后果相同但因不同,
+  //   独立计数、不并入 no_redflag;决策文件多顶层 index_events 块(source ok|absent|disabled|error、
+  //   gate_evaluated、n_rows、n_unresolved_eff、hits)、field_usage.hard_gate.fields 变五项。源缺席/
+  //   读取失败/日历腿本身关着 → 门放行 + source=absent|disabled|error 留痕(「没看见」≠「没事件」,三者门后果相同但因不同,
   //   各自留痕不合并)。
   // ⚖️ 证据:同上 calendar.index_rebalance 那条(17 次调样普查,生效前夜 −0.31pp、胜率
   //   35%,中证500/中证1000 显著为负)——这一门否决的正是那一夜的买入。E2 裁定:全部调样票

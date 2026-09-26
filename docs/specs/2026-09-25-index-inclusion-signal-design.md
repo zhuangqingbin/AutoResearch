@@ -136,7 +136,7 @@ Python 侧共用；agent 定义两侧同改（§2.5）；`.codex` 侧 hook 若�
 
 | # | 读数 | 通过判据 | 怎么读 |
 |---|---|---|---|
-| O1 | 解析器 fixture：小样本合成 xlsx（实施后补：`tests/data/test_csindex_source.py` 提交的是一份 9 行的合成夹具，同 2026-09-09 临时调整公告的真实版式，不是那份公告本身的 166 行——166 行只在 Task 2 的一次性「真源冒烟」手工核对过，从未进测试） | `test_parse_adjustment_xlsx_long_table`：行数 = 4+4+1=9，六指数(上证380/沪深300/中证500)行全部入长表；非六指数行的过滤发生在下游 `build_index_events` 的白名单判定，不在这个解析器测试里 | `tests/data/test_csindex_source.py` |
+| O1 | 解析器 fixture：小样本合成 xlsx（实施后补：`tests/data/test_csindex_source.py` 提交的是一份 9 行的合成夹具，同 2026-09-09 临时调整公告的真实版式，不是那份公告本身的 166 行——166 行只在 Task 2 的一次性「真源冒烟」手工核对过，从未进测试） | `test_parse_adjustment_xlsx_long_table`：白名单成员沪深300 的 drop/add 两个集合、中证500 的 add 行数，以及**非白名单控制组**上证380 的 drop 行数均按 fixture 逐项核对，且解析出的 code 恒 6 位、无「-」占位——上证380 与沪深300/中证500 的行同样全部入长表，证明解析器本身不按白名单过滤；非六指数行的白名单过滤发生在下游 `build_index_events` 的白名单判定，不在这个解析器测试里 | `tests/data/test_csindex_source.py` |
 | O2 | 生效日推导 | 「X 日起生效」→ X 前一交易日；「X 日收市后」→ X；「自退市日起」→ 空 + `unknown_eff` | 同上，`test_parse_effective_date` 的参数化 fixture |
 | O3 | 键不撞 | 两个公告 id / 两个指数同月 → 湖中两份文件 | `tests/data/test_index_event_endpoints.py` |
 | O4 | parity | 旋钮关（`calendar.index_rebalance=false` ∧ `relative_buy.rebalance_gate=false`）→ `_relative_buy_decision.json` **除 `rule_version` 外**逐字节不变（`RULE_VERSION` 无条件升到 `"e6.v4.1"`，逐字镜像 v4.0 对 `tiering` 的先例，见 §2.4）。实施后补，纠正两处过度承诺：① 只测了决策文件半边，`calendar.csv` 的旋钮关 parity 不是靠回放历史 run 验证的——它靠构造性论证成立（第三腿整段在 `if index_rebalance:` 之后，旋钮关时那段代码从不执行，是既有单测 `test_harvest_calendar_third_leg_is_off_by_default` 锁的不变量），没有做过、也不需要做跨历史 run 的字节级回放；② 决策文件那半边可回放的历史 run 是 **7 个**不是 8 个（63/70 已发布 run 没有 staging 镜像或没有决策文件，不可回放） | 回放脚本（decision 半边）+ 单测（calendar 半边的构造性论证） |
