@@ -85,8 +85,8 @@ def _read_jsonc(p: Path):
 # 为词表)——每个 role 下只认 model/effort 两个子键,值也做枚举校验(见 load_user_config
 # 内 agents 校验块),不再是"消费方各自解释"的自由形状。
 # l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
-# `l3_select.prepare_l3_table` 消费;finalist_max 由 merge v3 消费(`write_finalists` 已接线,
-# cap=min(finalist_max, budget))。
+# `l3_select.prepare_l3_table` 消费。原 l3.finalist_max 已于 2026-09-26 退役(写了即报错指路):
+# 卡数只由 l4.max_cards 决定(唯一算法 scan/l4/card_count.effective_caps)。
 _TOP_WHITELIST = {
     "agents", "agent_engines", "funnel", "pinned", "l4_intel", "l3",
     "budgets", "performance",
@@ -105,6 +105,12 @@ _TOP_WHITELIST = {
     # 2026-09-25 指数调样事件 §2.3:日历第三腿总开关(平铺布尔,镜像 l2.knife_cap)。默认 false = parity;
     # 消费点 scan/calendar.harvest_calendar(index_rebalance=knob)。
     "calendar",
+    # 2026-09-26 用户需求「最终进入 L4 卡的个数可配置、且真实生效」:max_cards / budget_flags,
+    # 唯一算法 scan/l4/card_count.effective_caps(GATE1 回显,Workflow 与 session_agent 只读)。
+    "l4",
+    # 2026-09-26 daily-engine 批 4(spec §6 C3):无人值守场的送达渠道。默认 channel="none"
+    # = parity(什么都不发);消费点 scan/delivery.configured_delivery → send()/notify()。
+    "delivery",
 }
 _SUB_WHITELIST = {
     "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
@@ -114,8 +120,11 @@ _SUB_WHITELIST = {
     "l2": {"sector_cap", "floors", "knife_cap", "sector_seats"},
     "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
-    "l4_intel": {"enabled", "max_queries"},
-    "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn", "composite_seat"},
+    "l4_intel": {"enabled", "max_queries",
+                 # 2026-09-26 §4 A3 intel 死票门(默认 false = parity;派发接线冻结窗后)
+                 "skip_when_dead"},
+    "l3": {"two_pass", "pass1_target", "lowturn", "composite_seat"},
+    "l4": {"max_cards", "budget_flags"},
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
         "min_real_scans", "baseline_run", "run_weighted_warn",
@@ -127,6 +136,7 @@ _SUB_WHITELIST = {
     "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering", "rebalance_gate"},
     "retention": {"bind_transcripts"},
     "calendar": {"index_rebalance", "index_rebalance_flow"},
+    "delivery": {"channel", "file_dir"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -142,6 +152,8 @@ def _t_rbmode(v): return v in {"shadow", "active"}
 def _t_rbpool(v): return v in {"finalists", "composite"}
 def _t_date_or_null(v): return v is None or (isinstance(v, str) and _DATE_RE.fullmatch(v) is not None)
 def _t_profile(v): return v in {"calibrated", "preference"}
+def _t_channel(v): return isinstance(v, str) and v in {"none", "bark", "mail", "file"}
+def _t_path_or_null(v): return v is None or (isinstance(v, str) and v.strip() != "")
 
 
 def _t_pref_weights(v):
@@ -190,6 +202,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # `index_events.harvest_index_events`(`with_flow=knob(...)`)。只填一个 calendar.csv 的括注
     # 数字,不进任何门/排序/评级——回滚杆就是这一个键。
     ("calendar", "index_rebalance_flow"): (_t_bool, "boolean"),
+    # intel 死票门(2026-09-26 daily-engine §4 A3):true → `scan/l4/intel_gate.decide` 落
+    # `_intel_gate.json`(slim 三线同负 ∧ 无 📅/事件催化 ∧ 非 📌/证据席 的票不派 intel);
+    # false(默认)= 不落文件、逐字 parity。派发两条路径读该文件是批 6 Task 3(冻结窗后)。
+    ("l4_intel", "skip_when_dead"): (_t_bool, "boolean"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),
@@ -197,6 +213,9 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("l3", "lowturn"): (_t_dict, "object"),   # 低位转强阈值块(2026-08-21;键义见 common/turnup.LOWTURN_DEFAULTS)
     # composite 席位块(2026-08-26 §3 路A):{enabled: bool, m: int}——键义见 scan/l3/merge.COMPOSITE_SEAT_*
     ("l3", "composite_seat"): (_t_dict, "object"),
+    # L4 卡数(2026-09-26):max_cards = 非 📌 卡上限(含 composite 席位);budget_flags=false 忽略五面旗。
+    ("l4", "max_cards"): (_t_posint, "正整数"),
+    ("l4", "budget_flags"): (_t_bool, "boolean"),
     ("relative_buy", "mode"): (_t_rbmode, "shadow|active"),
     ("relative_buy", "exclude_pinned"): (_t_bool, "boolean"),
     ("relative_buy", "activate_date"): (_t_date_or_null, "YYYY-MM-DD 或 null"),
@@ -217,6 +236,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # false 或无 active run 时 `transcript_binder.safe_bind_run` 仍写带 reason 的
     # 禁用报告,不清除已有证据。
     ("retention", "bind_transcripts"): (_t_bool, "boolean"),
+    # 送达(2026-09-26 批 4,spec §6 C3):channel 闭集;file_dir 只在 channel=file 时读(null=未配)。
+    # 凭证(BARK_TOKEN / DELIVERY_MAIL_TO)**不进本文件**,只在 .env —— 这里没有它们的键。
+    ("delivery", "channel"): (_t_channel, "none|bark|mail|file"),
+    ("delivery", "file_dir"): (_t_path_or_null, "非空路径字符串 或 null"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
@@ -372,6 +395,10 @@ def validate_user_config(cfg: dict) -> dict:
     unknown_top = sorted(set(cfg) - _TOP_WHITELIST)
     if unknown_top:
         raise ValueError(f"scan_config.json 含未知顶层键: {unknown_top}(白名单={sorted(_TOP_WHITELIST)})")
+    if isinstance(cfg.get("l3"), dict) and "finalist_max" in cfg["l3"]:
+        # 退役键指路(2026-09-26):不指路的话,用户改了 finalist_max 以为会生效。
+        raise ValueError("scan_config.json 的 l3.finalist_max 已退役(2026-09-26):卡数只由 l4.max_cards 决定,"
+                         "请删除 finalist_max 并改用 l4.max_cards(默认 13 = 原 10 + composite 3)")
     for key, sub_whitelist in _SUB_WHITELIST.items():
         block = cfg.get(key)
         if isinstance(block, dict):

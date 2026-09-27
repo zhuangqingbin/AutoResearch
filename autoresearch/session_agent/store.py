@@ -87,6 +87,13 @@ def read_entry(path: Path | str, task_id: str) -> dict:
         return json.loads(canonical_json(payload["tasks"][task_id]))
 
 
+def read_entries(path: Path | str) -> dict[str, dict]:
+    """Every entry (copy) under the lock — the durable state a restarted runner reads."""
+    target = Path(path)
+    with _locked(target):
+        return json.loads(canonical_json(_load(target)["tasks"]))
+
+
 def register_tasks(
     path: Path | str,
     tasks: list[dict],
@@ -147,7 +154,11 @@ def claim(
             raise TaskConflict("expected attempt does not match next attempt")
         for dependency in entry["spec"]["dependencies"]:
             dependency_entry = payload["tasks"].get(dependency)
-            if dependency_entry is not None and dependency_entry["state"] != "SUCCEEDED":
+            # Same rule as plan.ready_tasks: SUPERSEDED (retried L4 child replaced by its
+            # verified retry, or a released optional L3 repair) satisfies dependents.
+            if dependency_entry is not None and dependency_entry["state"] not in {
+                "SUCCEEDED", "SUPERSEDED",
+            }:
                 raise TaskConflict(f"dependency has not succeeded: {dependency}")
         receipt = {
             "schema_version": 1,
@@ -432,6 +443,6 @@ def complete_l4_retry_alias(path: Path | str, code: str, previous_attempt: int) 
 
 __all__ = [
     "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
-    "complete_l4_retry_alias", "mark_failed", "prepare_l4_retry", "read_entry",
+    "complete_l4_retry_alias", "mark_failed", "prepare_l4_retry", "read_entries", "read_entry",
     "read_states", "recover_receipt", "register_tasks", "supersede_optional_failure",
 ]

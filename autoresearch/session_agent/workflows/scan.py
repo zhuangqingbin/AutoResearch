@@ -425,7 +425,9 @@ def l4_retry_expansion(
             prefix,
             "DETERMINISTIC",
             dependencies=["scan.l4.prepare"],
-            inputs=["scan.l4.taskbook", "scan.l4.source.bundle", ids["prompt"]],
+            # The taskbook (_l4_tasks.json) is the ticket owner's mutable state, not a
+            # hash-frozen artifact: the claim freezes the preflight receipt instead.
+            inputs=["scan.l4.source.bundle", ids["prompt"]],
             outputs=[ids["ticket"]],
             contract="scan.l4.ticket.v1",
             operation="scan.l4.ticket",
@@ -553,7 +555,6 @@ def l4_expansion(
             ],
             outputs=[
                 "scan.l4.plan",
-                "scan.l4.taskbook",
                 "scan.l4.source.bundle",
                 *prompt_ids,
             ],
@@ -571,7 +572,8 @@ def l4_expansion(
                 f"l4.{code}.a1",
                 "DETERMINISTIC",
                 dependencies=["scan.l4.prepare"],
-                inputs=["scan.l4.taskbook", "scan.l4.source.bundle", ids["prompt"]],
+                # Taskbook = owner state, not an artifact (see l4_retry_expansion).
+                inputs=["scan.l4.source.bundle", ids["prompt"]],
                 outputs=[ids["ticket"]],
                 contract="scan.l4.ticket.v1",
                 operation="scan.l4.ticket",
@@ -971,6 +973,18 @@ def _expansion_snapshot(handle, artifact_id: str) -> dict:
     return {"artifact_id": value["artifact_id"], "sha256": value["sha256"]}
 
 
+def inapplicable_templates(handle) -> frozenset[str]:
+    """Sentinel modes skip L3 entirely, so the L3-repair template (expanded only after
+    ``scan.l3.lint``) can never expand; everything else still must."""
+    try:
+        mode = _load_artifact_json(handle, "scan.run_mode")
+    except (KeyError, ValueError, RuntimeError, OSError):
+        return frozenset()
+    if mode.get("mode") in {run_mode.SENTINEL_EMPTY, run_mode.SENTINEL_PINNED}:
+        return frozenset({"scan.l3.repair"})
+    return frozenset()
+
+
 def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list[dict]:
     del request
     if task["task_id"] == "scan.gate1":
@@ -1081,8 +1095,13 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 "slim": staging
                 / "_external_inputs"
                 / f"{normalize_symbol(code)}_{handle.analysis_date}_slim.md",
-                "intel": staging / f"_l4_intel_{code}.md",
-                "intel_status": staging / f"_l4_intel_status_{code}.json",
+                # N2: the bound intel is the agent's own bytes, kept apart like a retry's;
+                # `_l4_intel_<code>.md` (what the card reads) is the legacy working copy
+                # intel_status derives from it and the guard trims/normalizes in place.
+                "intel": staging / "session_attempts" / code / "a1" / "intel.md",
+                # Same for the status: a retry's intel_status rewrites the canonical
+                # `_l4_intel_status_<code>.json` (the report reads the last attempt's).
+                "intel_status": staging / "session_attempts" / code / "a1" / "intel_status.json",
                 "intel_bundle": staging
                 / "session_outputs"
                 / "intel_bundles"
@@ -1342,6 +1361,7 @@ __all__ = [
     "publish_scan",
     "prepare_scan_bundle",
     "expansions_after_task",
+    "inapplicable_templates",
     "register_scan_artifacts",
     "register_scan_expansion_artifacts",
     "sector_artifact_ids",

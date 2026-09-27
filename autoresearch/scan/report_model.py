@@ -205,6 +205,9 @@ class ReportModel:
     identity_line: str = ""         #: 「数据截至 … · 发布 …」—— 只放报告身份,不放结论
     buy_constraint_lines: list[str] = field(default_factory=list)
     buy_constraint_title: str = "## 为什么没有 BUY"
+    #: §12 10 日观察席(影子,2026-09-26 §5 B3):`swing_seat.build_swing_seat` 的结果(也落
+    #: `_swing_seat.json` 给 brief ⑦)。空 dict = 未生成(渲染「未生成」,不是「无」)。
+    swing_seat: dict[str, Any] = field(default_factory=dict)
 
     # ── 自检 ───────────────────────────────────────────────────────────
     #: prepare 阶段冻结的 review 输入(finals / n_cards / flow / _extras 六条不纯 lint 结果)

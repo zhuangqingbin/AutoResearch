@@ -94,3 +94,15 @@ def test_skill_doc_modules_importable():
         except Exception as e:  # noqa: BLE001 — 任何 import 失败都算文档漂移
             broken.append(f"{m}: {type(e).__name__}: {e}")
     assert not broken, "skill 文档引用了不可 import 的模块:\n" + "\n".join(broken)
+
+
+def test_session_v1_boilerplate_not_duplicated_in_skills():
+    """session_v1 编排入口只在 docs/session-agent/README.md 讲一遍;SKILL.md 只留一行指针(2026-09-26 A2-1)。"""
+    skills_root = ROOT / ".claude" / "skills"
+    offenders = []
+    for p in sorted(skills_root.glob("*/SKILL.md")):
+        text = p.read_text(encoding="utf-8")
+        if "## session_v1 编排入口" in text:
+            offenders.append(str(p.relative_to(ROOT)))
+        assert "docs/session-agent/README.md" in text, f"{p.name} 缺 session_v1 指针行"
+    assert not offenders, "session_v1 整段仍重复于:\n" + "\n".join(offenders)

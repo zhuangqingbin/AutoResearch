@@ -212,3 +212,38 @@ def test_a_measured_block_is_returned_as_is(tmp_path, monkeypatch):
     (run / "manifest.json").write_text(
         json.dumps({"analysis_date": "2026-08-25", "execution": stored}), encoding="utf-8")
     assert ea.read_execution(run)["sentinel"] == "不许被重算"
+
+
+def _aware_estimate_run(tmp_path, gate4_utc: str):
+    """实测(2026-09-17 `20260917-0917_2152`):新 manifest 的存储块带 `+08:00`,而
+    `_gate4_approved_at` 给的是市场本地 naive 时刻 —— 一致性窗比较当场 `TypeError`,
+    `outcome.fill` 按目录序走到这个 run 就整晚中断,之后的 run 再也进不了账本。"""
+    from datetime import timedelta, timezone
+
+    cst = timezone(timedelta(hours=8))
+    run = _run_with_gate4(tmp_path, "20260825-0825_2149", generated_at="2026-08-25T21:49:50",
+                          gate4_utc=gate4_utc)
+    man = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    man["execution"] = ea.build_execution_block(
+        "2026-08-25", approved_at=datetime(2026, 8, 25, 21, 49, 50, tzinfo=cst),
+        brief_written_at=datetime(2026, 8, 25, 21, 49, 50, tzinfo=cst), sessions=SESSIONS,
+        ready_source="publish_time", ready_quality="estimated")
+    (run / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+    return run
+
+
+def test_tz_aware_stored_estimate_is_upgraded_without_crashing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ea, "trading_sessions", lambda *a, **k: (SESSIONS, "stub"))
+    run = _aware_estimate_run(tmp_path, "2026-08-25T13:49:52.092997Z")   # 本地 21:49:52
+    got = ea.read_execution(run)
+    assert got["ready_quality"] == "measured"
+    assert got["decision_approved_at"].startswith("2026-08-25T21:49:52")
+
+
+def test_tz_aware_estimate_still_rejects_a_stale_gate4_residue(tmp_path, monkeypatch):
+    """一致性窗照旧生效:早一整天的 gate4 残留 → 退回存储的估算块,不崩、不伪装成实测。"""
+    monkeypatch.setattr(ea, "trading_sessions", lambda *a, **k: (SESSIONS, "stub"))
+    run = _aware_estimate_run(tmp_path, "2026-08-24T13:05:40.266192Z")
+    got = ea.read_execution(run)
+    assert got["ready_quality"] == "estimated"
+    assert got["ready_source"] == "publish_time"

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  无人值守全 A 扫描(headless,spec 2026-09-26 §6 C2):交易日 21:20 起 scripts/scan_run.sh。
+
+  **模板,装之前替换 __REPO__**(与 prewarm 同约定;只装 Claude 引擎 —— headless 执行器跑
+  `claude -p`,Codex headless 不在范围):
+
+      sed -e "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-run.plist \
+        > ~/Library/LaunchAgents/com.tradingagents.scan-run.plist
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-run.plist
+
+  卸载:launchctl bootout gui/$(id -u)/com.tradingagents.scan-run
+  手动触发(不等 launchd):launchctl kickstart gui/$(id -u)/com.tradingagents.scan-run
+  或直接 scripts/scan_run.sh。
+
+  一晚只跑一次、有界:没有 KeepAlive / RunAtLoad。非交易日(节假日)脚本自己静默退出;
+  湖没灌齐等到 22:30 仍不齐 → 推送「未开」;另一场在跑(锁)→ 推送「未开」并退出;
+  本机睡眠/关机后 launchd 在窗口(21:10–22:30)外补触发 → 推「错过」退出,不在早上开扫。
+  与 19:30/21:00 的 prewarm 不冲突(预热先跑完灌湖);nightly-close 挪到 23:30 且会等扫描锁。
+  ExitTimeOut 120:bootout / kickstart -k 发 SIGTERM 后,scan_run 要停 runner 进程组与在飞
+  claude -p、finalize FAILED、推送 —— launchd 缺省 20 秒就 SIGKILL,收口做不完。
+  凭证不进本文件:BARK_TOKEN / TUSHARE_TOKEN 在 .env 与登录 profile(zsh -l)。
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.tradingagents.scan-run</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/zsh</string><string>-lc</string><string>__REPO__/scripts/scan_run.sh</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>AUTORESEARCH_ENGINE</key><string>claude</string>
+  </dict>
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>20</integer></dict>
+  </array>
+  <key>ExitTimeOut</key><integer>120</integer>
+  <key>StandardOutPath</key><string>/tmp/scan-run.log</string>
+  <key>StandardErrorPath</key><string>/tmp/scan-run.err.log</string>
+</dict></plist>

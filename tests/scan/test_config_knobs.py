@@ -66,7 +66,9 @@ def test_new_blocks_whitelisted(tmp_path):
            # 入场门 + A/R 分级总开关(2026-09-24 可买性对齐 §2.6,v4.0)——白名单只负责
            # 「开关存在且类型对」,解析+默认值兜底留在消费侧
            # `relative_buy.configured_tiering()`(见该函数自己的测试)。
-           "relative_buy": {"tiering": True}}
+           "relative_buy": {"tiering": True},
+           # L4 卡数(2026-09-26 用户需求):唯一算法 scan/l4/card_count.effective_caps
+           "l4": {"max_cards": 13, "budget_flags": True}}
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps(raw), encoding="utf-8")
     assert load_user_config(p) == raw
@@ -141,6 +143,8 @@ def test_new_blocks_unknown_subkey_raises(tmp_path, block, bad):
     {"funnel": {"recall_n": 0}},
     {"sector": {"reuse_ttl_days": -1}},
     {"l2": {"sector_cap": True}},        # bool 不是 number
+    {"l4": {"max_cards": 0}},            # 卡数须正整数
+    {"l4": {"budget_flags": "yes"}},
 ])
 def test_knob_type_violations_raise(tmp_path, raw):
     p = tmp_path / "scan_config.jsonc"
@@ -312,6 +316,33 @@ def test_knob_calendar_index_rebalance_defaults_off():
     assert knob("calendar", "index_rebalance", False, False, cfg={"calendar": {"index_rebalance": True}}) is False
 
 
+# ───────────────────────── 白名单:intel 死票门(2026-09-26 daily-engine §4 A3,默认关) ─────────────────────────
+
+
+def test_l4_intel_skip_when_dead_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l4_intel": {"enabled": True, "max_queries": 20,
+                                          "skip_when_dead": True}}), encoding="utf-8")
+    assert load_user_config(p)["l4_intel"]["skip_when_dead"] is True
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None, {"on": True}])
+def test_l4_intel_skip_when_dead_must_be_bool(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l4_intel": {"skip_when_dead": bad}}), encoding="utf-8")
+    # 锚类型校验本身(「须为 boolean」),不是「未知子键」那条也会带上键名的报错
+    with pytest.raises(ValueError, match=r"l4_intel\.skip_when_dead=.*须为 boolean"):
+        load_user_config(p)
+
+
+def test_production_config_keeps_the_intel_dead_gate_off():
+    """冻结窗内默认关 = 逐字 parity;开旋钮是用户动作(派发接线在批 6 Task 3,冻结窗后)。"""
+    from pathlib import Path
+    cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
+    assert cfg["l4_intel"]["skip_when_dead"] is False
+    assert knob("l4_intel", "skip_when_dead", None, False, cfg={}) is False
+
+
 # ───────────────────────── 白名单:flow_adv_days 描述字段(2026-09-25 §2.2 批 B3) ─────────────────────────
 
 
@@ -362,3 +393,55 @@ def test_production_config_index_rebalance_knobs_on():
     cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
     assert cfg["calendar"]["index_rebalance"] is True
     assert cfg["relative_buy"]["rebalance_gate"] is True
+
+
+def test_retired_finalist_max_is_rejected_with_pointer(tmp_path):
+    """两个键管一个数 = 漂移源:l3.finalist_max 退役,写了要当场指路到 l4.max_cards。"""
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": {"finalist_max": 10}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="l4.max_cards"):
+        load_user_config(p)
+
+
+# ───────────────────────── 白名单:送达(2026-09-26 daily-engine 批 4,spec §6 C3) ─────────────────────────
+
+
+def test_delivery_block_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"delivery": {"channel": "bark", "file_dir": None}}), encoding="utf-8")
+    assert load_user_config(p) == {"delivery": {"channel": "bark", "file_dir": None}}
+
+
+@pytest.mark.parametrize("bad", ["sms", "", None, True, 1])
+def test_delivery_channel_must_be_a_known_channel(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"delivery": {"channel": bad}}), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"delivery\.channel=.*none\|bark\|mail\|file"):
+        load_user_config(p)
+
+
+@pytest.mark.parametrize("bad", [1, True, "", ["~/x"]])
+def test_delivery_file_dir_must_be_a_path_or_null(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"delivery": {"file_dir": bad}}), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"delivery\.file_dir"):
+        load_user_config(p)
+
+
+def test_delivery_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"delivery": {"bark_token": "x"}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="delivery"):
+        load_user_config(p)
+
+
+def test_production_config_delivers_nothing_by_default():
+    """默认 channel=none = parity(什么都不发,只落 _delivery.json);开 bark 是用户动作
+    (token 只进 .env,见 docs/ops/scan-ops.md「无人值守」节)。"""
+    from pathlib import Path
+
+    from autoresearch.scan.delivery import configured_delivery
+    cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
+    assert cfg["delivery"]["channel"] == "none"
+    assert configured_delivery(cfg)["channel"] == "none"
+    assert configured_delivery({})["channel"] == "none"

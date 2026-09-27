@@ -37,7 +37,7 @@ def test_prepare_scan_run_builds_complete_v3_contract_without_market_fetch(
         config={
             "l0": {"source": "em", "cap_floor_yi": 42, "include_bj": False},
             "pinned": {"cap": 3, "ttl_days": 7},
-            "l3": {"finalist_max": 8},
+            "l4": {"max_cards": 8},
         },
         run_id=RUN_ID,
         engine="codex",
@@ -55,7 +55,7 @@ def test_prepare_scan_run_builds_complete_v3_contract_without_market_fetch(
         "cap_floor_yi": 42.0,
         "include_bj": False,
     }
-    assert contract.stage_budgets["l3_finalist_max"] == 8
+    assert contract.stage_budgets["l4_max_cards"] == 8
     assert contract.stage_budgets["pinned_cap"] == 3
     assert contract.stage_budgets["pinned_ttl_days"] == 7
     assert contract.artifact_schema_versions

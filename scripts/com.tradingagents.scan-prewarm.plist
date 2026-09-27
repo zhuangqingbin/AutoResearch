@@ -11,7 +11,8 @@
        为什么不用 KeepAlive/SuccessfulExit=false:prewarm 只要**任一** B 级步骤失败就 exit 1
        (自 08-22 起就是常态),那等于让 launchd 按 ~10s 节流整夜无限重启,把 tushare 打爆。
        21:00 这次是**有界的一次**补跑,且幂等——19:30 已把湖灌好时它全程命中缓存、秒退。
-       (与 20:45 的 nightly-close 理论上可重叠,但两者写不同的根:账本 vs 湖,且入湖是原子写。) -->
+       (nightly-close 已于 2026-09-26 挪到 23:30,排在 21:20 无人值守扫描之后;两者本就写不同的根:
+       账本 vs 湖,且入湖是原子写。) -->
   <key>StartCalendarInterval</key><array>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
     <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>

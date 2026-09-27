@@ -539,17 +539,20 @@ def test_active_buy_contract_is_fail_and_gate4_blocks(tmp_path):
     assert not gate["ok"], gate
 
 
-def test_severity_table_covers_exactly_the_nine_criteria():
-    """裁定表 = 单一事实源。九条判据一条不多一条不少,五硬四软(E4 新增第九条同属 fail)。"""
+def test_severity_table_covers_exactly_the_eleven_criteria():
+    """裁定表 = 单一事实源。十一条判据一条不多一条不少,五硬六软(E4 新增第九条同属 fail;
+    2026-09-26 §5 B3 新增两条观察席 warn:§12 缺节 / §12 措辞)。"""
     table = self_review.BRIEF_LINT_SEVERITY
     assert set(table) == {"brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期",
                           "brief·数字对账", "brief↔summary不一致", "brief·白名单外取数",
-                          "brief·BUY契约(active 期)", "brief③相对BUY与决策文件不同源"}
+                          "brief·BUY契约(active 期)", "brief③相对BUY与决策文件不同源",
+                          "观察席·缺节", "观察席·措辞"}
     assert sorted(k for k, v in table.items() if v == "fail") == sorted(
         ["brief·数字对账", "brief↔summary不一致", "brief·白名单外取数",
          "brief·BUY契约(active 期)", "brief③相对BUY与决策文件不同源"])
     assert sorted(k for k, v in table.items() if v == "warn") == sorted(
-        ["brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期"])
+        ["brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期",
+         "观察席·缺节", "观察席·措辞"])
 
 
 def test_warn_lines_are_printed_to_cp7(tmp_path, capsys):

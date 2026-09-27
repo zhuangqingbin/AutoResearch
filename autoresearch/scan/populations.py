@@ -1067,6 +1067,12 @@ def stage_rulers(*, reports_root: Path | None = None) -> pd.DataFrame:
         sessions, "L3", "l3_finalist_minus_bench",
         lambda t: t["is_finalist"].fillna(False) & _plain(t),
         lambda t: t["is_bench"].fillna(False) & _plain(t))
+    # 10 日尺孪生格(2026-09-26 daily-engine §5 B1「增加 fwd_10 列」):同一家族、同一
+    # `_measurable` 折叠(与 `l4_reject_value_fwd10` 同口径),块长 10;§12 观察席读数行读它。
+    rows += _paired_metric(
+        sessions, "L3", "l3_finalist_minus_bench_fwd10",
+        lambda t: t["is_finalist"].fillna(False) & _plain(t),
+        lambda t: t["is_bench"].fillna(False) & _plain(t), "fwd_10_oc")
 
     # ── L4:拒绝价值(负 = 否决对了)。两把 horizon 各一行,互不阻塞 ──────────
     def rejected(t: pd.DataFrame) -> pd.Series:

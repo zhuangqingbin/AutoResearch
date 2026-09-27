@@ -7,19 +7,7 @@ description: "Single A-share INDUSTRY (申万一级) research — 景气度/产�
 
 # sector-research — 单行业研究:full 深研 / lite 行业 brief(一个 skill,两档)
 
-## session_v1 编排入口
-
-开发/验收期显式选择新编排时使用
-`python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`，执行
-`begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE、地形段边界、数据前置和
-发布器仍走原领域契约。宿主能力不足会在创建 run 前返回 `HOST_CAPABILITY_REQUIRED`。
-`session_agent --orchestration legacy` 只返回 `LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧流程；
-回退必须显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并单独记录原因。
-当前双宿主真实验收为 `INCOMPLETE`，新入口仅作显式 PILOT，默认仍保留 legacy fallback。
-`finish` 后必须对机器返回的 canonical 报告路径运行
-`uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`；
-最终答复按机器结果分别声明编排、发布、证据完整性与重放，未绑定报告一律是
-`UNBOUND_REPORT`，不能借旧 run 身份。
+> session_v1 编排入口(PILOT,默认仍 legacy):见 `docs/session-agent/README.md`;`finish` 后用 `session_agent verify-report --level full` 的机器结果交付。
 
 ## 核心原理
 中观 = 宏观与微观之间此前缺失的海拔:**macro-research 横向比较所有行业给配置倾向(beta),本 skill 纵向深挖一个行业给结构认知(链/格局/景气位置/龙头映射,alpha 语境)**。数据层零新增端点——确定性 pack 全部聚合 scan staging 既有产物(`autoresearch/sector/pack.py`);判断层 = Claude subagent,零付费 API。(design: `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.3)

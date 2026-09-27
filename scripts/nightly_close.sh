@@ -1,7 +1,8 @@
 #!/bin/zsh -l
-# 夜间收盘后确定性欠账补跑(launchd 交易日 20:45 调;手动同命令)。
+# 夜间收盘后确定性欠账补跑(launchd 交易日 23:30 调;手动同命令)。
 # -l 载入用户 profile 拿 TUSHARE_TOKEN(`ledger_views` 的交易日历第一级走 trade_cal)。
-# 20:45 错开 19:30 的 prewarm,也避开人工扫描窗口。
+# 23:30(2026-09-26 批 4,原 20:45):排在 21:20 无人值守扫描(scripts/scan_run.sh)之后,
+# 避免与扫描读写同一账本;也错开 19:30/21:00 的 prewarm。
 #
 # 只跑**确定性、只记不学**的五步(零 LLM、零回注;LLM 复盘已于 2026-08-21 整体退役)。
 # 下面这张清单与真实的 `step "…"` 行逐条对齐(注释说「两步」却列三条 = 本仓反复复发的漂移,
@@ -34,8 +35,33 @@ export AUTORESEARCH_ENGINE
 
 rc=0
 
+# 扫描锁(批 4 复审 M2):无人值守扫描(scripts/scan_run.sh)慢的一晚能跑过 23:30,而前四步
+# 与扫描的 prelude(outcome_fill / ledger_views)写同一批账本。锁被占(run_lock check 退出 3)
+# → 每 NIGHTLY_SCAN_POLL_S 秒(缺省 60)再看一次,最多 NIGHTLY_SCAN_WAIT_MIN 分钟(缺省 150;
+# 扫描自己的夜间硬截止是 01:00);仍被占 → 跳过四个 scan.* 账本步并记一行,analyze ledger
+# (stock-research 独立账本)照跑。锁在 context_<engine>/:codex 引擎这里恒空闲。
+scan_busy=0
+poll_s=${NIGHTLY_SCAN_POLL_S:-60}
+max_polls=$(( ${NIGHTLY_SCAN_WAIT_MIN:-150} * 60 / (poll_s > 0 ? poll_s : 1) ))
+polls=0
+while true; do
+  uv run --no-sync python -m autoresearch.scan.run_lock check >/dev/null 2>&1
+  [[ $? -eq 3 ]] || break
+  if (( polls >= max_polls )); then
+    scan_busy=1
+    break
+  fi
+  (( polls == 0 )) && print -r -- "[nightly-close] $(date '+%F %T') · 扫描锁被占,等它结束(最多 ${NIGHTLY_SCAN_WAIT_MIN:-150} 分钟)"
+  sleep ${poll_s}
+  (( polls += 1 ))
+done
+
 step() {
   local name="$1"; shift
+  if (( scan_busy )) && [[ "$1" == autoresearch.scan.* ]]; then
+    print -r -- "[nightly-close] $(date '+%F %T') · 跳过 · ${name} · 无人值守扫描仍持锁(与扫描写同一账本)" >&2
+    return 0
+  fi
   print -r -- "[nightly-close] $(date '+%F %T') · start · ${name} · engine=${AUTORESEARCH_ENGINE}"
   uv run --no-sync python -m "$@"
   local code=$?

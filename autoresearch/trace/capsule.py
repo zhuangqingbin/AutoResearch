@@ -3669,6 +3669,8 @@ def _parser() -> argparse.ArgumentParser:
     begin.add_argument("--config-file")
     begin.add_argument("--session-ref")
     begin.add_argument("--legacy-reason", required=True)
+    begin.add_argument("--ignore-scan-lock", action="store_true",
+                       help="无人值守场持锁时仍开 scan-market(缺省拒绝,退出 3)")
     save = commands.add_parser("checkpoint")
     save.add_argument("run_id")
     save.add_argument("stage")
@@ -3730,6 +3732,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "begin":
+            from autoresearch.common.scan_lock import EXIT_HELD, begin_refusal
+
+            refusal = begin_refusal(args.kind, ignore=args.ignore_scan_lock)
+            if refusal:                     # 无人值守场在跑:人工 legacy 开扫在代码里拒(复审 I3)
+                print(f"[capsule] {refusal}", file=sys.stderr)
+                return EXIT_HELD
             handle = begin_run(
                 args.kind,
                 args.analysis_date,

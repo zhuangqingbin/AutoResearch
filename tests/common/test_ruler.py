@@ -110,3 +110,20 @@ def test_entry_tradable_c1_regression_old_buyable_true_new_buyable_c1_false():
     df = pd.DataFrame({"buyable": [True], "buyable_c1": [False]})
     out = ruler.entry_tradable(df)
     assert out.tolist() == [False]
+
+
+# ───────────────────────── SWING_RULER(2026-09-26 B0/B1)─────────────────────────
+
+
+def test_swing_ruler_is_a_second_first_class_ruler_not_a_replacement():
+    """09-26 裁定:10 日尺是**第二把**一等尺,不替换隔夜主尺(08-05 裁定不动);B4 才裁谁当主尺。"""
+    assert ruler.MAIN_RULER == "gap_c1_o2"
+    assert ruler.SWING_RULER == "fwd_10_oc"
+    assert ruler.SWING_RULER != ruler.MAIN_RULER
+    assert ruler.swing_entry_flag() == "buyable"     # D+1 开盘买腿旗,与 fwd_*_oc 家族同
+
+
+def test_swing_ruler_matches_research_census_rulers():
+    """与 research.edge_census.RULERS 同一实现口径(不另造第二个 fwd_10 定义)。"""
+    from autoresearch.research import edge_census
+    assert ruler.SWING_RULER in edge_census.RULERS

@@ -34,10 +34,7 @@ def _role(
 _ROLES = {
     "stock.card": _role(
         "stock.card",
-        [
-            ".claude/skills/stock-research/lite-playbook.md",
-            ".claude/agents/l4-card.md",
-        ],
+        [".claude/agents/l4-card.md"],   # 2026-09-26 A2-6:lite-playbook 只剩指针
         "stock.lite.v1",
         config_role="l4-card",
     ),

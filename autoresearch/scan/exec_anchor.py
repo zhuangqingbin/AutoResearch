@@ -223,6 +223,13 @@ def _gate4_approved_at(run_dir: Path) -> datetime | None:
     return None
 
 
+def _market_local_naive(value: datetime | None) -> datetime | None:
+    """带时区 → 市场本地(恒 +8,同 `_gate4_approved_at`)naive;naive 视为已是市场本地时。"""
+    if value is None or value.tzinfo is None:
+        return value
+    return (value - value.utcoffset() + timedelta(hours=8)).replace(tzinfo=None)
+
+
 #: `stage_results/gate4.json` 与本 run 发布时刻的一致性窗。超窗 = 那份文件不是本 run 的。
 _GATE4_MAX_BEFORE = timedelta(hours=12)
 _GATE4_MAX_AFTER = timedelta(hours=6)
@@ -242,8 +249,12 @@ def _resolve_approved_at(run: Path, written: datetime | None
     发布早段就写 manifest、CP7 才跑完门)。超窗一律退回 `generated_at` 估算并留痕。
     """
     approved = _gate4_approved_at(run)
-    if (approved is not None and written is not None
-            and not (written - _GATE4_MAX_BEFORE <= approved <= written + _GATE4_MAX_AFTER)):
+    # 比较前把 `written` 换成与 `approved` 同口径的市场本地 naive 时刻:2026-09-17 起新
+    # manifest 的存储块带 `+08:00`,naive/aware 直接比较会 TypeError,让 outcome.fill
+    # 整晚中断。只改比较,返回值原样。
+    local = _market_local_naive(written)
+    if (approved is not None and local is not None
+            and not (local - _GATE4_MAX_BEFORE <= approved <= local + _GATE4_MAX_AFTER)):
         return written, "manifest_generated_at(gate4 超一致性窗,疑共享 staging 残留)", "estimated"
     if approved is not None:
         return approved, "gate4_stage_result", "measured"

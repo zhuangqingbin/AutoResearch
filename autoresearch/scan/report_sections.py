@@ -17,6 +17,7 @@
 8  ## 行业 top3
 9  ## 📅 未来 14 天
 10 ## 运行事实(managed 紧凑一行;完整块 → appendix E)
+12 ## 10 日观察席(影子)(2026-09-26 §5 B3;排在 11 之前、恒在;brief ⑦ 指向这里)
 11 ## 诚实局限(一行 + appendix G;锚字面 "\n## 诚实局限" 是 💸 注入回退锚,勿动)
 ```
 
@@ -1226,6 +1227,14 @@ def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: 
         from autoresearch.scan.overseas import summary_lines as _overseas_lines
         overseas_lines = _overseas_lines(scan_dir) or []
 
+    # ── §12 10 日观察席(影子,2026-09-26 §5 B3):终评级已落盘之后算一次、落
+    # `_swing_seat.json`(brief ⑦ 读同一份)。影子面坏了绝不挡发布 → 空 dict = 「未生成」;
+    # `refresh_swing_seat` 先删同日上一场的旧文件(复审 M2),失败时两处都读成「未生成」。
+    swing_seat: dict = {}
+    with _ctx.suppress(Exception):
+        from autoresearch.scan.swing_seat import refresh_swing_seat
+        swing_seat = refresh_swing_seat(scan_dir)
+
     # ── self_review 输入冻结(不纯的六条 lint 现在只跑一次)────────────────
     review_ctx = _review_ctx(scan_dir, rows, regime_drift)
     extras = _review_extras(scan_dir)
@@ -1265,6 +1274,7 @@ def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: 
         overseas_calendar_lines=overseas_lines,
         identity_line=f"数据截至 {analysis_date} 收盘 · 发布 {hhmm[:2]}:{hhmm[2:]}",
         buy_constraint_lines=buy_lines, buy_constraint_title=buy_title,
+        swing_seat=swing_seat,
         review_ctx=review_ctx,
     )
 
@@ -1355,6 +1365,11 @@ def render_summary(model: ReportModel) -> str:
     out += ["## 运行事实",
             f"{start}_运行观测由 post_run 注入;此处为占位——看到本行说明注入未跑,"
             f"读 {appendix_link('运行明细', 'runtime')}。_{end}", ""]
+
+    # 12 10 日观察席(影子;2026-09-26 §5 B3)—— 排在诚实局限之前,**恒在**:空日写「无」,
+    # 没生成写「未生成」,整节消失会让读者分不清「没跑」与「没有」。
+    from autoresearch.scan.swing_seat import render_section as _seat_section
+    out += [*_seat_section(model.swing_seat), ""]
 
     # 11 诚实局限(锚字面勿动:💸 注入的回退锚)
     out += ["## 诚实局限",

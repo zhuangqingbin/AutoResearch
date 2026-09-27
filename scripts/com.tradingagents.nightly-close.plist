@@ -2,10 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   夜间收盘后确定性欠账补跑(outcome fill + ledger_views build)。
+  交易日 23:30(2026-09-26 批 4 起;原 20:45):排在 21:20 无人值守扫描(scan-run plist)之后;
+  扫描慢到 23:30 还没完时脚本会等扫描锁(最多 150 分钟),仍被占就跳过四个 scan 账本步。
+
+  **先退役旧任务**(批 4 复审 M3):早期装的是**不带引擎后缀**的 Label
+  `com.tradingagents.nightly-close`(20:45,无 EnvironmentVariables = 脚本缺省 claude)。
+  只 bootout `…nightly-close.<引擎>` 会让它留着,和新的 23:30 任务一晚跑三次:
+
+      launchctl bootout gui/$(id -u)/com.tradingagents.nightly-close 2>/dev/null
+      rm -f ~/Library/LaunchAgents/com.tradingagents.nightly-close.plist
 
   **模板,装之前要替换两个占位**(prewarm plist 只有 __REPO__,这里多一个 __ENGINE__):
 
       for E in claude codex; do
+        launchctl bootout gui/$(id -u)/com.tradingagents.nightly-close.$E 2>/dev/null
         sed -e "s|__REPO__|$PWD|" -e "s|__ENGINE__|$E|g" \
           scripts/com.tradingagents.nightly-close.plist \
           > ~/Library/LaunchAgents/com.tradingagents.nightly-close.$E.plist
@@ -32,11 +42,11 @@
     <key>AUTORESEARCH_ENGINE</key><string>__ENGINE__</string>
   </dict>
   <key>StartCalendarInterval</key><array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
   </array>
   <!-- 日志按引擎分文件:两个引擎写同一个 /tmp 文件的话,谁死了都看不出来。 -->
   <key>StandardOutPath</key><string>/tmp/nightly-close.__ENGINE__.log</string>

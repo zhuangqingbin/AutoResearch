@@ -379,3 +379,47 @@ def test_gate2_meta_missing_cols_empty_strings(tmp_path):
                  ).to_csv(tmp_path / "finalists.csv", index=False)
     res = gate2(tmp_path, budget=10)
     assert res["ok"] and res["meta"]["603259"] == {"name": "", "sector": ""}
+
+
+# ───────── L4 卡数旋钮(2026-09-26):GATE1 回显 effective_caps,消费方只读 ─────────
+
+def _gate1_dir(tmp_path, codes):
+    d = tmp_path / "2026-09-17"
+    d.mkdir()
+    pd.DataFrame({"code": codes}).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    return d
+
+
+def test_gate1_echoes_l3cap_from_effective_caps(tmp_path, monkeypatch):
+    d = _gate1_dir(tmp_path, ["000001", "600000"])
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
+                        lambda path=None: {"l4": {"max_cards": 5},
+                                           "l3": {"composite_seat": {"enabled": True, "m": 3}}})
+    monkeypatch.setattr("autoresearch.scan.menu.l4_budget", lambda scan_dir, **kw: (30, "菜单健康"))
+    monkeypatch.setattr("autoresearch.scan.menu.sentinel_advice", lambda scan_dir, **kw: ("full", "ok"))
+    res = gate1(d)
+    assert res["ok"] and res["l4_budget"] == 30
+    assert res["l3cap"] == 2 and res["max_cards"] == 5 and res["budget_flags"] is True
+
+
+def test_gate1_budget_flags_false_keeps_budget_for_display_only(tmp_path, monkeypatch):
+    d = _gate1_dir(tmp_path, ["000001"])
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
+                        lambda path=None: {"l4": {"max_cards": 20, "budget_flags": False},
+                                           "l3": {"composite_seat": {"enabled": False, "m": 3}}})
+    monkeypatch.setattr("autoresearch.scan.menu.l4_budget", lambda scan_dir, **kw: (15, "⚠️ 两旗"))
+    monkeypatch.setattr("autoresearch.scan.menu.sentinel_advice", lambda scan_dir, **kw: ("full", "ok"))
+    res = gate1(d)
+    assert res["l4_budget"] == 15 and res["l3cap"] == 20      # 旗只留痕,不压 l3cap
+
+
+def test_gate1_stage_result_metrics_carry_card_caps(tmp_path, monkeypatch):
+    """GATE1 的 STAGE_RESULT.metrics 是 Workflow 读 g1m 的来源:键白名单必须带出 l3cap/max_cards。"""
+    from autoresearch.scan.gates import record_gate_stage_result
+
+    seen = {}
+    monkeypatch.setattr("autoresearch.scan.stage_result.safe_record_stage_result",
+                        lambda scan_dir, **kw: seen.update(kw))
+    record_gate_stage_result(tmp_path, {"ok": True, "gate": "gate1", "l4_budget": 30, "l2_n": 200,
+                                        "l3cap": 10, "max_cards": 13, "budget_flags": True})
+    assert {"l3cap": 10, "max_cards": 13, "budget_flags": True}.items() <= seen["metrics"].items()

@@ -819,3 +819,47 @@ def test_exec_line_threshold_wired_into_product_shape_lint(tmp_path):
 
     assert len(rows) == 1
     assert "9.9" in rows[0]["detail"]
+
+
+# ───────── L4 卡数对账(2026-09-26 l4.max_cards):任务簿非 📌 票数 ≤ max_cards ─────────
+
+def _taskbook(d, n_non_pinned: int, pinned_codes=("688981",)):
+    tasks = {f"{600000 + i:06d}": {"status": "SUCCEEDED", "pinned": False} for i in range(n_non_pinned)}
+    tasks.update({c: {"status": "SUCCEEDED", "pinned": True} for c in pinned_codes})
+    (d / "_l4_tasks.json").write_text(json.dumps({"schema_version": 1, "date": "2026-09-17",
+                                                  "tasks": tasks}), encoding="utf-8")
+
+
+def test_l4_card_count_lint_warns_when_dispatch_exceeds_max_cards(tmp_path, monkeypatch):
+    from autoresearch.scan import self_review
+
+    d = tmp_path / "2026-09-17"; d.mkdir()
+    _taskbook(d, 6)
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
+                        lambda path=None: {"l4": {"max_cards": 5}})
+    rows = self_review.l4_card_count_lint(d)
+    assert len(rows) == 1 and rows[0]["check"] == "L4 卡数·超配置上限" and rows[0]["severity"] == "warn"
+    assert "6" in rows[0]["detail"] and "5" in rows[0]["detail"]
+
+
+def test_l4_card_count_lint_silent_when_within_cap_or_all_pinned(tmp_path, monkeypatch):
+    from autoresearch.scan import self_review
+
+    d = tmp_path / "2026-09-17"; d.mkdir()
+    assert self_review.l4_card_count_lint(d) == []                       # 无任务簿 → 不管
+    _taskbook(d, 0, pinned_codes=("688981", "300750"))
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
+                        lambda path=None: {"l4": {"max_cards": 1}})
+    assert self_review.l4_card_count_lint(d) == []          # SENTINEL_PINNED:全 📌,旋钮不管
+    _taskbook(d, 1)
+    assert self_review.l4_card_count_lint(d) == []          # 恰好配平
+
+
+def test_product_shape_lint_runs_the_card_count_probe(tmp_path, monkeypatch):
+    from autoresearch.scan import self_review
+
+    d = tmp_path / "2026-09-17"; d.mkdir()
+    _taskbook(d, 14)
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config", lambda path=None: {})
+    rows = self_review.product_shape_lint(d, "2026-09-17")
+    assert any(r["check"] == "L4 卡数·超配置上限" and "13" in r["detail"] for r in rows)   # 缺块=默认 13

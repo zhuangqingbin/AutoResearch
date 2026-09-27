@@ -20,7 +20,10 @@ brief 的内容全是**结构化结论、计数、评级、tripwire 与账本状
   ④ 持仓动作表(pinned 逐票:评级 + tripwire)
   ⑤ 风险哨(自检 fail/warn + 降级字段 + 卡覆盖)
   ⑥ 昨日 delta(finalist 重叠 + 评级变动)
-  (原 ⑦ 欠账红行〔待裁决提案 / 未决反馈〕随 learning 层退役删除 —— 素材出自
+  ⑦ 10 日观察席(影子,2026-09-26 §5 B3)——只一行指针「N 只 → summary §12」,只数读
+     `_swing_seat.json`(`scan.swing_seat`,L5 一次算好);超预算时它**最先**退成
+     「⑦ 见 summary §12」。空日照出「0 只」,文件缺席写「未生成」,整行永不消失。
+  (更早的 ⑦ 欠账红行〔待裁决提案 / 未决反馈〕随 learning 层退役删除 —— 素材出自
    `feedback_store` 的提案看板,闭环一走没有欠账这回事了。)
 
 ## 语义纪律(硬性,测试钉死)
@@ -112,6 +115,7 @@ _WHITELIST_SPEC: tuple[tuple[str, str], ...] = (
     ("artifact", "manifest"),  # Task 3:跨 run 昨日 delta 读点(`_prev_published` 挑上一场发布 run)
     ("artifact", "recommendations"),  # Task 4:E6 BUY/席位实测读点(`_e6_realized_stats`)
     ("artifact", "buyability"),  # Task 21:不可买归因(`_buyability.json`),③ 附加一行
+    ("artifact", "swing_seat"),  # 2026-09-26 §5 B3:⑦ 10 日观察席只数(L5 已算好落盘,不在此重算)
 )
 
 #: 白名单里**已登记**产物的登记名(顺序同上)。
@@ -370,6 +374,8 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
             prev_file = "manifest.json"
             today_codes = {_code6(r.get("code")) for r in finals if r.get("code")}
             n_repeat, n_today = len(prev_codes & today_codes), len(today_codes)
+    from autoresearch.scan import swing_seat as _swing_seat  # 名字取登记表(复审 M8),不写字面量
+    seat_doc = _json(scan / _swing_seat.SEAT_FILENAME)
     changes: list[dict] = []
     for code in sorted(set(prev_by_code) & set(rating_by_code)):
         if prev_by_code[code] != rating_by_code[code]:
@@ -413,6 +419,9 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
                  "cards": counts.get("cards"), "finalists": len(finals)},
         "delta": {"prev_date": prev_date, "n_repeat": n_repeat, "n_today": n_today,
                   "changes": changes, "prev_file": prev_file},
+        # ⑦ 观察席:缺/坏 → None(「未生成」),与 0 只(「没有」)分开。
+        "swing_seat": (seat_doc if isinstance(seat_doc, dict)
+                       and isinstance(seat_doc.get("rows"), list) else None),
     }
 
 
@@ -429,7 +438,8 @@ def _src(rows: list[dict], field: str, value, file: str, locator: str, text: str
     return text
 
 
-def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str], list[dict]]:
+def _sections(facts: dict, *, pinned_cap: int, delta_cap: int,
+              seat_compact: bool = False) -> tuple[list[str], list[dict]]:
     src: list[dict] = []
     out: list[str] = []
     date, run = facts["date"], facts["run_folder"]
@@ -494,6 +504,13 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str
 
     # ⑥ 昨日 delta
     out.append("**⑥ 昨日 delta**:" + _delta_text(facts, src, delta_cap))
+
+    # ⑦ 10 日观察席(影子;只一行指针,正文在 summary §12)
+    from autoresearch.scan import swing_seat as _swing_seat
+    seat = facts.get("swing_seat")
+    seat_text = _src(src, "swing_seat.n", (seat or {}).get("n"), _swing_seat.SEAT_FILENAME, "n",
+                     _swing_seat.brief_text(seat, compact=seat_compact))
+    out.append(("**⑦** " if seat_compact else "**⑦ 10 日观察席(影子)**:") + seat_text)
 
     out.append("")
     out.append(f"_确定性生成(零 LLM);主尺 {facts['ruler']};详细版见 `summary.md`。"
@@ -873,10 +890,12 @@ def build(scan_dir: Path | str, *, analysis_date: str | None = None,
     lines, sources = _sections(facts, pinned_cap=_FIT_LADDER[0][0],
                                delta_cap=_FIT_LADDER[0][1])
     md = "\n".join(lines) + "\n"
-    for pinned_cap, delta_cap in _FIT_LADDER[1:]:
+    # ⑦ 影子指针最不值钱:超预算先把它退成「⑦ 见 summary §12」,再走 ④/⑥ 的裁剪梯度。
+    for pinned_cap, delta_cap in _FIT_LADDER:
         if len(md.encode("utf-8")) <= MAX_BYTES:
             break
-        lines, sources = _sections(facts, pinned_cap=pinned_cap, delta_cap=delta_cap)
+        lines, sources = _sections(facts, pinned_cap=pinned_cap, delta_cap=delta_cap,
+                                   seat_compact=True)
         md = "\n".join(lines) + "\n"
     return {"markdown": md, "sources": sources, "facts": facts,
             "n_bytes": len(md.encode("utf-8"))}

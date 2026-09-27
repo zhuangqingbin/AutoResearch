@@ -102,6 +102,10 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("prelude_summary", "_prelude_summary.md", "staging", "prelude", "prelude", "md", "always"),
     Artifact("l4_rejection_readout", "_l4_rejection_readout.json", "staging", "prelude", "prelude", "json", "gated",
              required_when="有已发布 run 可读(滚动 40 日)"),
+    # 2026-09-26 复审 M4:§12 读数行的冻结副本 —— prelude 的 ledger_views 步(stage_rulers 刚重建
+    # 之后)抄一行进 staging,L5 只读它(夜间重建的活视图不在重放单元里,读它会漂)
+    Artifact("swing_readout", "_swing_readout.json", "staging", "prelude", "prelude", "json", "gated",
+             required_when="prelude 的 ledger_views 步跑过(--skip ledger_views 时缺席,§12 写「未冻结」)"),
     Artifact("prewarm", "_prewarm.json", "staging", "prelude", "prewarm", "json", "gated",
              required_when="夜间预热跑过"),
     Artifact("market_view", "market_view.md", "staging", "prelude", "strategist", "md", "always"),
@@ -175,6 +179,35 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("l4_cards", "details/*.md", "staging", "l4", "l4-card", "md", "always"),
     Artifact("ensemble", "_ensemble_*.json", "staging", "l4", "l4-ensemble", "json", "conditional",
              required_when="有 ≥OW 卡或 📌 SELL 提案"),
+    # ---- session_v1 runner ↔ 宿主邮箱(2026-09-26 批 2–3,spec §4 A1-1)-------------------
+    # `<staging>/_dispatch/`:runner 写请求、宿主会话(mailbox wait/complete)写结果,驱动器只认
+    # result 文件。一场里的请求横跨 macro/sector/l3/l4 四段派发,按大头登记在 l4;legacy Workflow
+    # 路径不产。scan staging bundle 排除本目录(domain_ops._SCAN_BUNDLE_CONTROL_ROOTS)。
+    Artifact("dispatch_requests", "_dispatch/*.request.json", "staging", "l4", "session_agent.runner",
+             "json", "conditional", required_when="session_v1 runner 以 mailbox 执行器派发推理任务"),
+    Artifact("dispatch_results", "_dispatch/*.result.json", "staging", "l4", "session_agent.mailbox",
+             "json", "conditional", required_when="宿主会话回写了某次派发的结果"),
+    Artifact("dispatch_runner_status", "_dispatch/runner.json", "staging", "l4", "session_agent.runner",
+             "json", "conditional", required_when="session_v1 runner 跑过"),
+    Artifact("dispatch_ledger", "_dispatch/ledger.jsonl", "staging", "l4", "session_agent.runner",
+             "json", "conditional", required_when="session_v1 runner 结清过至少一次派发"),
+    # 2026-09-26 批 4(spec §6 C1):headless 执行器每次 `claude -p` 一份调用记录(argv 脱敏、pid、
+    # exit、usage、total_cost_usd、session_id、transcript 路径)+ 原始 stdout/stderr;
+    # usage_harvest 按记录计量 headless 场。与邮箱同在 `_dispatch/` 下 → 同样不进 staging bundle。
+    Artifact("dispatch_headless_calls", "_dispatch/headless/*.json", "staging", "l4",
+             "session_agent.headless_claude", "json", "conditional",
+             required_when="session_v1 runner 以 headless 执行器派发推理任务"),
+    Artifact("dispatch_headless_streams", "_dispatch/headless/*.std*", "staging", "l4",
+             "session_agent.headless_claude", "txt", "conditional",
+             required_when="session_v1 runner 以 headless 执行器派发推理任务"),
+    # 批 4 复审 M5:重试(attempt>1 或同任务已有调用记录)开跑前,上一次留下的产物挪到这里
+    # (`<task>.a<n-1>.<原文件名>.stale`),免得「退出 0 没写」拿旧文件蒙混过关。
+    Artifact("dispatch_headless_stale", "_dispatch/headless/stale/*.stale", "staging", "l4",
+             "session_agent.headless_claude", "txt", "conditional",
+             required_when="headless 执行器重试一个上次已写过产物的推理任务"),
+    # 2026-09-26 §4 A3:intel 死票门判决(旋钮 l4_intel.skip_when_dead 关 = 不落文件)
+    Artifact("intel_gate", "_intel_gate.json", "staging", "l4", "intel_gate", "json", "gated",
+             required_when="l4_intel.skip_when_dead=true"),
     # ---- L5 ---------------------------------------------------------------
     Artifact("early_stop", "_early_stop.json", "staging", "l5", "assemble", "json", "always"),
     Artifact("final_ratings", "_final_ratings.json", "staging", "l5", "assemble", "json", "always"),
@@ -185,6 +218,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
              required_when="有复核分歧"),
     Artifact("candidate_passport", "_candidate_passport.json", "staging", "l5", "passport", "json", "always"),
     Artifact("brief_sources", "_brief_sources.json", "staging", "l5", "brief", "json", "always"),
+    # 2026-09-26 §5 B3:10 日观察席(影子)—— L5 一次算好落盘,summary §12 与 brief ⑦ 同源读它
+    Artifact("swing_seat", "_swing_seat.json", "staging", "l5", "swing_seat", "json", "always"),
     Artifact("report_budget", "_report_budget.json", "staging", "l5", "health", "json", "always"),
     Artifact("gate_fires", "gate_fires.csv", "staging", "l5", "self_review", "csv", "always"),
     # ---- 发布目录 ----------------------------------------------------------
@@ -262,6 +297,10 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("publication_delivery_identity_file", "*.delivery.json", "report", "finalize",
              "session_agent.publication", "json", "conditional",
              required_when="session_v1 发布器交付文件型兼容视图"),
+    # 2026-09-26 批 4(spec §6 C3):送达记录(渠道/状态/截断/错误;绝无凭证)。落在 brief 所在的
+    # 兼容报告目录 —— canonical 发布根 runs/<run_id>/p1 是封存的目录哈希,不往里写。
+    Artifact("delivery_record", "_delivery.json", "report", "observe", "delivery", "json",
+             "conditional", required_when="scan.delivery.send 跑过(无人值守 scan_run 成功后)"),
     Artifact("session_acceptance_proof", "*/*/*/*.json", "acceptance", "finalize",
              "session_agent.evaluation", "json", "conditional",
              required_when="某宿主真实场景生成或显式导入 portable proof"),
@@ -458,6 +497,16 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "w3_grids", "json", "conditional"),
     Artifact("w3_grids_signals", "w3_grids/*/signal_coverage.json", "research_report", "observe",
              "w3_grids", "json", "conditional"),
+    # B2 10 日尺预注册普查(2026-09-26 登记;冻结方案见 docs/research/2026-09-26-swing-ruler-family-v2.spec.json,
+    # v1 = 同目录 2026-09-26-swing-ruler-family.spec.json 已被取代、拒跑 —— 复审 I1)
+    Artifact("swing_ruler_spec", "swing_ruler/*/spec.json", "research_report", "observe",
+             "swing_ruler_census", "json", "conditional"),
+    Artifact("swing_ruler_cells", "swing_ruler/*/cells.csv", "research_report", "observe",
+             "swing_ruler_census", "csv", "conditional"),
+    Artifact("swing_ruler_manifest", "swing_ruler/*/manifest.json", "research_report", "observe",
+             "swing_ruler_census", "json", "conditional"),
+    Artifact("swing_ruler_readout", "swing_ruler/*/readout.md", "research_report", "observe",
+             "swing_ruler_census", "md", "conditional"),
     # ── 券商成交取数层(08-27 设计稿 §5;不进 lake/,只记不学)──────────────────
     Artifact("broker_trades", "trades.csv", "broker", "observe",
              "broker.ingest", "csv", "gated", required_when="broker ingest 跑过"),

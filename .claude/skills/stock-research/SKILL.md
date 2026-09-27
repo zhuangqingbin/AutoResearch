@@ -7,18 +7,7 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 
 # stock-research — 单标的研究:full 全量报告 / lite 决策卡(一个 skill,两档)
 
-## session_v1 编排入口
-
-开发/验收期显式选择新编排时使用
-`python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`，执行
-`begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE 的研究角色、输出正文、
-评级校验和发布器继续复用本 skill 的契约。宿主能力不足会在创建 run 前返回
-`HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy` 只返回
-`LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧流程；回退必须显式进入下文 legacy 入口并记录原因。
-当前双宿主真实验收为 `INCOMPLETE`，因此新入口仅作显式 PILOT，默认仍保留 legacy fallback；
-不得用合成测试自行切换。`finish` 后必须对返回的 canonical 报告路径执行
-`uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`，
-最终答复逐项引用机器结果；`UNBOUND_REPORT` 或任何完整性缺项都不能写成“法证完全可复现”。
+> session_v1 编排入口(PILOT,默认仍 legacy):见 `docs/session-agent/README.md`;`finish` 后用 `session_agent verify-report --level full` 的机器结果交付。
 
 ## 核心原理
 同一免费数据层(yfinance/FRED/akshare/tushare)+ Claude(本 session)当引擎,零 LLM API。
@@ -29,9 +18,9 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 ## 档位路由(先定档,再进对应 playbook)
 | 情形 | 档 | playbook |
 |---|---|---|
-| **被 scan-market L4 调用**(finalists 批量出卡) | **恒 lite** | `lite-playbook.md` |
+| **被 scan-market L4 调用**(finalists 批量出卡) | **恒 lite** | `.claude/agents/l4-card.md`(`lite-playbook.md` 只记 standalone 差异) |
 | 用户单独触发(默认) | **full** | `engine-playbook.md` |
-| 用户说"快速 / 看一眼 / 出张卡 / lite / 不用全量",或问持仓"要不要动 / 要不要减 / 该不该走" | **lite** | `lite-playbook.md` |
+| 用户说"快速 / 看一眼 / 出张卡 / lite / 不用全量",或问持仓"要不要动 / 要不要减 / 该不该走" | **lite** | `.claude/agents/l4-card.md` + `lite-playbook.md`(standalone 差异) |
 | lite 结论想下重注 | 对该票再跑 **full**(live 重取最全) | `engine-playbook.md` |
 
 - **首覆建档**(覆盖池 pending_init → dossier-init workflow):见 spec 2026-07-22 ②,agent 真值源 `.claude/agents/dossier-init.md`
@@ -47,7 +36,7 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 5. **组装+校验**:`uv run --no-sync python -m autoresearch.analyze.assemble $CTX/analyze/<TICKER>_<分析日YYYYMMDD> [--name <A股中文简称>]` → `$RPT/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md` + `parse_rating` 校验五档。**A股务必带 `--name`**;`[MISSING]` = 第 4 步漏写,补齐再跑。
 6. **汇报**:评级 + 目标价/持有期/仓位/止损 + 诚实局限。
 
-## lite 档流程(3 步;卡模板/早停规则全在 `lite-playbook.md`)
+## lite 档流程(3 步;卡模板/早停规则全在 `.claude/agents/l4-card.md`,standalone 差异见 `lite-playbook.md`)
 1. **slim 取数(零 LLM)**:`uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim` → `$CTX/<ticker>_<date>_slim.md`(技术快照/指标、市场资金、可交易性、个股新闻、(A股)股东户数、估值概况、利润表、盈利质量、偿付、卖方目标、财报/解禁日历;已重排「表面块前 / 深核块后 + `<!-- P4 深核分界 -->`」;被 scan L4 调用时顶部前置漏斗简报)。
 2. **渐进 DD + 早停**:P0 简报定向 → P1–P3 表面 4 维 →【主早停②:非买点 → 早停卡止】→ survivor P4 陷阱核 →【③击杀】→ P5 满卡(三档 EV/R:R + 多空自压)。**早停只向下,≥OW 必走 P4+P5**。落点:独立跑 → `$RPT/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`;被 scan L4 调用 → staging `$CTX/scan/<date>/details/<ticker>.md`。
 3. **(可选)校验**:`autoresearch.scan.assemble` / `parse_rating` 直接读卡。

@@ -2,7 +2,7 @@
   // ═══════════════════════════════════════════════════════════════════════════════
   // scan-market 全流程用户配置 —— **唯一**参数事实源(按漏斗阶段顺序排;支持 // 注释)
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 契约(防漂移,详见 SKILL.md「配置单一事实源」节):
+  // 契约(防漂移,详见 SKILL.md「配置」节):
   //   优先级:CLI 显式 flag / 显式形参 > 本文件 > 代码内建默认;删 key = 内建默认(parity)。
   //   每个 key 必须标【生效点】=真实消费代码;白名单在 autoresearch/scan/user_config.py,
   //   **白名单外的键 load 即 raise**(写错键名当场炸,不静默失效)。
@@ -130,7 +130,7 @@
     //      60 日跌 ≥25% 的票起爆当日 MA20 不可能在 MA60 上方,旧代理与①前置低位**定义互斥**,
     //      只接列不改门通道仍会近空(design 2026-08-21 §2.3);② 缩量改看 D−1 截止、RSI 上限 50→85。
     // 与旧 reversal **两路同时活体 A/B**:channel_ledger 按 lane 分行,≥10 扫描日后人批裁决去留
-    // (判据见 STAGES.md「开放线头」)。self_review「通道活性」探针盯它 0 行,防同族复发。
+    // (判据见 docs/research/scan-negative-results.md「开放线头」)。self_review「通道活性」探针盯它 0 行,防同族复发。
     // lowturn(2026-08-22 加,第 9→10 路):低位转强画像的**生产者**。2026-08-21 首跑实测该
     // 画像全帧 120 只亮旗、L1 剩 17、**L2 恰 0** —— L3 侧整套(旗列/pass1 强留/守卫⑥/硬约束 G)
     // 是「没有生产者的消费者」。门 = common/turnup.lowturn_mask(与 L3 旗同谓词同阈值,阈值在
@@ -198,7 +198,7 @@
     //   → _inject_sector_seats_l1 镜像 pinned 注入 L1 → select_l2 作保留行追加
     //   → l3/prompt 的 🏭 列 + triage ①c 强留 → l3/merge 给**已在场**的行打 guard 留痕。
     // ⚖️ 证据:09-01→09-17 七日离线重放每日恰 3 行业 / 6 席、**席位全非落刀**(A6 7/7);
-    //   不净增 L4 卡数 —— 席位换掉菜单 200 行里的其他行,finalist 名额仍由 l4_budget 决定,
+    //   不净增 L4 卡数 —— 席位换掉菜单 200 行里的其他行,finalist 名额仍由 l4.max_cards(与 l4_budget)决定,
     //   merge.py 只对 l3-rank 自己判成 finalist 的行打 sector_seat 标(不强推额外卡)。
     // 🚨 2026-09-25:本键此前**只在离线重放里以参数形式存在,生产配置从未写过**,
     //   而 user_config 的默认是「缺省 = 不出席 = parity」——即裁定③ 的交付物一直是关的。
@@ -237,23 +237,22 @@
   },
 
   // ── L3 · 精排(两遍法:pass1 确定性分诊 + pass2 holistic 深比较)────────────
-  // 【生效点】scan/l3/prompt.py prepare_l3_table(two_pass/pass1_target)、
-  //   scan/l3/merge.py write_finalists(finalist_max,cap=min(finalist_max, 当日 l4_budget))。
+  // 【生效点】scan/l3/prompt.py prepare_l3_table(two_pass/pass1_target)。finalist tier 上限
+  //   不在本块:由下方 l4.max_cards 决定(原 finalist_max 已退役,写了即报错)。
   //   本块是**回滚杆**非 opt-in:two_pass 改 false / 删块 = 回「单遍读全表」旧行为。
   "l3": {
     "two_pass": true,
     "pass1_target": 40,        // 60→40(2026-07-18 线A:影子回放 20 日 mandatory 0 漏、delta 无赢家
                                // 富集);回滚=改回 60 或 two_pass=false;被切的落影子 _l3_pass1_cut.csv
-    "finalist_max": 10,        // finalist tier 上限
     // ── composite 证据席(2026-08-26 §3 路A · 守卫⑨)────────────────────────────
     // 【生效点】scan/l3/merge.composite_seat_cfg → ① write_finalists 的
     //   inject_composite_seats(把当日 L2 菜单 composite 最高的 m 只强制送进 finalists,
-    //   guard=composite_seat / lane=composite,不占 finalist 名额、不受 lt55/cap 约束)
+    //   guard=composite_seat / lane=composite,不占 finalist 名额但计入 l4.max_cards、不受 lt55/cap 约束)
     //   ② scan/l3/prompt.prepare_l3_table → triage 的 ①b 强留(让 l3-rank 真判到它们 ——
     //   pass1 切了它们,finalists 里就只剩空 thesis 行,pinned 当年踩过这个坑)。
     // 剔除:📌 保送 / ST·退 / 当日涨幅 ≥9.5%(追高在隔夜尺四年逐年为负)。
     // ⚖️ 证据与边界同 relative_buy.pool 那段(两键是**同一个裁定**的产物,同批改)。
-    // 回滚杆 = "enabled": false(一行,逐字 parity);m 每加 1 ≈ +1 张卡 ≈ +$1.5/日。
+    // 回滚杆 = "enabled": false(一行,逐字 parity);l4.max_cards 固定时 m 每加 1 = L3 名额 −1(卡数不变);卡数压到 ≤ m 时席位让位到 max_cards−1。
     "composite_seat": { "enabled": true, "m": 3 },
     // ── 低位转强第三画像(2026-08-21 低位转强波;design §6.1)────────────────────
     // 【生效点】scan/l3/prompt.py prepare_l3_table → l3_table_md(lowturn_flag, lowturn_cfg)
@@ -281,12 +280,30 @@
     }
   },
 
+  // ── L4 · 卡数(2026-09-26 用户需求:最终进入 L4 卡的个数可配置、且真实生效)──────
+  // 【生效点】scan/l4/card_count.effective_caps(唯一算法)→ ① gates.gate1 回显 l3cap/max_cards
+  //   (scan-market.js 与 session_agent 都只读 GATE1 结果;原 JS 写死的 Math.min(10, …) 已删;
+  //   l3cap 进 L3 prompt 的 finalist 区间,max_cards 做 GATE2 预算)
+  //   ② l3/merge.write_finalists 守卫⑩:非 📌 行(含 composite 席位)总数 ≤ max_cards,超出按
+  //   「席位优先、再按 conviction」截尾进 bench(guard="max_cards")③ self_review.l4_card_count_lint
+  //   发布前对账:任务簿非 📌 票数 > max_cards → warn「L4 卡数·超配置上限」。
+  // 语义:max_cards = 非 📌 卡上限;📌 持仓恒出卡不占额。finalist 名额 = max_cards − composite m;
+  //   budget_flags=true 时 finalist 名额再与 menu.l4_budget(五面旗只降不升)取小(席位另计);false 忽略旗。
+  // 默认 13 = 原 finalist_max 10 + composite m 3(逐字 parity)。改小立刻生效;改大时 L3 候选
+  //   (pass1_target 40)与当日够格票数才是上限 —— 卡数 = min(max_cards, 够格 finalist + 席位)。
+  "l4": { "max_cards": 13, "budget_flags": true },
+
   // ── L4 · 活体情报站(sonnet 盲搜 ∥ slim 预取)──────────────────────────────
   // 【生效点】.claude/workflows/l4-stock.js(intelOn/maxQ;**缺块=intel 关**)+
   //   scan/l4/intel_status.py + self_review 超查探针。真硬顶 hard_cap=30 在
   //   scan/l4/intel_guard.py(超顶稿件 .rejected 弃用,只拒稿不拒票)=代码常量不入 config。
   "l4_intel": {
     "enabled": true,           // 2026-07-12 开启(P1 波验收过);false=干净回滚(卡内网查兜底)
+    // 2026-09-26 §4 A3 intel 死票门【生效点】scan/l4/intel_gate.decide(true → 落 _intel_gate.json:
+    //   主力净额/cmf_20/obv_mom_20 三线同负 ∧ 无 📅 日历催化/近 10 日事件 ∧ 非 📌/证据席 → 不派 intel)。
+    //   派发接线(l4-stock.js / runner 读该文件)是批 6 Task 3,冻结窗后才做 —— 在那之前开它不少派任何 intel。
+    //   false = 不落文件、逐字 parity;离线回放证据见 docs/research/2026-09-26-intel-gate-replay.md。
+    "skip_when_dead": false,
     "max_queries": 20          // 15→20(Wave8 W8-13):对齐实测中位,让 warn 重新变信号
   },
 
@@ -372,5 +389,14 @@
   //   产物推导的下界,区段可能只是 partial;完整性结论仍以 capsule 自己的 completeness
   //   校验为准,不能用这份报告的 enabled/BOUND 替代。
   // 回滚杆 = 本键改回 false(只停止**新增**采集,已落盘的绑定/快照不受影响)。
-  "retention": { "bind_transcripts": true }
+  "retention": { "bind_transcripts": true },
+
+  // ── 送达 · 无人值守场推 brief / FAILED 通知(2026-09-26 daily-engine 批 4,spec §6 C3)──
+  // 【生效点】autoresearch/scan/delivery.configured_delivery → send()(scan_run 成功后推 brief 原文,
+  //   Bark 正文 ≤3000B 超出截断 + 报告路径)与 notify()(未开/FAILED 一句话,scripts/notify.sh 同一
+  //   渠道)。每次 send 落 _delivery.json(兼容报告目录;绝不写进 canonical 发布根)。
+  // channel: "none"(默认 = parity,什么都不发)| "bark"(iOS 推送,token 只放 .env 的 BARK_TOKEN)|
+  //   "mail"(本机 mail,收件人 .env 的 DELIVERY_MAIL_TO)| "file"(brief 复制到 file_dir,如 iCloud/Obsidian)。
+  // 送达失败不改 run 状态、不抛,只记账。凭证一律不进本文件。
+  "delivery": { "channel": "none", "file_dir": null }
 }

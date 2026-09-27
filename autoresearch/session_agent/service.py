@@ -358,10 +358,14 @@ def _state(handle) -> tuple[str, list[dict], list[dict]]:
             _read_json(path)["template_id"]
             for path in sorted((_session_dir(handle) / "expansions").glob("*.json"))
         }
+        from autoresearch.session_agent.workflows import inapplicable_templates
+
+        not_applicable = inapplicable_templates(frozen_plan, handle)
         missing = [
             template["template_id"]
             for template in frozen_plan["task_templates"]
             if template["template_id"] not in expanded
+            and template["template_id"] not in not_applicable
         ]
         if not missing:
             return "DONE", [], []
@@ -596,11 +600,16 @@ def _promote_l4_retry_output(handle, task: dict) -> None:
     if match is None or int(match.group(2)) < 2:
         return
     code, attempt_text, kind = match.groups()
+    if kind == "intel":
+        # Review I4 / N2: every attempt's intel (a1 included) is bound at its own
+        # session_attempts/<code>/a<n>/intel.md and never rewritten; the legacy canonical
+        # `_l4_intel_<code>.md` (what the card reads) is derived from it by the
+        # intel_status / finalize operations, as in the legacy flow.
+        return
     with artifacts.open_artifact(handle, task["output_artifact_ids"][0]) as stream:
         content = stream.read()
     staging = Path(handle.staging)
     targets = {
-        "intel": staging / f"_l4_intel_{code}.md",
         "card": staging / "details" / f"{code}.md",
         "review2": staging / "ensemble" / f"{code}.run2.md",
         "review3": staging / "ensemble" / f"{code}.run3.md",

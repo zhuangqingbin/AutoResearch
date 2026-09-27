@@ -36,11 +36,14 @@ def test_agent_files_exist_with_frontmatter():
 
 
 def test_l4_card_contract_anchors_synced():
-    """l4-card 与 lite-playbook 的机器契约锚一致(卡被 parse_rating/lint/stage_eval 直接读)。"""
+    """l4-card.md 是卡片机器契约的唯一真身(卡被 parse_rating/lint/stage_eval 直接读)。
+
+    2026-09-26 A2-6:lite-playbook 不再是第二份真身(它只剩指针 + standalone 差异),
+    锚只在 agent 文件里查;反向断言见 test_playbooks_are_pointers_not_second_copies。
+    """
     from autoresearch.scan.agents.l4_card import _OW_GATES  # 单一事实源
     from autoresearch.scan.self_review import _CARD_V4_MARKER  # 单一事实源(T17/T24)
     agent = _agent_text("l4-card")
-    playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     anchors = ["进入P4倾向", "FINAL TRANSACTION PROPOSAL", "**Rating**",
                "断言分级", "一致预期差",
                "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
@@ -67,7 +70,27 @@ def test_l4_card_contract_anchors_synced():
                *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
-        assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
+
+
+def test_playbooks_are_pointers_not_second_copies():
+    """agent 文件是契约唯一真身;playbook 的 lite 段只许是指针(2026-09-26 A2-6)。
+
+    变异验证:把任一模板正文粘回 playbook → 本测试红。
+    """
+    from autoresearch.scan.self_review import _CARD_V4_MARKER
+    lite = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
+    assert ".claude/agents/l4-card.md" in lite, "lite-playbook 缺指向 l4-card.md 的指针"
+    assert _CARD_V4_MARKER not in lite, "lite-playbook 仍含卡模板正文(第二份真身)"
+    assert "FINAL TRANSACTION PROPOSAL" not in lite, "lite-playbook 仍含卡模板正文(第二份真身)"
+    macro = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
+    assert ".claude/agents/macro-brief.md" in macro, "macro-playbook 缺指向 macro-brief.md 的指针"
+    assert "首席策略师 prompt(模板)" not in macro, "macro-playbook 仍含 lite prompt 模板"
+    # 终审 I-2:只查标题会被「贴回正文不贴标题」绕过 —— 再钉两句正文
+    assert "你是一名**资深 A 股投资大师" not in macro, "macro-playbook 仍含 lite prompt 正文"
+    assert "写一段 ~300–400 字的市场研判" not in macro, "macro-playbook 仍含 lite prompt 正文"
+    sector = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
+    assert ".claude/agents/sector-brief.md" in sector, "sector-playbook 缺指向 sector-brief.md 的指针"
+    assert "- **链定位一句**" not in sector, "sector-playbook 仍含 lite 模板正文"
 
 
 def test_l4_card_v4_marker_full_line_byte_identical():
@@ -85,16 +108,11 @@ def test_l4_card_v4_marker_full_line_byte_identical():
     from autoresearch.scan.self_review import _CARD_V4_MARKER
 
     agent = _agent_text("l4-card")
-    playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     pat = re.compile(re.escape(_CARD_V4_MARKER) + r".*")
     agent_lines = set(pat.findall(agent))
-    playbook_lines = set(pat.findall(playbook))
     assert agent_lines, "l4-card 未找到 v4 标记行"
-    assert playbook_lines, "lite-playbook 未找到 v4 标记行"
     assert len(agent_lines) == 1, f"l4-card 内两处标记行说明句不一致:{agent_lines}"
-    assert len(playbook_lines) == 1, f"lite-playbook 内两处标记行说明句不一致:{playbook_lines}"
-    assert agent_lines == playbook_lines, (
-        f"两文件标记行说明句不一致:l4-card={agent_lines!r} ≠ playbook={playbook_lines!r}")
+    assert agent.count(_CARD_V4_MARKER) == 2, "l4-card 两张卡模板都必须带 v4 标记行"
 
 
 def test_l4_card_research_body_anchors_synced():
@@ -141,8 +159,6 @@ def test_sector_brief_anchors_synced():
     for a in (TERRAIN_HDR, "不编", "实时网查"):
         assert a in agent, f"sector-brief 缺契约锚「{a}」"
     assert "WebSearch" in agent.split("---", 2)[1], "sector-brief frontmatter 缺 WebSearch tool"
-    playbook = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
-    assert "实时网查" in playbook, "sector-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
 
 
 def test_skill_docs_wire_agent_types():
@@ -154,16 +170,13 @@ def test_skill_docs_wire_agent_types():
 
 
 def test_macro_brief_anchors_synced():
-    """macro-brief 六小节标题 + 防锚定铁律与 macro-playbook 末节(市场研判 lite)同源。"""
+    """macro-brief 六小节标题 + 防锚定铁律(唯一真身在 agent 文件;playbook 只剩指针)。"""
     agent = _agent_text("macro-brief")
-    playbook = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
     anchors = ["一句话定调", "市场结构", "板块红黑榜", "操作基调",
                "描述性地形", "不锚定卡片"]
     for a in anchors:
         assert a in agent, f"macro-brief 缺契约锚「{a}」"
-        assert a in playbook, f"macro-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
     assert "实时网查" in agent, "macro-brief 缺契约锚「实时网查」"
-    assert "实时网查" in playbook, "macro-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
     assert "WebSearch" in agent.split("---", 2)[1], "macro-brief frontmatter 缺 WebSearch tool"
 
 
@@ -421,13 +434,12 @@ def test_macro_brief_consumes_new_pack_blocks():
     """Wave5 ③A:新接的 cross_money/index_val 必须有**消费者**契约。
 
     生产者接线了、消费者没接是本仓 FN-1 家族的常客(pack 多两块、market_view 照样只复述
-    老 24 个标量 = 白接)。锚同时钉 agent def 与 playbook 真值源。
+    老 24 个标量 = 白接)。锚只钉 agent def(2026-09-26 起 playbook 只剩指针)。
     """
     agent = _agent_text("macro-brief")
-    playbook = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
+    # 2026-09-26 A2-6:消费者契约只钉 agent 文件(playbook 只剩指针,不再是第二真值源)
     for a in ("cross_money", "index_val"):
         assert a in agent, f"macro-brief 未消费 pack 新块「{a}」"
-        assert a in playbook, f"macro-playbook 未同步 pack 新块「{a}」"
     assert "macro_cn_degraded" in agent, "macro-brief 未要求披露取数降级(降级不留痕=本仓红线)"
 
 
@@ -674,3 +686,45 @@ def test_all_workflows_consume_resolved_agent_config():
             continue
         assert "resolved_agents" in src, f"{p.name} 没消费 cfg.resolved_agents"
         assert "RESOLVED[role]" in src, f"{p.name} 的 AG(role) 没有 resolved 优先分支"
+
+
+def test_scan_skill_keeps_codex_restart_discipline():
+    """终审 I-1(2026-09-26):会话纪律的 Codex 半边不得随瘦身丢失 —— 改过 `.codex/agents` 或
+    `.codex/hooks.json` 要重开 Codex,新 hook 要在启动审查里批准一次才生效(用户长期裁定:两引擎都修都验)。"""
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    assert ".codex/agents" in skill and "重开 Codex" in skill, "SKILL.md 会话纪律缺 Codex 半边"
+    assert "批准一次" in skill, "SKILL.md 缺「新 hook 要在启动审查里批准一次」"
+
+
+def test_stages_channel_quota_listing_matches_config():
+    """终审 M-8(2026-09-26):STAGES.md 的配额行必须与 scan_config.jsonc 的 channel_quotas 逐键同值。
+
+    变异验证:把 jsonc 里任一键的值改掉、或从 STAGES 删掉一键 → 红。
+    """
+    from autoresearch.scan.user_config import load_user_config
+    cfg = load_user_config(SKILLS / "scan-market" / "scan_config.jsonc")
+    quotas = cfg["funnel"]["channel_quotas"]
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    assert len(quotas) >= 8, quotas
+    for key, value in quotas.items():
+        assert f"{key} {value}" in stages, f"STAGES.md 配额行缺或不等:{key} {value}"
+    assert f"{len(quotas)} 键全写" in stages, "STAGES.md 配额行的键数与 jsonc 不符"
+
+
+def test_scan_workflow_reads_l3cap_from_gate1_not_a_literal():
+    """卡数唯一算法在 Python(card_count.effective_caps);JS 只许读 GATE1 回显。变异:写回 Math.min(10 → 红。"""
+    js = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in js.splitlines() if not ln.lstrip().startswith("//"))   # 注释里的沿革不算
+    assert "Math.min(10" not in code, "scan-market.js 仍写死 finalist 上限 10"
+    assert "g1m.l3cap" in js, "scan-market.js 未读 GATE1 的 l3cap"
+    # GATE2 数的是非豁免 lane 全部行(composite 席位也算),预算必须是 max_cards 而非 l3cap
+    assert "g1m.max_cards" in js, "scan-market.js 未读 GATE1 的 max_cards(GATE2 预算)"
+    assert "gates gate2 ${date} --budget ${l3cap}" not in js, "GATE2 预算仍是 l3cap:10 finalist+3 席位必挂"
+    # l3cap<7 时区间不能写成「7~5」
+    assert "7~${l3cap}" not in js, "L3 prompt 区间下界没跟随 l3cap"
+
+
+def test_l3_rank_defers_finalist_count_to_dispatch_cap():
+    """l4.max_cards 改大要真生效:l3-rank 定义里的 7–10 只是默认区间,本场上限以派发给出的为准。"""
+    body = (AGENTS / "l3-rank.md").read_text(encoding="utf-8")
+    assert "以派发给出的上限为准" in body

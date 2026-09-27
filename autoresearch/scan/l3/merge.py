@@ -43,6 +43,8 @@ HEALTHY_QUOTA_FRAC = 0.0
 # 回滚杆:`scan_config.jsonc` 的 `l3.composite_seat.enabled=false`(一行,逐字 parity)。
 COMPOSITE_SEAT_M = 3
 COMPOSITE_SEAT_GUARD = "composite_seat"
+# 守卫⑩(2026-09-26 用户需求 l4.max_cards):非 📌 行(含 composite 席位)总数的截尾标记。
+MAX_CARDS_GUARD = "max_cards"
 
 
 def composite_seat_cfg(cfg: dict | None = None) -> tuple[bool, int]:
@@ -581,8 +583,9 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     finalists 的码(M-1 修复:防止同票双记 bench 与 finalists,见 `refine_l3_bucket`/
     `l3_bench_shadow` 消费方)→ 写盘。**全程 6 位零填**,修 000062→62 的 CSV 往返坑。
 
-    `finalist_max`(v3 的 `min(finalist_max, budget)` 上限)从
-    `load_user_config().get("l3", {}).get("finalist_max", 10)` 读(T1 已建白名单)。
+    finalist tier 上限 = `scan/l4/card_count.effective_caps` 的 `finalist_cap`(= l4.max_cards −
+    composite m;原 l3.finalist_max 2026-09-26 退役),v3 内再与 `budget`(GATE1 回显的 l3cap)取小。
+    最后守卫⑩ `apply_max_cards`:非 📌 行(含席位)总数 ≤ l4.max_cards,超出截进 bench。
 
     返回 dict:`judged_n`/`finalists_n` 语义不变(`finalists_n` = 写盘 finalists.csv 的最终
     行数,含 pinned 追加);新增 `finalist_n`(v3 产出的 finalist tier 行数,**pinned 注入前**,
@@ -610,17 +613,30 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
             jd = jd.merge(l2[["code", "pct_1d"]], on="code", how="left")
     jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(assemble/trace)
 
+    from autoresearch.scan.l4.card_count import effective_caps
     from autoresearch.scan.user_config import load_user_config
-    finalist_max = int((load_user_config().get("l3") or {}).get("finalist_max", 10))
-    fin, bench = merge_l3_finalists_v3(jd, budget=budget, finalist_max=finalist_max)
+    from autoresearch.scan.user_config import load_pinned
+    caps = effective_caps(load_user_config(), budget)
+    kept = load_pinned(date, path=pinned_path)["kept"]
+    pinned_codes = {str(p["code"]).zfill(6) for p in kept}
+    # 📌 不占名额(2026-09-26 复审 I-1):l3-rank 若把 📌 也判进 finalist tier,它会在 v3 的 cap 截尾里
+    # 占掉一个非📌 名额,之后 lane 改判 pinned、守卫⑩又不数它 → 当日少一张卡且无痕。按 tier 里的
+    # 📌 数 k 放宽 v3 的 cap(k 随放宽单调不减、上界 = 📌 数,几轮即稳定);k=0 的日子只跑一轮 = parity。
+    k = 0
+    for _ in range(len(pinned_codes) + 1):
+        fin, bench = merge_l3_finalists_v3(jd, budget=budget + k, finalist_max=caps["finalist_cap"] + k)
+        k_now = int(fin["code"].astype(str).isin(pinned_codes).sum()) if len(fin) else 0
+        if k_now <= k:
+            break
+        k = k_now
     finalist_n = int(len(fin))
 
     # 守卫⑨ composite 席位(2026-08-26 §3 路A):在 v3 全部守卫**之后**、pinned 注入**之前**
-    # 注入 —— 与 📌 同级的直通车,不占 finalist 名额、不参与 cap 截尾。放在 pinned 之前是为了
+    # 注入 —— 与 📌 同级的直通车,不占 finalist 名额(但计入 l4.max_cards,守卫⑩)、不参与 v3 cap 截尾。放在 pinned 之前是为了
     # 让 pinned 的「已在场就只改判 lane」逻辑仍能覆盖同码情形(📌 优先级更高)。
     seats: list[dict] = []
-    seat_enabled, seat_m = composite_seat_cfg()
-    if seat_enabled and seat_m > 0:
+    seat_m = caps["seat_m"]        # = composite m,卡数压到 ≤ m 时让位到 max_cards − 1(card_count)
+    if seat_m > 0:
         seats = pick_composite_seats(l2, seat_m,
                                      exclude={str(c) for c in fin.get("code", [])})
         fin = inject_composite_seats(fin, seats, judged=jd)
@@ -649,8 +665,6 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
                 m = fin["code"].astype(str).str.zfill(6).isin(sector_codes) & (fin["guard"].fillna("") == "")
                 fin.loc[m, "guard"] = SECTOR_SEAT_GUARD
 
-    from autoresearch.scan.user_config import load_pinned
-    kept = load_pinned(date, path=pinned_path)["kept"]
     if kept:
         # judged=jd:pinned 被 L3 判过但落 bench 时,把它的 L3 真判字段带进 finalists(不然
         # 只剩 L2 空行 → 下游 summary/L4 prompt 全以为"pinned 没有 L3 论点")。
@@ -661,6 +675,9 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
         # 读数被同一只票两侧重复计入,法庭读数掺噪。落盘前把已进 fin 的码从 bench 里摘掉。
         bench = bench[~bench["code"].astype(str).isin(set(fin["code"].astype(str)))
                      ].reset_index(drop=True)
+    # 守卫⑩ max_cards(2026-09-26):席位与 📌 都注入之后、写盘之前 —— 最后一道,保证「最终进 L4
+    # 卡的非 📌 票数」≤ l4.max_cards,无论前面哪条直通车加了行。
+    fin, bench, max_cards_cut = apply_max_cards(fin, bench, caps["max_cards"])
     bench_n = int(len(bench))
     bench.to_csv(scan_dir / "_l3_bench.csv", index=False)
     fin.to_csv(scan_dir / "finalists.csv", index=False)
@@ -673,4 +690,37 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
             # 守卫⑨ 的**会变的量**:席位这条腿死了也像活着(同族配方:自动的腿必须有一个
             # 会变的量做断言)。0 = 关了、或当日 L2 表缺 composite 列、或全被追高/ST 剔光。
             "composite_seat_n": seat_n,
-            "composite_seats": [s["code"] for s in seats]}
+            "composite_seats": [s["code"] for s in seats],
+            # 守卫⑩ 的会变的量:配置的上限 + 本次截掉几只(0 = 没超,不是没跑)。
+            "max_cards": caps["max_cards"], "max_cards_cut_n": len(max_cards_cut),
+            "max_cards_cut": max_cards_cut}
+
+
+def apply_max_cards(fin: pd.DataFrame, bench: pd.DataFrame, max_cards: int
+                    ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    """守卫⑩:非 📌 行(含 composite 席位)总数 ≤ `max_cards`;未超 → 原样返回(parity)。
+
+    保留序:席位优先(证据层直通、E6 候选池依赖)→ conviction 降序(缺 → 最末)→ 原行序;
+    被截行 `guard="max_cards"` 追加进 bench。📌 行恒保留、不占额。返回 (fin, bench, 截掉的码)。
+    """
+    if fin.empty or "code" not in fin.columns:
+        return fin, bench, []
+    lane = (fin["lane"].fillna("").astype(str) if "lane" in fin.columns
+            else pd.Series("", index=fin.index))
+    pinned = lane.eq("pinned")
+    others = fin.index[~pinned]
+    if len(others) <= int(max_cards):
+        return fin, bench, []
+    guard = (fin["guard"].fillna("").astype(str) if "guard" in fin.columns
+             else pd.Series("", index=fin.index))
+    conv = (pd.to_numeric(fin["conviction"], errors="coerce").fillna(-1.0)
+            if "conviction" in fin.columns else pd.Series(-1.0, index=fin.index))
+    order = pd.DataFrame({"seat": guard.eq(COMPOSITE_SEAT_GUARD).astype(int), "conv": conv,
+                          "pos": range(len(fin))}, index=fin.index).loc[others]
+    order = order.sort_values(["seat", "conv", "pos"], ascending=[False, False, True])
+    keep = pinned | fin.index.isin(order.index[: int(max_cards)])
+    cut = fin.loc[~keep].copy()
+    cut["guard"] = MAX_CARDS_GUARD
+    bench = cut.reset_index(drop=True) if bench.empty else pd.concat([bench, cut], ignore_index=True)
+    return (fin.loc[keep].reset_index(drop=True), bench,
+            [str(c).zfill(6) for c in cut["code"]])

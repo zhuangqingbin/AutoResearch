@@ -84,8 +84,20 @@ def _task_and_state(handle, task_id: str, attempt: int) -> dict:
     task = service._task(handle, task_id)
     if task["owner"] == "SESSION":
         entry = store.read_entry(Path(handle.workspace) / "session/tasks.json", task_id)
-        if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
-            raise ValueError("host evidence requires the running task attempt")
+        if entry["state"] == "RUNNING" and entry["attempt"] == attempt:
+            return task
+        from autoresearch.session_agent.evidence import read_abandonment
+
+        # A late transcript of an attempt the runner abandoned (timed out, never
+        # accepted) is evidence of that attempt only — never of an accepted result.
+        accepted = entry["state"] == "SUCCEEDED" and entry["attempt"] == attempt
+        if (
+            not accepted
+            and 1 <= attempt <= int(entry["attempt"])
+            and read_abandonment(handle, task_id, attempt) is not None
+        ):
+            return task
+        raise ValueError("host evidence requires the running task attempt")
     return task
 
 
@@ -204,6 +216,22 @@ def capture_main_context(handle) -> dict:
     return result
 
 
+def _capsule_subject(task: dict) -> str | None:
+    """The ASCII subject the capsule records for this task's agent (N1).
+
+    A display-name subject (a sector brief's 申万一级 industry) maps to the same
+    derived key its AGENT_DISPATCHED/COMPLETED events carry (``service._subject_kwargs``);
+    the task's own subject stays verbatim in the session-level binding record.
+    """
+    from autoresearch.session_agent.service import _subject_kwargs
+    from autoresearch.trace.capsule import subject_key
+
+    kwargs = _subject_kwargs(task)
+    if "subject_display" in kwargs:
+        return subject_key(kwargs["subject_display"])
+    return kwargs["subject"]
+
+
 def bind_task_transcript(
     run_id: str,
     task_id: str,
@@ -262,7 +290,7 @@ def bind_task_transcript(
         source,
         role=task["role"],
         invocation_id=invocation_id,
-        subject=task["subject"],
+        subject=_capsule_subject(task),
         engine=handle.engine,
         start_ordinal=start_ordinal,
         end_ordinal=end_ordinal,

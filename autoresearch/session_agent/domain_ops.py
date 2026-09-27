@@ -1235,7 +1235,9 @@ def dossier_prepare_publication(handle=None) -> dict:
     )
 
 
-_SCAN_BUNDLE_CONTROL_ROOTS = frozenset({"session_outputs"})
+# `_dispatch/` is the runner↔host mailbox: control traffic that is written while
+# deterministic bundles are collected, never scan state (contracts: dispatch_*).
+_SCAN_BUNDLE_CONTROL_ROOTS = frozenset({"session_outputs", "_dispatch"})
 
 
 def collect_scan_staging_bundle(root: Path | str, *, phase: str) -> dict:
@@ -1637,17 +1639,25 @@ def scan_l3_merge(handle=None) -> dict:
     from autoresearch.scan.l3.merge import write_finalists
 
     gate1 = json.loads(_text(current, "scan.gate1.result"))
-    budget = gate1.get("l4_budget")
-    if type(budget) is not int or budget < 1:
-        raise RuntimeError("invalid frozen GATE1 l4_budget")
+    # L4 卡数(2026-09-26 l4.max_cards):只读 GATE1 回显 —— l3cap 进 write_finalists,max_cards 做
+    # GATE2 预算(GATE2 数非豁免 lane 全部行,composite 席位也算)。老 run 的冻结 GATE1 没有这两键:
+    # 回退旗后预算(= 改动前行为)并留痕。
+    budget = gate1.get("l3cap", gate1.get("l4_budget"))
+    gate2_budget = gate1.get("max_cards", gate1.get("l4_budget"))
+    if "l3cap" not in gate1 or "max_cards" not in gate1:
+        atomic_write_json(Path(current.staging) / "session_outputs/l3_merge_note.json",
+                          {"fallback": "l4_budget", "budget": budget, "gate2_budget": gate2_budget,
+                           "reason": "frozen GATE1 lacks l3cap/max_cards (pre-2026-09-26 run)"})
+    if type(budget) is not int or budget < 1 or type(gate2_budget) is not int or gate2_budget < 1:
+        raise RuntimeError("invalid frozen GATE1 l3cap/max_cards/l4_budget")
     write_finalists(
         current.analysis_date,
         budget=budget,
         root=Path(current.staging).parent,
         judged_path=Path(current.staging) / "_l3_effective_judged.json",
     )
-    result = gate2(Path(current.staging), budget=budget)
-    record_gate_stage_result(Path(current.staging), result, budget=budget)
+    result = gate2(Path(current.staging), budget=gate2_budget)
+    record_gate_stage_result(Path(current.staging), result, budget=gate2_budget)
     atomic_write_json(Path(current.staging) / "session_outputs/gate2.json", result)
     if not result.get("ok"):
         raise RuntimeError(str(result.get("reason") or "GATE2 failed"))
@@ -1792,6 +1802,22 @@ def _retry_dir(scan_dir: Path, code: str, attempt: int) -> Path:
     return scan_dir / "session_attempts" / code / f"a{attempt}"
 
 
+def _write_if_changed(path: Path, payload: bytes) -> bool:
+    """Byte-compare before rewriting: identical content keeps the file (and its inode)."""
+    if path.is_file() and not path.is_symlink() and path.read_bytes() == payload:
+        return False
+    atomic_write_bytes(path, payload)
+    return True
+
+
+def _copy_attempt_status(scan_dir: Path, code: str, attempt: int) -> None:
+    """Every attempt (a1 included) registers its own intel_status copy (N2): a retry
+    rewrites the canonical `_l4_intel_status_<code>.json` the report reads."""
+    target = _retry_dir(scan_dir, code, attempt) / "intel_status.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _write_if_changed(target, (scan_dir / f"_l4_intel_status_{code}.json").read_bytes())
+
+
 def scan_l4_slim(handle=None, *, code: str | None = None) -> dict:
     current = handle or _active_handle()
     from autoresearch.session_agent import legacy_scan
@@ -1856,19 +1882,18 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
 
     scan_dir = Path(current.staging)
     attempt = _l4_attempt(scan_dir, code6)
-    if attempt > 1:
-        retry_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
-        if retry_intel.is_file():
-            shutil.copyfile(retry_intel, scan_dir / f"_l4_intel_{code6}.md")
+    # N2: every attempt's bound intel (a1 included) is the agent's bytes in its attempt
+    # dir and is never rewritten; the canonical file is this attempt's working copy, which
+    # the guard trims/normalizes in place exactly as the legacy flow does.
+    bound_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
+    if bound_intel.is_file():
+        _write_if_changed(scan_dir / f"_l4_intel_{code6}.md", bound_intel.read_bytes())
     result = guard_intel(scan_dir, code6, soft_cap=configured_soft_cap())
     if result.get("action") in {"KEPT", "TRIMMED"}:
         _normalize_intel(scan_dir, code6)
     status = from_guard(result, code=code6, scan_dir=scan_dir, enabled=True, attempts=1)
     write_status(scan_dir, status)
-    if attempt > 1:
-        target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    _copy_attempt_status(scan_dir, code6, attempt)
     intel_path = scan_dir / f"_l4_intel_{code6}.md"
     bundle_path = (
         _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
@@ -1897,10 +1922,7 @@ def scan_l4_intel_disabled(handle=None, *, code: str | None = None) -> dict:
     status = from_guard(None, code=code6, scan_dir=scan_dir, enabled=False, attempts=0)
     write_status(scan_dir, status)
     attempt = _l4_attempt(scan_dir, code6)
-    if attempt > 1:
-        target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    _copy_attempt_status(scan_dir, code6, attempt)
     bundle_path = (
         _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
         if attempt > 1
@@ -2046,7 +2068,7 @@ def scan_l4_finalize(handle=None, *, code: str | None = None) -> dict:
     )
     intel_bundle = json.loads(intel_bundle_path.read_text(encoding="utf-8"))
     if intel_bundle.get("intel") is not None:
-        atomic_write_bytes(
+        _write_if_changed(
             scan_dir / f"_l4_intel_{code6}.md",
             _decode_payload(intel_bundle["intel"]),
         )

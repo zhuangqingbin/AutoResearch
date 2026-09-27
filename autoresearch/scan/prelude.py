@@ -591,12 +591,18 @@ def run_prelude(
         """
         import contextlib
 
-        from autoresearch.scan import ledger_views as _views, populations as _pop
+        from autoresearch.scan import ledger_views as _views, populations as _pop, swing_seat as _seat
 
-        res = _views.build()
-        pop = _pop.build()
-        with contextlib.suppress(Exception):  # KPI 表算不出来不该挡住前面两张视图
-            _pop.write_stage_rulers()
+        try:
+            res = _views.build()
+            pop = _pop.build()
+            with contextlib.suppress(Exception):  # KPI 表算不出来不该挡住前面两张视图
+                _pop.write_stage_rulers()
+        finally:
+            # 复审 M4:§12 读数行冻结进本 run 的 staging(stage_rulers 刚重建之后;重建炸了也冻
+            # 当时盘上那一份)。L5 只读这份副本 —— 夜间重建的活视图不在 L5 重放单元里。
+            with contextlib.suppress(Exception):
+                _seat.freeze_readout(scan_dir)
         return (
             f"视图 {len(res.get('views') or [])} 张 / 人口 {pop.get('built', 0)} run · "
             f"{_views.line()}"

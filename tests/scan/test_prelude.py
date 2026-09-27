@@ -148,3 +148,40 @@ def test_outcome_fill_step_runs_and_is_skippable(tmp_path, monkeypatch, capsys):
     assert calls == [{"now": "2026-07-28"}]
     assert run_prelude("2026-07-28", skip=STEP_NAMES) == []      # 可跳
     capsys.readouterr()
+
+
+def test_ledger_views_step_freezes_the_swing_readout_row_into_staging(tmp_path, monkeypatch, capsys):
+    """复审 M4:§12 读数行在 L5 不许读夜间重建的 `stage_rulers.csv`(活文件,L5 重放会漂)。
+    `ledger_views` 步在 stage_rulers 重建**之后**把那一行抄进本 run 的 staging;视图重建
+    炸了也照冻当时盘上那一份(冻结的是「prelude 时刻的事实」,不是「必须是新的」)。"""
+    import json
+
+    from autoresearch.scan import ledger_views as _views, populations as _pop, swing_seat as ss
+    from autoresearch.scan.prelude import run_prelude
+
+    monkeypatch.chdir(tmp_path)
+    rulers = tmp_path / "stage_rulers.csv"
+    rulers.write_text(
+        "session,stage,metric,value,n_days,n_names,coverage,ci_low,ci_high,status,"
+        "metric_definition_version\n"
+        f"ALL,L3,{ss.READOUT_METRIC},0.0042,45,300,0.98,-0.0031,0.0115,MATURE,g3.v1+block10\n",
+        encoding="utf-8")
+    monkeypatch.setattr(ss, "_default_stage_rulers_path", lambda: rulers)
+    monkeypatch.setattr(_pop, "build", lambda **kw: {"built": 0})
+    monkeypatch.setattr(_pop, "write_stage_rulers", lambda **kw: rulers)
+    monkeypatch.setattr(_views, "line", lambda *a, **k: "视图")
+
+    def broken_views(**kw):
+        raise RuntimeError("views blew up")
+
+    monkeypatch.setattr(_views, "build", broken_views)
+    only = tuple(n for n in STEP_NAMES if n != "ledger_views")
+    res = run_prelude("2026-07-28", skip=only)
+    assert [r["step"] for r in res] == ["ledger_views"] and res[0]["ok"] is False
+    frozen = tmp_path / ws.scan_root() / "2026-07-28" / ss.READOUT_FILENAME
+    doc = json.loads(frozen.read_text(encoding="utf-8"))
+    assert doc["metric"] == ss.READOUT_METRIC and doc["n_days"] == 45 and doc["status"] == "OK"
+
+    monkeypatch.setattr(_views, "build", lambda **kw: {"views": []})
+    assert run_prelude("2026-07-28", skip=only)[0]["ok"] is True
+    capsys.readouterr()

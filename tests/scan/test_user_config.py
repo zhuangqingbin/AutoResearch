@@ -182,10 +182,10 @@ def test_l4_intel_unknown_subkey_still_raises(tmp_path):
 
 def test_l3_whitelisted(tmp_path):
     p = tmp_path / "scan_config.jsonc"
-    p.write_text(json.dumps({"l3": {"two_pass": False, "pass1_target": 40, "finalist_max": 8}}),
+    p.write_text(json.dumps({"l3": {"two_pass": False, "pass1_target": 40}}),
                 encoding="utf-8")
     cfg = load_user_config(p)
-    assert cfg["l3"] == {"two_pass": False, "pass1_target": 40, "finalist_max": 8}
+    assert cfg["l3"] == {"two_pass": False, "pass1_target": 40}    # finalist_max 已退役(→ l4.max_cards)
 
 
 def test_l3_unknown_subkey_raises(tmp_path):
@@ -196,7 +196,7 @@ def test_l3_unknown_subkey_raises(tmp_path):
 
 
 def test_l3_block_survives_whitelist(tmp_path):
-    raw = {"two_pass": True, "pass1_target": 60, "finalist_max": 10}
+    raw = {"two_pass": True, "pass1_target": 60}
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps({"l3": raw}), encoding="utf-8")
     assert load_user_config(p)["l3"] == raw

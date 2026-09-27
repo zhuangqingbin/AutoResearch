@@ -453,7 +453,18 @@ if (!Number.isInteger(l4Budget) || l4Budget <= 0) {
   throw new Error(`GATE1 未给出可用的 l4_budget(得到 ${JSON.stringify(g1m.l4_budget)})——` +
     `拒绝带 NaN 继续:它会污染 L3 prompt 与 GATE2 --budget。原始返回:${JSON.stringify(g1).slice(0, 400)}`)
 }
-const l3cap = Math.min(10, l4Budget)
+// L4 卡数(2026-09-26 l4.max_cards):唯一算法在 Python(scan/l4/card_count.effective_caps),GATE1
+// 回显;这里只读,不再 Math.min(10, …)。l3cap = L3 finalist tier 上限(进 L3 prompt 区间与
+// l3_select --budget);maxCards = 非📌 卡总上限(含 composite 席位)—— GATE2 数的正是非豁免
+// lane 的全部行(席位也算),所以 GATE2 预算是 maxCards 而不是 l3cap。
+const l3cap = Number(g1m.l3cap)
+const maxCards = Number(g1m.max_cards)
+if (!Number.isInteger(l3cap) || l3cap <= 0 || !Number.isInteger(maxCards) || maxCards <= 0) {
+  throw new Error(`GATE1 未给出可用的 l3cap/max_cards(得到 ${JSON.stringify({ l3cap: g1m.l3cap, max_cards: g1m.max_cards })})` +
+    `——升级后的 gates.gate1 必回显它们;拒绝猜卡数继续。`)
+}
+const l3lo = Math.min(7, l3cap)
+log(`GATE1 卡数 · L4预算=${l4Budget} · 卡上限 max_cards=${maxCards} → l3cap=${l3cap}${g1m.budget_flags === false ? '(五面旗不参与)' : ''}`)
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier。sector-pack + 待写清单
 // 合并一个 gate(壳合并①,-1 spawn):schema 顶层必须是 object(API 拒 `type:'array'` → 400 →
 // agent 返回 null → `|| []` 静默吞掉,结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下
@@ -488,10 +499,10 @@ await parallel([
     .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
-log(`L3 精排开始:pass1 已分诊 200→~40(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier 7~${l3cap} 只+bench(effort max,历史 60行~14-25m,40行待测)`)
+log(`L3 精排开始:pass1 已分诊 200→~40(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier ${l3lo}~${l3cap} 只+bench(effort max,历史 60行~14-25m,40行待测)`)
 await tracedAgent(
   { stage: 'l3', role: 'l3-rank', invocationId: 'l3-rank-market-1', attempt: 1 },
-  `L3 精排 · 日期 ${date} · finalist tier 按质 7~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~40 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
+  `L3 精排 · 日期 ${date} · finalist tier 按质 ${l3lo}~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~40 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
   { agentType: 'l3-rank', ...AG('l3_rank'),
     label: 'L3-rank', phase: 'L3' })
 // thesis 数字机检(确定性 lint):打回一次自修,修复后不再二检(防循环)
@@ -536,7 +547,7 @@ if (l3lint && l3lint.ok === false) {
 // 确定性写 finalists(修前导零)+ GATE2,合并一个 gate(壳合并②,-1 spawn)
 const g2 = await stageGate('GATE2',
   `${PY('l3', 'l3-finalists-attempt-1')} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
-  `${PY('gate2', 'gate2-attempt-1')} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
+  `${PY('gate2', 'gate2-attempt-1')} autoresearch.scan.gates gate2 ${date} --budget ${maxCards}`, 'gate2', 'L3')
 if (!g2 || !(g2.status === 'SUCCEEDED')) throw new Error(`GATE2 失败:${g2 ? g2.error : 'no return'}`)
 const g2m = stageMetrics(g2)   // 同 g1:haiku 壳可能多包一层,见 stageMetrics 注释
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。

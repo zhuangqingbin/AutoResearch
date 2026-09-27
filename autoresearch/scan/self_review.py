@@ -1436,7 +1436,40 @@ def product_shape_lint(scan_dir, date_str: str, *,
     # 13) v4 卡契约口径声明缺失(T17):标记行本体是 T24 的事,这里只加检查
     with contextlib.suppress(Exception):
         out.extend(card_v4_marker_lint(scan_dir, date_str))
+    # 16) L4 卡数对账(2026-09-26 l4.max_cards):派发事实(任务簿)不得超配置上限
+    with contextlib.suppress(Exception):
+        out.extend(l4_card_count_lint(scan_dir))
     return out
+
+
+def l4_card_count_lint(scan_dir) -> list[dict]:
+    """L4 卡数对账(2026-09-26 用户需求「最终进 L4 卡的个数可配置、且真实生效」)。
+
+    任务簿 `_l4_tasks.json` 里非 📌 票数 > `l4.max_cards` → warn「配置未生效」。只读任务簿
+    (派发事实),不读 finalists.csv(意图);无任务簿 / 全 📌(哨兵·仅持仓档)→ 静默。
+    """
+    import json
+    from pathlib import Path
+
+    from autoresearch.scan.l4.card_count import DEFAULT_MAX_CARDS
+    from autoresearch.scan.user_config import load_user_config
+
+    p = Path(scan_dir) / "_l4_tasks.json"
+    if not p.is_file():
+        return []
+    try:
+        tasks = json.loads(p.read_text(encoding="utf-8")).get("tasks") or {}
+    except Exception:  # noqa: BLE001 — 坏任务簿由任务簿自己的门报,这里不重复
+        return []
+    non_pinned = sorted(c for c, t in tasks.items() if not bool((t or {}).get("pinned")))
+    if not non_pinned:
+        return []
+    max_cards = int((load_user_config().get("l4") or {}).get("max_cards", DEFAULT_MAX_CARDS))
+    if len(non_pinned) <= max_cards:
+        return []
+    return [{"check": "L4 卡数·超配置上限", "severity": "warn", "code": "",
+             "detail": f"任务簿非📌票 {len(non_pinned)} > l4.max_cards {max_cards}:守卫⑩未生效或"
+                       f"任务簿被手工追加({'/'.join(non_pinned[:6])}{'…' if len(non_pinned) > 6 else ''})"}]
 
 
 # 与 usage_reconcile 产物同形的路径常量(避免两处各写一遍字面量走漂):streak 账本默认路径
@@ -1549,6 +1582,9 @@ BRIEF_LINT_SEVERITY = {
     "brief·超预算": "warn",
     "brief·边表缺失": "warn",
     "brief·边表过期": "warn",
+    # ── warn:10 日观察席(影子,2026-09-26 §5 B3)──
+    "观察席·缺节": "warn",
+    "观察席·措辞": "warn",
 }
 
 _BRIEF_DECISION_FIELDS = ("buys.production_n", "relative.code", "relative.rank",
@@ -1665,6 +1701,21 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
             add("brief↔summary不一致",
                 f"决策字段在 summary 的 🧭 仪表盘块里对不上:{'、'.join(missing)}"
                 " —— 两层报告的 BUY 数/code/basis/基准读数必须同源同值")
+
+    # ⑦ 10 日观察席(影子,2026-09-26 §5 B3):brief 印了 ⑦ 指针,summary 就必须有 §12
+    # (整节消失 = 读者分不清「没跑」与「没有」);§12 文案不得出现「BUY/买入/可买」——
+    # 它是 10 日尺影子,不是决策。禁词表与渲染器同源(`swing_seat.BANNED_WORDS`)。
+    if summary:
+        from autoresearch.scan import swing_seat as _seat
+
+        seat_section = _seat.section_text(summary)
+        if seat_section is None and "**⑦" in text:
+            add("观察席·缺节",
+                "brief 印了 ⑦ 指针但 summary 没有「10 日观察席(影子)」节 —— 空日也要写「无」")
+        words = _seat.banned_words(seat_section) if seat_section else []
+        if words:
+            add("观察席·措辞",
+                f"§12 出现 {'、'.join(words)} —— 观察席是 10 日尺影子,不是决策,不得写成交易建议")
 
     # ⑤ active 期 BUY 契约(影子期跳过并留痕)
     decision = None

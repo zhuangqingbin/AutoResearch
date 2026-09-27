@@ -922,3 +922,39 @@ def test_runs_keyed_by_report_dir_not_capsule_id(tmp_path, monkeypatch):
     assert {r["report_dir_id"] for r in rows} == {"20260825-0826_1900", "20260825-0826_2000"}
     # 重复不是静默去重,是**显式点名**:两个 run 指着同一个法证现场是证据层的真问题。
     assert {r["identity_quality"] for r in rows} == {"capsule", "shared_capsule_id"}
+
+
+def test_runs_view_counts_rows_with_a_mature_10_day_reading(tmp_path, monkeypatch):
+    """`n_mature_10`(2026-09-26 §5 B1):结果文档里 10 日尺 `MATURE_10` 且有值的行数。
+
+    三种 run 三个答案 —— 已成熟的数有值的行(停牌无值的那行不算);`PENDING_10` 是
+    **已知的 0**;没有结果文档 / 文档早于成熟章(缺键)= 空(未知),**不写 0**
+    (0 是判断,缺席是状态 —— 与 `n_buy` 同一纪律)。
+    """
+    from autoresearch.scan import outcome as oc
+
+    monkeypatch.chdir(tmp_path)
+    _flat_lake(tmp_path, SESSIONS)
+    scan = _scan(tmp_path)
+    for name, day in (("20260824_2000", "2026-08-24"), ("20260825_2000", "2026-08-25"),
+                      ("20260826_2000", "2026-08-26"), ("20260827_2000", "2026-08-27")):
+        _publish(tmp_path, name, analysis_date=day, finalists=("603317", "000002"))
+    docs = {
+        "20260824_2000": {"outcome_status_swing": oc.MATURE_10,
+                          "rows": {"603317": {"fwd_10_oc": 0.05}, "000002": {"fwd_10_oc": None}}},
+        "20260825_2000": {"outcome_status_swing": oc.PENDING_10,
+                          "rows": {"603317": {"fwd_10_oc": None}}},
+        "20260826_2000": {"rows": {"603317": {"fwd_10_oc": 0.01}}},          # 成熟章之前的旧文档
+    }
+    for run_id, doc in docs.items():
+        path = oc.outcome_path(run_id, scan)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"run_id": run_id, **doc}), encoding="utf-8")
+
+    lv.build(reports_root=scan, now="2026-08-28T12:00:00+00:00")
+    rows = {r["report_dir_id"]: r for r in _rows(lv.views_root(scan) / lv.RUNS_CSV)}
+    assert "n_mature_10" in lv.RUNS_COLUMNS
+    assert rows["20260824_2000"]["n_mature_10"] == "1"
+    assert rows["20260825_2000"]["n_mature_10"] == "0"
+    assert rows["20260826_2000"]["n_mature_10"] == ""
+    assert rows["20260827_2000"]["n_mature_10"] == ""
