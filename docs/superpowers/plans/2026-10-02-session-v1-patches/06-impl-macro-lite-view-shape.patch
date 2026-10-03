@@ -1,0 +1,24 @@
+--- a/autoresearch/session_agent/domain_ops.py
++++ b/autoresearch/session_agent/domain_ops.py
+@@ -502,15 +502,16 @@
+     }
+ 
+ 
+-_MARKET_VIEW_SECTION_RE = re.compile(r"(?m)^\s*([1-6])[.、]\s*\*\*")
+-
+-
+ def macro_lite_validate(handle=None) -> dict:
+     current = handle or _active_handle()
+     text = _text(current, "macro.market_view")
+-    sections = {match.group(1) for match in _MARKET_VIEW_SECTION_RE.finditer(text)}
+-    if sections != {"1", "2", "3", "4", "5", "6"}:
++    from autoresearch.session_agent.validation import market_view_complete
++
++    # One shape rule, shared with the scan market view: sections 1–5 carry a bold title and
++    # section 6 is the plain disclaimer line the macro-brief template writes.
++    if not market_view_complete(text):
+         raise RuntimeError("macro market view requires all six sections")
++    sections = {"1", "2", "3", "4", "5", "6"}
+     descriptor = artifacts.bind_artifact_hash(current, "macro.market_view")
+     value = {
+         "schema_version": 1,

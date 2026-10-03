@@ -1,8 +1,10 @@
 """Bind static operations to the existing forensic command capture."""
 from __future__ import annotations
 
+import gzip
 import json
 import re
+import sys
 from pathlib import Path
 
 from autoresearch.session_agent.operations import build_argv, operation_spec
@@ -48,6 +50,7 @@ def execute_operation(
     params: dict,
     *,
     runner=run_captured,
+    owner_callback=None,
 ) -> dict:
     if task.get("kind") != "DETERMINISTIC":
         raise ValueError("execute only accepts deterministic tasks")
@@ -65,6 +68,17 @@ def execute_operation(
     from autoresearch.session_agent.evidence import freeze_operation_request
 
     freeze_operation_request(handle, task, attempt, params)
+    prepared = None
+    kwargs = {}
+    if operation == "research.card.facts" and runner is run_captured:
+        from autoresearch.common.atomic import sha256_file
+        from autoresearch.session_agent.card_facts import prepare_projection
+
+        path = prepare_projection(handle, task, attempt)
+        prepared = {"ref": path.relative_to(handle.capsule).as_posix(), "sha256": sha256_file(path)}
+        argv = [sys.executable, "-m", "autoresearch.session_agent.card_facts",
+                "--prepared-request", str(path), "--sha256", prepared["sha256"]]
+        kwargs["owner_callback"] = owner_callback
     spec = operation_spec(operation)
     invocation_id = _invocation_id(task["task_id"], attempt)
     result = runner(
@@ -75,8 +89,13 @@ def execute_operation(
         attempt,
         task.get("subject"),
         task_id=task["task_id"],
+        **kwargs,
     )
-    return {
+    if result.invocation.get("forwarded_signals"):
+        # Captured children have already been reaped and handlers restored.
+        # Owner-thread execution must stop the runner, including exclusive ops.
+        raise KeyboardInterrupt("deterministic command interrupted")
+    execution = {
         "schema_version": 1,
         "operation": operation,
         "invocation_id": invocation_id,
@@ -86,6 +105,13 @@ def execute_operation(
         "exit_code": result.exit_code,
         "capture_status": result.invocation.get("status"),
     }
+
+    if prepared is not None:
+        execution["prepared_request"] = prepared
+        if result.exit_code == 0:
+            with gzip.open(Path(handle.capsule) / result.invocation["stdout_log"], "rt") as stream:
+                execution["prepared_output"] = json.load(stream)
+    return execution
 
 
 __all__ = [

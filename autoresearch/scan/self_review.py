@@ -20,6 +20,7 @@ import sys
 from collections import Counter
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts.scan_config import DEFAULT_INTEL_MAX_QUERIES
 
 _BUY = ("Overweight", "Buy")
 _BANNED = ("基本面良好", "前景广阔", "值得关注", "建议关注")
@@ -116,7 +117,7 @@ def _default_web_budget_path(scan_dir):
     return None
 
 
-def intel_query_cap_lint(scan_dir, cap: int = 15, web_budget_path=None) -> list[dict]:
+def intel_query_cap_lint(scan_dir, cap: int = DEFAULT_INTEL_MAX_QUERIES, web_budget_path=None) -> list[dict]:
     """情报查询数 vs 配置 cap 对账(product_shape_lint 探针 10 的素材)。
 
     `l4-intel` 的声明行本来就写「网查 N 条」,但全仓此前**没有任何消费者**读它 ——
@@ -208,14 +209,20 @@ def review(ctx: dict) -> dict:
 
     finals = ctx.get("finalists", [])
     buys = [f for f in finals if f.get("rating") in _BUY]
-    cov_min = ctx.get("coverage_min", 0.8)
-    comp_floor = ctx.get("composite_floor", 30.0)
-    sec_max = ctx.get("sector_max", 0.6)
+    _sr = self_review_cfg()
+    cov_min = ctx.get("coverage_min", _sr["coverage_min"])
+    comp_floor = ctx.get("composite_floor", _sr["composite_floor"])
+    sec_max = ctx.get("sector_max", _sr["sector_max"])
 
     # 1) 覆盖率不足(缺卡太多)
     exp, pres = ctx.get("n_cards_expected", 0), ctx.get("n_cards_present", 0)
     if exp and pres / exp < cov_min:
         add("覆盖率不足", "fail", f"决策卡 {pres}/{exp} < {cov_min:.0%}")
+
+    for card in finals:
+        if card.get("card_incomplete"):
+            add("卡片语义无效", "fail", card.get("card_validation_error") or "card incomplete",
+                code=card.get("code"))
 
     # 2) 经验红线 + 评级-因子矛盾(只查买单)
     for f in buys:
@@ -224,11 +231,11 @@ def review(ctx: dict) -> dict:
             continue
         wr, comp = _num(f.get("winner_rate")), _num(f.get("composite"))
         p60, rsi = _num(f.get("pct_60d")), _num(f.get("rsi6"))
-        if wr is not None and wr > 88:
+        if wr is not None and wr > _sr["winner_rate_max"]:
             add("经验红线·获利盘满", "fail",
-                f"{code} 买入但 winner_rate {wr:.0f}>88(IC:抛压/见顶),需特批 override", code=code)
-        if p60 is not None and rsi is not None and p60 > 50 and rsi > 80:
-            add("经验红线·过热", "warn", f"{code} 买入但过热(60日 {p60:.0f}% + RSI6 {rsi:.0f}>80)",
+                f"{code} 买入但 winner_rate {wr:.0f}>{_sr['winner_rate_max']}(IC:抛压/见顶),需特批 override", code=code)
+        if p60 is not None and rsi is not None and p60 > _sr["overheat"]["pct60"] and rsi > _sr["overheat"]["rsi6"]:
+            add("经验红线·过热", "warn", f"{code} 买入但过热(60日 {p60:.0f}% + RSI6 {rsi:.0f}>{_sr['overheat']['rsi6']})",
                 code=code)
         if comp is not None and comp < comp_floor:
             add("评级-因子矛盾", "warn", f"{code} 买入但 composite {comp:.0f} < {comp_floor:.0f}",
@@ -451,6 +458,12 @@ _INTEL_WINDOWS = _INTEL_CONTRACT_WINDOWS["intel_v1"]     # ("T0","24h","背景",
 #: 与 v1 只守「越过周窗必须归零」同形。
 _INTEL_CONTRACT_STALE_DAYS: dict[str, int] = {
     "intel_v1": _INTEL_STALE_DAYS, "intel_v2_full": 31, "intel_v2_macro": 31}
+
+
+def _intel_stale_days(profile: str) -> int:
+    """`self_review.intel_stale_days.{v1,v2}` 覆盖上表(缺键 = 表值 7 / 31)。"""
+    sd = self_review_cfg()["intel_stale_days"]
+    return int(sd["v1"]) if profile == "intel_v1" else int(sd["v2"])
 #: 播报用的窗名(保住 v1 的历史文案逐字节不变)。
 _INTEL_STALE_LABEL: dict[str, str] = {
     "intel_v1": ">1周", "intel_v2_full": ">1月", "intel_v2_macro": ">1月"}
@@ -502,7 +515,7 @@ def intel_recency_lint(scan_dir, date_str: str, contract: str = "intel_v1") -> l
         contract = "intel_v1"
     spans = _INTEL_WINDOW_SPANS[contract]
     windows = _INTEL_CONTRACT_WINDOWS[contract]
-    stale_days = _INTEL_CONTRACT_STALE_DAYS[contract]
+    stale_days = _intel_stale_days(contract)
     stale_label = _INTEL_STALE_LABEL[contract]
 
     try:
@@ -981,6 +994,20 @@ def card_v4_marker_lint(scan_dir, date_str: str) -> list[dict]:
 
 LIVENESS_CHECK = "通道活性·名义启用实际空召回"
 LIVENESS_ESCALATE_STREAK = 3
+SELF_REVIEW_DEFAULTS: dict = {"coverage_min": 0.8, "composite_floor": 30.0, "sector_max": 0.6, "winner_rate_max": 88,
+                              "overheat": {"pct60": 50, "rsi6": 80}, "liveness_escalate_streak": LIVENESS_ESCALATE_STREAK,
+                              "citation_min": 6, "intel_stale_days": {"v1": 7, "v2": 31}}
+
+
+def self_review_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.self_review`:发布前自检的门与红线(缺键 = SELF_REVIEW_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    out = dict(SELF_REVIEW_DEFAULTS)
+    for k in ("coverage_min", "composite_floor", "sector_max", "winner_rate_max", "liveness_escalate_streak", "citation_min"):
+        out[k] = knob("self_review", k, None, SELF_REVIEW_DEFAULTS[k], cfg)
+    out["overheat"] = {**SELF_REVIEW_DEFAULTS["overheat"], **(knob("self_review", "overheat", None, {}, cfg) or {})}
+    out["intel_stale_days"] = {**SELF_REVIEW_DEFAULTS["intel_stale_days"], **(knob("self_review", "intel_stale_days", None, {}, cfg) or {})}
+    return out
 
 
 def _channel_rows(path) -> dict[str, int] | None:
@@ -997,7 +1024,7 @@ def _channel_rows(path) -> dict[str, int] | None:
 
 
 def channel_liveness_lint(scan_dir, date_str: str, *, recall_channels=None,
-                          history_days: int = LIVENESS_ESCALATE_STREAK) -> list[dict]:
+                          history_days: int = int(self_review_cfg()["liveness_escalate_streak"])) -> list[dict]:
     """启用通道 0 召回探针(2026-08-21 低位转强波 §5.3)。
 
     `reversal_confirm` 名义启用实际恒空 4 周+无人发现(起爆硬门列从未接入 L1 帧)——这类死法
@@ -1266,11 +1293,11 @@ def product_shape_lint(scan_dir, date_str: str, *,
 
     # 10) intel 限频对账(Wave6 Q1-②):声明行自报「网查 N 条」vs 当日 config cap。
     # 07-24 实测 10/11 超限、最高 26/15 —— 这个数一直在写,只是没有消费者(pr_20260714_007)。
-    # cap 取当日 echo(改了 config 就按新 cap 对账),缺 echo 回落 15(agent def 默认)。
-    _cap = 15
+    # cap 取当日 echo(改了 config 就按新 cap 对账),缺 echo 回落注册表缺省。
+    _cap = DEFAULT_INTEL_MAX_QUERIES
     with contextlib.suppress(Exception):
         _cap = int((json.loads((scan_dir / "user_config_echo.json").read_text(encoding="utf-8"))
-                    .get("l4_intel") or {}).get("max_queries") or 15)
+                    .get("l4_intel") or {}).get("max_queries") or DEFAULT_INTEL_MAX_QUERIES)
     # 真值路(外源扩面稿 §6.2):capsule 的 `web_budget.json` 是权威(一行 tool call ≠ 一次
     # 查询),自报只剩诊断价值;量不到 → `intel_budget_unmeasured`。**不传 `web_budget_path`
     # 也照样走真值路** —— `intel_query_cap_lint` 会自己按 `_WEB_BUDGET_RELS` 找本趟 capsule
@@ -1325,7 +1352,7 @@ def product_shape_lint(scan_dir, date_str: str, *,
         if "〔早停" in text or code in reused:
             continue
         n_cited = sum(1 for ln in text.splitlines() if _DATED.search(ln))
-        if n_cited < 6:
+        if n_cited < int(self_review_cfg()["citation_min"]):
             add("citation_density", "warn",
                 f"满卡带日期引用仅 {n_cited} 行(<6)——研究底料偏薄(07-21 银河微电 4 行病)",
                 code=code)
@@ -1648,9 +1675,9 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
         add("brief·缺失", f"{path} 读不出:{type(exc).__name__}")
         return out
     n_bytes = len(text.encode("utf-8"))
-    if n_bytes > _brief.MAX_BYTES:
+    if n_bytes > _brief.max_bytes():
         add("brief·超预算",
-            f"{n_bytes}B > 硬预算 {_brief.MAX_BYTES}B —— 速读层撑破了就不再是速读层")
+            f"{n_bytes}B > 硬预算 {_brief.max_bytes()}B —— 速读层撑破了就不再是速读层")
 
     # ③ sources 边表:重算 + 锚在 + 白名单
     payload = None
@@ -1759,8 +1786,9 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
     if isinstance(decision, dict):
         decision_codes = {str(row.get("code")) for row in (decision.get("buys") or [])
                           if isinstance(row, dict) and row.get("code")}
-        buy_line = next((ln for ln in text.splitlines()
-                         if "relative BUY" in ln and ("🕶" in ln or "✅" in ln)), None)
+        # 定位口径取渲染器自己的(`brief.relative_buy_line`),不在这里另认字形 ——
+        # 2026-09-27/28/29:R 级行首是 🟥,本处只认 🕶/✅,三场已出 BUY 的扫描被判不同源。
+        buy_line = _brief.relative_buy_line(text)
         brief_codes = set(re.findall(r"\b\d{6}\b", buy_line)) if buy_line else set()
         if brief_codes != decision_codes:
             add("brief③相对BUY与决策文件不同源",

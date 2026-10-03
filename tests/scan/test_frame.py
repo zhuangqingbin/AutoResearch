@@ -360,7 +360,7 @@ def test_harvest_vol_series_lookback60_keeps_20d_factors_identical(monkeypatch):
         pd.testing.assert_series_equal(a[col], b[col], check_names=False)
     assert set(turnup.PANEL_COLS) <= set(a.columns)
     assert a["vol_ratio_20"].notna().all() and a["above_ma20"].isin([0.0, 1.0]).all()
-    assert scan_frame._PANEL_LOOKBACK == 60 and scan_frame._harvest_vol_series.__defaults__[0] == 60
+    assert scan_frame._PANEL_LOOKBACK == 60 and scan_frame.panel_cfg()["lookback_days"] == 60   # 缺省经 funnel.panel_lookback_days 解析
 
 
 def test_harvest_vol_series_short_panel_degrades_not_raises(monkeypatch):

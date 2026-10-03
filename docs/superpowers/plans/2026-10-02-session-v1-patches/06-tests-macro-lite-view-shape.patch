@@ -1,0 +1,48 @@
+--- a/tests/session_agent/test_macro_lite.py
++++ b/tests/session_agent/test_macro_lite.py
+@@ -60,3 +60,45 @@
+     )
+     with pytest.raises(RuntimeError, match="six sections"):
+         macro_lite_validate(handle)
++
++
++_TEMPLATE_VIEW = (
++    "# 市场研判 2026-09-29\n\n"
++    "1. **一句话定调**:震荡(range)缩杠杆轮动。\n\n"
++    "2. **市场结构**:站上 MA60 43.76%。\n\n"
++    "3. **板块红黑榜**:强——林业Ⅱ;弱——白酒Ⅱ。\n\n"
++    "4. **操作基调**:姿态只由 regime 与资金面定。\n\n"
++    "5. **关注**:国常会增量政策。\n\n"
++    "6. 仅供研究,非投资建议。\n"
++)
++
++
++def _lite_handle(tmp_path, text):
++    handle = _handle(tmp_path)
++    path = handle.staging / "session_outputs/market_view.md"
++    path.parent.mkdir(parents=True)
++    path.write_text(text)
++    artifacts.register_artifact(handle, "macro.market_view", path, "WRITE")
++    artifacts.bind_artifact_hash(handle, "macro.market_view")
++    artifacts.register_artifact(
++        handle, "macro.lite.validation",
++        handle.staging / "session_outputs/macro.lite.validation.json", "WRITE")
++    return handle
++
++
++def test_macro_lite_validator_accepts_the_agent_template_shape(tmp_path):
++    """macro-brief 模板的第 6 节是不加粗的免责行;09-26 回放里 13 份真实市场研判有 12 份是这个形状。
++    扫描侧校验早已按模板判(`validation.market_view_complete`),这里是同一条规则的第二个调用点。"""
++    value = macro_lite_validate(_lite_handle(tmp_path, _TEMPLATE_VIEW))
++    assert value["sections"] == ["1", "2", "3", "4", "5", "6"]
++
++
++@pytest.mark.parametrize("damage", ["drop_section_3", "drop_disclaimer", "unbold_section_2"])
++def test_macro_lite_validator_still_rejects_an_incomplete_view(tmp_path, damage):
++    text = {
++        "drop_section_3": _TEMPLATE_VIEW.replace("3. **板块红黑榜**:强——林业Ⅱ;弱——白酒Ⅱ。\n\n", ""),
++        "drop_disclaimer": _TEMPLATE_VIEW.replace("6. 仅供研究,非投资建议。\n", ""),
++        "unbold_section_2": _TEMPLATE_VIEW.replace("2. **市场结构**", "2. 市场结构"),
++    }[damage]
++    with pytest.raises(RuntimeError, match="six sections"):
++        macro_lite_validate(_lite_handle(tmp_path, text))

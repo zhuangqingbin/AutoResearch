@@ -263,3 +263,19 @@ def test_host_binding_hash_covers_task_segment_identity():
     value["end_ordinal"] += 1
     with pytest.raises(ValueError, match="binding_id"):
         validate_host_evidence_binding(value)
+
+
+def test_command_argv_is_recorded_as_an_ordered_sequence():
+    """A no-peer stock harvest passes an empty positional and repeats tokens legitimately."""
+    from autoresearch.contracts.forensic import validate_task_evidence
+
+    value = _task_evidence()
+    value["command_ref"]["argv"] = [
+        "uv", "run", "--no-sync", "python", "-m", "autoresearch.analyze.harvest",
+        "603893.SS", "2026-09-30", "stock", "", "--slim", "stock",
+    ]
+    assert validate_task_evidence(deepcopy(value)) == value
+    for bad in ([], ["", "x"], ["python", 3], "python -m x"):
+        value["command_ref"]["argv"] = bad
+        with pytest.raises(ValueError, match="argv"):
+            validate_task_evidence(deepcopy(value))

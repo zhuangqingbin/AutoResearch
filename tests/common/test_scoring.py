@@ -327,7 +327,7 @@ def test_all_zero_preference_weights_all_nan_blocked_only_by_validator():
     assert comp.isna().all()
 
     # brace:唯一挡在配置入口的校验器拒绝同一份权重——生产路径上这份 weights_doc 造不出来。
-    from autoresearch.scan.user_config import _t_pref_weights
+    from autoresearch.contracts.scan_config import _t_pref_weights   # 校验器单源在契约层
     assert _t_pref_weights(zero_pw) is False
 
 

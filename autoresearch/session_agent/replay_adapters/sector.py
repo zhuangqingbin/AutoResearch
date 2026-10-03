@@ -20,6 +20,9 @@ _OPERATIONS = {
 
 def execute(unit: dict, context) -> list[dict]:
     operation = unit["operation"]
+    if operation == "sector.terrain.render":
+        from autoresearch.session_agent.sector_terrain import replay_operation
+        return replay_operation(context)
     if operation == "sector.prepare":
         snapshot = source_snapshot(context, "sector.prepare.snapshot.v1")
         rendered = domain_ops.render_sector_snapshot(
@@ -29,6 +32,7 @@ def execute(unit: dict, context) -> list[dict]:
             "sector.input.manifest": "manifest",
             "sector.pack": "pack",
             "sector.reuse": "reuse",
+            "sector.events.request": "events_request",
         }
         for ref in unit["expected_outputs"]:
             artifact_id = ref["artifact_id"]

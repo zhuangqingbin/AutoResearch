@@ -122,3 +122,25 @@ def load_trades(path: Path | str) -> tuple[list[dict], list[dict]]:
 def load_policy(path: Path | str) -> dict:
     import json
     return validate_cost_model(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def load_order_status(path):
+    """Explicit offline order evidence, never infer cancellation from absent fills."""
+    import json
+    from datetime import date
+
+    rows = json.loads(Path(path).read_bytes())
+    required = {"order_id", "session", "code", "evidence_mode", "state", "source_observation_id"}
+    for row in rows:
+        if (
+            set(row) != required
+            or row["state"] not in {"NO_FILL", "UNKNOWN"}
+            or row["evidence_mode"] not in {"OBSERVED_FILL", "SNAPSHOT_SIMULATED", "EOD_PROXY"}
+        ):
+            raise ValueError("invalid order evidence")
+        if (
+            not row["source_observation_id"]
+            or date.fromisoformat(row["session"]).isoformat() != row["session"]
+        ):
+            raise ValueError("invalid order source/date")
+    return unique_records(rows, "order_id")

@@ -89,8 +89,20 @@ def test_assemble_uses_the_original_publisher_in_run_staging(tmp_path, monkeypat
             (target / name).write_text(name)
         return target / "summary.md"
 
+    def collect(current):
+        assert (staging / "session_outputs/report_build/20260913-0913_1200/summary.md").exists()
+        (staging / "_research_provenance.json").write_text('{"captured":true}')
+        for name in ("research_inputs", "research_reads", "_l4_force_full"):
+            (staging / name).mkdir()
+            (staging / name / "proof.bin").write_bytes(name.encode())
+
     monkeypatch.setattr("autoresearch.scan.publisher.run", publish)
+    monkeypatch.setattr("autoresearch.session_agent.research_provenance.collect_and_freeze", collect)
     value = domain_ops.scan_assemble(handle)
+    mirror = staging / "session_outputs/report_build/20260913-0913_1200/trace/staging"
+    assert (mirror / "_research_provenance.json").read_bytes() == (staging / "_research_provenance.json").read_bytes()
+    for name in ("research_inputs", "research_reads", "_l4_force_full"):
+        assert (mirror / name / "proof.bin").read_bytes() == name.encode()
     assert value["folder"] == "20260913-0913_1200"
     assert (staging / "session_outputs/report.plan.json").is_file()
 

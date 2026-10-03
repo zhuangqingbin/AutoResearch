@@ -47,3 +47,26 @@ def test_freeze_scan_runtime_inputs_calibrated_profile_still_has_the_key(monkeyp
     assert result["schema_version"] == 2
     assert result["weight_profile_error"] is None
     assert "L1_weight_profile.json" not in result["present"]
+
+
+def test_current_l4_tasks_declare_deep_for_card_and_independent_reviews():
+    from autoresearch.session_agent.workflows.scan import l4_retry_expansion
+    # Expansion metadata needs only the frozen identity/hash for these builders.
+    plan = {'run_id': 'r', 'engine': 'codex', 'plan_hash': 'a' * 64}
+    expansion = l4_retry_expansion(plan, '600519', 2, [], intel_enabled=False)
+    slim = next(t for t in expansion['tasks'] if t['operation'] == 'scan.l4.slim')
+    card = next(t for t in expansion['tasks'] if t['role'] == 'scan.l4.card')
+    assert 'scan.l4.600519.a2.deep' in slim['output_artifact_ids']
+    assert 'scan.l4.600519.a2.deep' in card['input_artifact_ids']
+
+
+def test_deep_snapshot_v2_replays_both_files_and_legacy_v1_still_reads(tmp_path):
+    from autoresearch.session_agent.domain_ops import render_scan_l4_slim_snapshot, _encode_payload
+    v1 = {'schema_version': 1, 'code': '600519', 'attempt': 1,
+          'result': {'ok': True}, 'slim': _encode_payload(b'slim')}
+    slim, deep = tmp_path / 'slim.md', tmp_path / 'deep.md'
+    render_scan_l4_slim_snapshot(v1, output_path=slim)
+    assert slim.read_bytes() == b'slim'
+    v2 = {**v1, 'schema_version': 2, 'deep': _encode_payload(b'debt evidence')}
+    render_scan_l4_slim_snapshot(v2, output_path=slim, deep_output_path=deep)
+    assert deep.read_bytes() == b'debt evidence'

@@ -21,6 +21,9 @@ from ._runner_support import CARD_TEXT, begin_synthetic_run, det, inf, profile
 
 class _FakeExecutor:
     name = "fake"
+    # Synthetic adapter opts into the same transport capabilities as mailbox.
+    from autoresearch.session_agent.roles import EXECUTOR_CAPABILITIES
+    capabilities = EXECUTOR_CAPABILITIES["mailbox"]
 
     def __init__(self, *, outcomes=None, write=True, delay=0.0):
         self.calls: list[tuple[str, int]] = []
@@ -501,3 +504,39 @@ def test_heartbeat_keeps_beating_while_the_loop_thread_is_busy(tmp_path, monkeyp
     assert beats[1] > beats[0]                              # beat while publish blocked the loop
     status = json.loads(status_path.read_text("utf-8"))
     assert status["state"] == "EXITED" and status["heartbeat_seconds"] == 0.05
+
+
+def test_stock_harvest_parameters_come_from_the_frozen_request(tmp_path, monkeypatch):
+    """The runner has exactly one parameter source: the frozen request. Before this, the
+    only parameterised operation (``stock.harvest``) made every stock run skip its first
+    task, so the runner could drive scans only."""
+    run = begin_synthetic_run(tmp_path, monkeypatch, [
+        det("stock.harvest", operation="stock.harvest", outputs=["stock.slim"]),
+        inf("stock.card", deps=["stock.harvest"], inputs=["stock.slim"]),
+    ])
+    seen = []
+    real = run.operation_runner
+
+    def recording(handle, stage, argv, invocation_id, attempt, subject, *, task_id):
+        seen.append(list(argv))
+        return real(handle, stage, argv, invocation_id, attempt, subject, task_id=task_id)
+
+    final = runner.run_loop(run.run_id, _FakeExecutor(), poll_seconds=0.01, max_rounds=200,
+                            hooks=run.hooks(operation_runner=recording))
+    assert final["finished"] is True, (final["stop_reason"], final["errors"])
+    assert final["errors"] == []
+    assert seen[0][-5:] == ["600519.SS", "2026-09-13", "stock", "", "--slim"]
+
+
+def test_harvest_params_are_the_single_projection_of_the_request():
+    from autoresearch.session_agent.workflows import stock
+
+    request = {"subject": "NVDA", "analysis_date": "2026-09-30", "asset_type": "stock",
+               "peers": ["AMD", "AVGO"], "requested_mode": "FULL"}
+    params = stock.harvest_params(request)
+    assert params == {"ticker": "NVDA", "analysis_date": "2026-09-30", "asset_type": "stock",
+                      "peers": ["AMD", "AVGO"], "slim": False}
+    task = {"operation": "stock.harvest"}
+    stock.validate_stock_operation_params(request, task, params)
+    with pytest.raises(ValueError, match="differ from frozen request"):
+        stock.validate_stock_operation_params(request, task, {**params, "slim": True})

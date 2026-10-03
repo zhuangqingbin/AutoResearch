@@ -326,6 +326,15 @@ def _js_template(workflow: str, needle: str) -> str:
     return line[line.index("`") + 1: line.rindex("`")]
 
 
+def _shared_js_template(role: str, **values) -> str:
+    # Read the checked-in generated template; its JS renderer is cross-tested in
+    # tests/common/test_research_prompts.py against the Python implementation.
+    text = (REPO / ".claude/workflows/l4-stock.js").read_text("utf-8")
+    prefix = "const RESEARCH_TEMPLATES = "
+    [line] = [row for row in text.splitlines() if row.startswith(prefix)]
+    return json.loads(line[len(prefix):])[role].format_map(values)
+
+
 def _fill(template: str, values: dict) -> str:
     for key, value in values.items():
         template = template.replace("${" + key + "}", str(value))
@@ -380,8 +389,10 @@ def test_l3_rank_prompt_takes_l3cap_from_frozen_gate1(scan_handle):
     sd = display_path(scan_handle.staging)
     prompt = _render(scan_handle, "scan.l3.rank", "scan.l3",
                      {"scan.l3.table": "_l3_table.md"}, {"scan.l3.judged": "_l3_judged.json"})
+    _ucfg = getattr(getattr(scan_handle, "contract", None), "user_config", None) or {}
+    pass1_target = ((_ucfg.get("l3") or {}).get("pass1_target", 60))   # 冻结 config 缺块 → 与 JS 同一份缺省
     expected = _fill(_js_template("scan-market.js", "L3 精排 · 日期"),
-                     {"SD": sd, "date": "2026-09-13", "l3cap": 10, "l3lo": 7})
+                     {"SD": sd, "date": "2026-09-13", "l3cap": 10, "l3lo": 7, "pass1Target": pass1_target})
     assert prompt == expected
     assert "7~10 只" in prompt
 
@@ -423,6 +434,10 @@ def test_sector_brief_prompt_is_the_legacy_wording_on_session_paths(scan_handle)
                                 display_path(staging / "session_inputs/sectors/k.json"))
     template = template.replace("${SD}/sector_briefs/${sec}.md",
                                 display_path(staging / "sector_briefs/食品饮料.md"))
+    # sector.brief_web_searches:JS 从 cfg 读、Python 从冻结 config 读,缺块时两边同一份缺省 2
+    _ucfg = getattr(getattr(scan_handle, "contract", None), "user_config", None) or {}
+    _n = ((_ucfg.get("sector") or {}).get("brief_web_searches", 2))
+    template = template.replace("${cfg.sector?.brief_web_searches ?? 2}", str(_n))
     assert prompt == template
 
 
@@ -449,8 +464,9 @@ def test_l4_card_prompt_is_the_legacy_wording(scan_handle):
                      {"scan.l4.600519.a1.prompt": "_l4_prompt_600519.md",
                       "scan.l4.600519.a1.slim": "_external_inputs/600519.SS_2026-09-13_slim.md"},
                      {"scan.l4.600519.a1.card": "details/600519.md"}, subject="600519")
-    assert prompt == _fill(_js_template("l4-stock.js", "先读整个任务包"),
-                           {"SD": sd, "code": "600519"})
+    assert prompt == _shared_js_template(
+        "scan.l4.card", prompt=f"{sd}/_l4_prompt_600519.md",
+        output=f"{sd}/details/600519.md")
 
 
 def test_l4_review_prompt_is_the_legacy_wording(scan_handle):
@@ -462,8 +478,9 @@ def test_l4_review_prompt_is_the_legacy_wording(scan_handle):
                          {"scan.l4.600519.a1.prompt": "_l4_prompt_600519.md"},
                          {f"scan.l4.600519.a1.review{run_index}":
                           f"ensemble/600519.run{run_index}.md"}, subject="600519")
-        assert prompt == _fill(_js_template("l4-stock.js", "(不知道其它 run 结论)"),
-                               {"SD": sd, "code": "600519", "i": run_index})
+        assert prompt == _shared_js_template(
+            "scan.l4.review", prompt=f"{sd}/_l4_prompt_600519.md",
+            output=f"{sd}/ensemble/600519.run{run_index}.md", run_index=run_index)
 
 
 # ── I1 (review 2026-09-26): host-mode timing is measured from ``.taken`` ────────────
@@ -540,6 +557,9 @@ def test_timed_out_attempt_is_abandoned_and_never_handed_out_again(tmp_path):
     with pytest.raises(ExecutorTimeout):
         _fake_executor(tmp_path, fake).dispatch(_request(tmp_path, timeout=1.0))
     assert mailbox.is_abandoned(tmp_path, "scan.l4.card.600000", 1)
+    cancellation = mailbox.read_abandonment(tmp_path, "scan.l4.card.600000", 1)
+    assert cancellation["cancel_capability"] == "UNSUPPORTED"
+    assert cancellation["cancel_confirmed"] is False
     assert mailbox.pending_requests(tmp_path, include_taken=True) == []
     mailbox.issue_request(tmp_path, _request(tmp_path, attempt=2))
     doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)

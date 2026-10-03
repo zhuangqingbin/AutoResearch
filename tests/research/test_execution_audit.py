@@ -264,3 +264,22 @@ def test_experiment_id_is_validated_before_any_directory_is_made(world):
     with pytest.raises(ValueError):
         ea.create_output_dir("../escape", parent=world["tmp"] / "out")
     assert not (world["tmp"] / "out").exists() or not list((world["tmp"] / "out").iterdir())
+
+
+def test_execution_funnel_has_independent_known_denominators_and_no_inferred_orders():
+    rows = [{"evidence_mode": "OBSERVED_FILL", "candidate": True, "orderable": True,
+             "submitted": None, "filled": True, "exit_complete": False, "window_breached": None},
+            {"evidence_mode": "OBSERVED_FILL", "candidate": True, "orderable": False,
+             "submitted": False, "filled": False, "exit_complete": None, "window_breached": None},
+            {"evidence_mode": "OBSERVED_FILL", "candidate": True, "orderable": True,
+             "submitted": True, "filled": True, "exit_complete": True, "window_breached": True},
+            {"evidence_mode": "EOD_PROXY", "candidate": True, "entry_state": "FILLED"}]
+    groups = {g["evidence_mode"]: g for g in ea.execution_funnel(rows)}
+    observed = groups["OBSERVED_FILL"]["stages"]
+    assert observed["candidate"] == {"n": 3, "denominator": 3, "missing": 0, "rate": 1.0}
+    assert observed["submitted"] == {"n": 1, "denominator": 2, "missing": 1, "rate": .5}
+    assert observed["filled"]["n"] == 2
+    assert observed["exit_complete"]["denominator"] == 2
+    assert observed["window_breached"]["denominator"] == 1
+    assert groups["EOD_PROXY"]["stages"]["filled"]["n"] == 0
+    assert groups["EOD_PROXY"]["stages"]["filled"]["rate"] is None

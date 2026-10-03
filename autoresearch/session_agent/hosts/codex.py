@@ -9,4 +9,10 @@ def profile_from_observation(**observation) -> dict:
     return observe_host(value)
 
 
-__all__ = ["profile_from_observation"]
+def access_capability() -> dict:
+    """Inspect project configuration; never assert the live host loaded it."""
+    from autoresearch.session_agent.task_access import capability
+    return capability("codex")
+
+
+__all__ = ["profile_from_observation", "access_capability"]

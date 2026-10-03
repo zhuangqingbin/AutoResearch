@@ -3,12 +3,110 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import re
+from numbers import Integral
 from pathlib import Path
 
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+
+
+def l3_veto_status(row: dict) -> str:
+    """Validate the versioned B/E field; never infer a historical veto from prose.
+
+    Pandas represents fields absent from one historical row as NaN after concatenation.
+    Explicit null and half-declared versions are malformed, not UNKNOWN.
+    """
+    def absent(key):
+        value = row.get(key)
+        return key not in row or (isinstance(value, float) and math.isnan(value))
+
+    from autoresearch.contracts.agent_output import (
+        L3_RANK_SCHEMA_VERSION,
+        L3_VETO_REASON_CODES,
+        L3_VETO_REASON_FIELDS,
+    )
+    if absent("schema_version") and absent("veto_reasons"):
+        return "UNKNOWN"
+    version = row.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, Integral) or version != L3_RANK_SCHEMA_VERSION:
+        raise ValueError("L3 schema_version must be 2 when veto_reasons is declared")
+    reasons = row.get("veto_reasons")
+    if not isinstance(reasons, list):
+        raise ValueError("L3 v2 veto_reasons must be an array")
+    seen = set()
+    for reason in reasons:
+        if not isinstance(reason, dict) or set(reason) != set(L3_VETO_REASON_FIELDS):
+            raise ValueError("L3 veto reason fields must be reason_code/reason_text/evidence_refs")
+        code = reason["reason_code"]
+        if not isinstance(code, str) or code not in L3_VETO_REASON_CODES or code in seen:
+            raise ValueError("L3 veto reason_code must be a unique registered B/E code")
+        seen.add(code)
+        if not isinstance(reason["reason_text"], str) or not reason["reason_text"].strip():
+            raise ValueError("L3 veto reason_text is required")
+        refs = reason["evidence_refs"]
+        if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
+            raise ValueError("L3 veto evidence_refs must contain input evidence references")
+    return "VETO" if reasons else "CLEAR"
+
+
+def validate_rank_rows(rows: object, *, expected_version: int | None = None) -> int:
+    """Validate one array without silently downgrading a declared v2 task.
+
+    A historical v1 task retains its old permissive row fields and boolean finalist.
+    New v2 tasks require the exact producer fields; mixed arrays are rejected.
+    """
+    from autoresearch.contracts.agent_output import L3_RANK_FIELDS_V2, L3_RANK_SCHEMA_VERSION
+
+    if expected_version not in (None, 1, L3_RANK_SCHEMA_VERSION):
+        raise ValueError("unsupported L3 contract version")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("scan L3 output must be a non-empty list")
+    versions = set()
+    codes = set()
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get("finalist")) is not bool:
+            raise ValueError("scan L3 rows require boolean finalist")
+        status = l3_veto_status(row)
+        version = 1 if status == "UNKNOWN" else L3_RANK_SCHEMA_VERSION
+        versions.add(version)
+        if expected_version is not None and version != expected_version:
+            raise ValueError(f"L3 row version {version} does not match declared version {expected_version}")
+        if version == L3_RANK_SCHEMA_VERSION:
+            if set(row) != set(L3_RANK_FIELDS_V2):
+                raise ValueError("L3 v2 row fields must match the declared output contract")
+            if not isinstance(row["code"], str) or not re.fullmatch(r"\d{6}", row["code"]):
+                raise ValueError("L3 v2 code must preserve six digits")
+            if row["code"] in codes:
+                raise ValueError(f"duplicate L3 v2 code: {row['code']}")
+            codes.add(row["code"])
+            conviction = row["conviction"]
+            if type(conviction) is not int or not 0 <= conviction <= 100:
+                raise ValueError("L3 conviction must be an ordinal integer from 0 to 100")
+    if len(versions) != 1:
+        raise ValueError("L3 array cannot mix schema versions")
+    return versions.pop()
+
+
+def validate_rank_artifact(rows: object, scan_dir: Path) -> int:
+    """Legacy CLI reads the producer's frozen table declaration, not row omission.
+
+    Tables before this declaration and pre-finalist historical arrays retain their
+    original compatibility path. A v2 array is always checked even without the table.
+    """
+    table = scan_dir / "_l3_table.md"
+    text = table.read_text(encoding="utf-8") if table.is_file() else ""
+    declaration = re.search(r"〔L3输出契约 v(\d+)〕", text)
+    expected = int(declaration.group(1)) if declaration else None
+    if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("scan L3 output must be a non-empty object array")
+    versioned = any("schema_version" in row or "veto_reasons" in row for row in rows)
+    if expected is not None or versioned:
+        return validate_rank_rows(rows, expected_version=expected)
+    return 1
+
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _DATE_TOKEN_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}")
@@ -195,6 +293,10 @@ def lint_judged(date: str, root: Path | None = None) -> dict:
     if not judged_path.exists():
         return {"ok": False, "reason": f"{judged_path} 缺失"}
     picks = json.loads(judged_path.read_text(encoding="utf-8"))
+    try:
+        validate_rank_artifact(picks, scan_dir)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc), "failures": [], "contract_error": True}
     failures = _lint_failures(picks, scan_dir)
     bad = [f"{row['code']}:{row['token']}" for row in failures]
     if bad:
@@ -213,10 +315,7 @@ def _atomic_json(path: Path, payload: object) -> None:
 def _json_safe_row(row: object) -> dict:
     if row is None:
         return {}
-    if isinstance(row, pd.Series):
-        values = row.to_dict()
-    else:
-        values = dict(row)
+    values = row.to_dict() if isinstance(row, pd.Series) else dict(row)
     out = {}
     for key, value in values.items():
         if pd.isna(value):
@@ -233,8 +332,7 @@ def build_repair_pack(date: str, root: Path | None = None) -> dict:
     scan_dir = base / date
     judged_path = scan_dir / "_l3_judged.json"
     picks = json.loads(judged_path.read_text(encoding="utf-8"))
-    if not isinstance(picks, list):
-        raise ValueError("_l3_judged.json root must be a list")
+    validate_rank_artifact(picks, scan_dir)
     failures = _lint_failures(picks, scan_dir)
     codes = list(dict.fromkeys(row["code"] for row in failures))
     picks_by_code = {
@@ -322,6 +420,7 @@ def apply_repair_patch(date: str, root: Path | None = None) -> dict:
 
     judged_path = scan_dir / "_l3_judged.json"
     original = json.loads(judged_path.read_text(encoding="utf-8"))
+    validate_rank_artifact(original, scan_dir)
     candidate = []
     for row in original:
         code = str(row.get("code", "")).zfill(6)

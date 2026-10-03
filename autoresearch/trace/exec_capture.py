@@ -570,6 +570,7 @@ def _capture_reserved(
     started_monotonic: float,
     drain_grace: float,
     termination_grace: float,
+    owner_callback=None,
 ) -> CaptureResult:
     """Run a reserved invocation; restore signals only after terminal evidence."""
     process: subprocess.Popen | None = None
@@ -761,6 +762,10 @@ def _capture_reserved(
                                 refresh_heartbeat(
                                     handle.run_id, invocation_id=invocation_id
                                 )
+                                if owner_callback is not None and not signal_forwarded and process.poll() is None:
+                                    # Once entered, normal child completion does not cancel a
+                                    # claim made by the owner. Only a forwarded signal revokes it.
+                                    owner_callback(lambda: not signal_forwarded)
                                 continue
                     except BaseException as exc:
                         pending_exception = exc
@@ -1151,6 +1156,7 @@ def run_captured(
     task_id: str | None = None,
     drain_grace: float = _DEFAULT_DRAIN_GRACE,
     termination_grace: float = _DEFAULT_TERMINATION_GRACE,
+    owner_callback=None,
 ) -> CaptureResult:
     """Execute exactly one argument vector and persist its streamed evidence."""
     stage = _validate_identifier("stage", stage)
@@ -1258,7 +1264,7 @@ def run_captured(
         stderr_raw.unlink(missing_ok=True)
         raise
 
-    return _capture_reserved(
+    result = _capture_reserved(
         handle,
         stage=stage,
         invocation_id=invocation_id,
@@ -1278,7 +1284,11 @@ def run_captured(
         started_monotonic=started_monotonic,
         drain_grace=drain_grace,
         termination_grace=termination_grace,
+        owner_callback=owner_callback,
     )
+    if owner_callback is not None and result.invocation.get("forwarded_signals"):
+        raise KeyboardInterrupt("captured operation interrupted; child and evidence finalized")
+    return result
 
 
 def _parser() -> argparse.ArgumentParser:

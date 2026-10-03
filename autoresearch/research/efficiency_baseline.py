@@ -134,3 +134,118 @@ def capability_report(evidence: dict) -> dict:
 def runner_is_unblocked(report: dict) -> bool:
     """E3 的放行判据:四项**全部**为真才谈得上换路由。任何一项缺证据即为假。"""
     return all(report[name]["available"] for name in CAPABILITIES)
+
+
+# C6 sidecars have their own reader; the legacy budget reader above stays compatible.
+METERING_GROUP_FIELDS = ("engine", "workflow", "mode", "real_run", "source", "cache_coverage")
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "cached_input_tokens",
+                "cache_creation_tokens", "reasoning_output_tokens")
+
+
+def metering_row(sidecar: dict, *, workflow: str, mode: str, real_run: bool,
+                 source: str, quality_passed: bool | None, run_complete: bool | None = None) -> dict:
+    """Read a validated C6 sidecar without equating proxy, price and real usage.
+
+    COMPLETE requires an explicitly completed run, bound dispatched evidence and
+    complete input/output totals.
+    Optional cache/reasoning coverage remains explicit. Duration is the sum of bound
+    transcript spans (potentially overlapping), never net runtime. Quality is a
+    separate eligibility gate and cannot be offset by cheaper usage.
+    """
+    from autoresearch.contracts.session_metering import validate_metering
+
+    validate_metering(sidecar)
+    if (type(real_run) is not bool
+            or any(v is not None and type(v) is not bool for v in (quality_passed, run_complete))):
+        raise ValueError("run and quality flags require explicit booleans")
+    if any(not isinstance(v, str) or not v.strip() for v in (workflow, mode, source)):
+        raise ValueError("workflow, mode and source are required")
+    dispatched = [a for a in sidecar["attempts"] if a["dispatch_count"]]
+    if any(a["evidence_status"] == "PRESENT" and not a["evidence_source"] for a in dispatched):
+        raise ValueError("present usage must have bound evidence")
+    metrics = sidecar["metrics"]
+    complete = run_complete is True and bool(dispatched) and all(a["evidence_status"] == "PRESENT" for a in dispatched)
+    complete &= all(metrics[k]["status"] == "COMPLETE" for k in ("input_tokens", "output_tokens"))
+    proxy = [a["proxy_input_chars"] for a in dispatched]
+    return {
+        "run_id": sidecar["run_id"], "engine": sidecar["engine"],
+        "evidence_plan_hash": sidecar["evidence_plan_hash"],
+        "evidence_sources": [dict(a["evidence_source"]) for a in dispatched if a["evidence_source"]],
+        "workflow": workflow, "mode": mode, "real_run": real_run, "source": source,
+        "quality_passed": quality_passed, "run_complete": run_complete, "coverage": "COMPLETE" if complete else "INCOMPLETE",
+        "cache_coverage": {k: {"status": metrics[k]["status"], "coverage": metrics[k]["coverage"]}
+                           for k in ("cached_input_tokens", "cache_creation_tokens")},
+        **{key: summary["value"] for key, summary in metrics.items()},
+        "metric_coverage": {key: dict(summary) for key, summary in metrics.items()},
+        "proxy_input_chars": sum(proxy) if proxy and all(v is not None for v in proxy) else None,
+        "estimated_price": sidecar["estimated_price"],
+        "duration_basis": "BOUND_TRANSCRIPT_SPAN_SUM", "net_runtime_seconds": None,
+    }
+
+
+def metering_cohort_summary(rows) -> dict:
+    """Compare like-for-like runs; fewer than ten qualifying real runs are observations.
+
+    Duplicated run identities are counted once. Conflicting duplicates are rejected.
+    Synthetic and quality-failed runs never establish a stable efficiency baseline.
+    """
+    import json
+
+    groups: dict[tuple, list[dict]] = {}
+    seen = {}
+    quality_rejected = 0
+    for row in rows:
+        identity = (row["engine"], row["run_id"])
+        if identity in seen:
+            if seen[identity] != row:
+                raise ValueError("conflicting duplicate metering run")
+            continue
+        seen[identity] = row
+        if row["quality_passed"] is not True:
+            quality_rejected += 1
+            continue
+        key = tuple(json.dumps(row[field], sort_keys=True) for field in METERING_GROUP_FIELDS)
+        key += (row.get("scope", "DISPATCHED_ATTEMPTS"), row.get("input_basis", "UNCACHED_INPUT"))
+        groups.setdefault(key, []).append(row)
+    output = []
+    for _key, members in sorted(groups.items(), key=lambda item: str(item[0])):
+        qualifying = [row for row in members if row["real_run"] and row["coverage"] == "COMPLETE"]
+        stable = len(qualifying) >= 10
+        output.append({
+            **{field: members[0][field] for field in METERING_GROUP_FIELDS}, "n": len(members),
+            "n_complete_real_runs": len(qualifying), "status": "STABLE" if stable else "OBSERVATIONS_ONLY",
+            "observations": members,
+            **{f"median_{field}": _median(sorted(row[field] for row in qualifying
+                                                  if row[field] is not None)) if stable else None
+               for field in (*TOKEN_FIELDS, "proxy_input_chars", "estimated_price", "duration_seconds")},
+        })
+    return {"groups": output, "quality_rejected": quality_rejected}
+
+
+def run_usage_row(diagnostic: dict, *, workflow: str, mode: str, real_run: bool,
+                  source: str, quality_passed: bool | None, run_complete: bool | None = None) -> dict:
+    """Read the derived whole-run join; partial observations are never full costs."""
+    from autoresearch.research.run_usage import RUN_USAGE_VERSION
+    if diagnostic.get('schema_version') != 'research-run-diagnostics-v1':
+        raise ValueError('run diagnostics required')
+    cost = diagnostic['cost']
+    if cost.get('schema_version') != RUN_USAGE_VERSION:
+        raise ValueError('native run usage join required')
+    if type(real_run) is not bool or any(v is not None and type(v) is not bool for v in (quality_passed,run_complete)):
+        raise ValueError('run and quality flags require explicit booleans')
+    if any(not isinstance(v,str) or not v.strip() for v in (workflow,mode,source)):
+        raise ValueError('workflow, mode and source are required')
+    metrics = cost['metrics']
+    complete = run_complete is True and cost['measurement_coverage']['status'] == 'COMPLETE'
+    complete &= all(metrics[k]['status']=='COMPLETE' and metrics[k]['total'] is not None
+                    for k in ('input_tokens','output_tokens'))
+    wall = metrics['wall_seconds']['total']
+    return {**{k:diagnostic['identity'][k] for k in ('engine','run_id')},
+        'workflow':workflow,'mode':mode,'real_run':real_run,'source':source,
+        'scope':cost['scope'],'input_basis':cost['input_basis'],
+        'quality_passed':quality_passed,'run_complete':run_complete,
+        'coverage':'COMPLETE' if complete else 'INCOMPLETE',
+        'cache_coverage':{k:metrics[k]['status'] for k in ('cached_input_tokens','cache_creation_tokens')},
+        **{k:metrics[k]['total'] for k in TOKEN_FIELDS},'metric_coverage':metrics,
+        'evidence_sources':cost['source_refs'],'proxy_input_chars':None,'estimated_price':None,
+        'duration_seconds':wall,'net_runtime_seconds':wall,'duration_basis':'OBSERVED_INTERVAL_UNION'}

@@ -105,7 +105,24 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
     def _ingest(raw) -> None:
         for r in raw if isinstance(raw, list) else [raw]:
             if isinstance(r, dict) and r.get("code"):
-                out[str(r["code"]).strip().zfill(6)] = r
+                code = str(r["code"]).strip().zfill(6)
+                ratings = r.get("ratings", [])
+                valid_ratings = isinstance(ratings, list) and all(
+                    isinstance(item, str) and item in TIER_RANK for item in ratings
+                )
+                median = r.get("median", "—")
+                valid_median = isinstance(median, str) and median in {*TIER_RANK, "—"}
+                try:
+                    valid_spread = int(r.get("spread") or 0) >= 0
+                except (TypeError, ValueError, OverflowError):
+                    valid_spread = False
+                if not (valid_ratings and valid_median and valid_spread):
+                    out[code] = {"code": code, "degraded": True, "spread": 1,
+                                 "review_policy_version": r.get("review_policy_version"),
+                                 "validation_error": "malformed_review_results"}
+                    print(f"[ensemble] 无效复核记录已隔离，原文件保留: {code}", file=sys.stderr)
+                else:
+                    out[code] = r
 
     for p in [scan_dir / "_ensemble.json", *sorted(scan_dir.glob("_ensemble_*.json"))]:
         if not p.exists():
@@ -124,6 +141,86 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
             continue
     return out
 
+REVIEW_DEFAULTS: dict = {"ow_ratings": ["Buy", "Overweight", "增持", "买入"], "sell_review_pinned_only": True,
+                         "max_runs": 3, "spread_escalate": 2}
+
+
+def review_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4.review` → 双复核触发与折回(缺键 = REVIEW_DEFAULTS;两宿主同读)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l4", "review", None, {}, cfg) or {}
+    return {**REVIEW_DEFAULTS, **(user if isinstance(user, dict) else {})}
+
+
+def review_trigger(rating: str | None, proposal: str | None, *, pinned: bool) -> str | None:
+    """`ow_review` / `sell_review` / None —— 与 l4-stock.js 同一份 `l4.review` 规则。"""
+    rc = review_cfg()
+    ow = {str(x).lower() for x in rc["ow_ratings"]}
+    if str(rating or "").lower() in ow:
+        return "ow_review"
+    sellish = "sell" in str(proposal or "").lower() or "sell" in str(rating or "").lower()
+    if sellish and (pinned or not rc["sell_review_pinned_only"]):
+        return "sell_review"
+    return None
+
+
+REVIEW_POLICY_VERSION = "ow-pinned-sell-v1"
+
+
+def review_coverage(rating: str, *, pinned: bool, record: dict | None, legacy: bool = False) -> dict:
+    """Describe observed review coverage without changing admission or fold policy."""
+    if legacy and record and not record.get("ratings"):
+        return {"review_policy_version": None, "review_trigger": None,
+                "review_required": None, "review_status": "UNKNOWN",
+                "review_coverage_reason": "legacy_review_results_unavailable"}
+    if rating not in TIER_RANK:
+        return {"review_policy_version": REVIEW_POLICY_VERSION, "review_trigger": None,
+                "review_required": None, "review_status": "UNKNOWN",
+                "review_coverage_reason": "initial_rating_unavailable"}
+    trigger = review_trigger(rating, _PROPOSAL_BY_RATING.get(rating), pinned=pinned)
+    status, reason = "NOT_REQUIRED", "outside_default_trigger"
+    if trigger:
+        status, reason = "MISSING", "required_review_not_observed"
+        if record:
+            from autoresearch.scan.decision_record import complete_review_results
+
+            record = record if isinstance(record, dict) else {}
+            ratings = record.get("ratings") or []
+            complete = (
+                complete_review_results(rating, ratings)
+                and record.get("trigger", trigger) == trigger
+                and not record.get("degraded")
+            )
+            if complete:
+                median = sorted(ratings, key=TIER_RANK.get)[len(ratings) // 2]
+                complete = (
+                    record.get("median", median) == median
+                    and type(record.get("n_runs", len(ratings))) is int
+                    and record.get("n_runs", len(ratings)) == len(ratings)
+                )
+            status = "COMPLETE" if complete else "INCOMPLETE"
+            reason = ("same_tier_median_fixed" if len(ratings) == 2 else "three_results_observed") if complete else "missing_failed_or_inconsistent_review"
+
+    return {"review_policy_version": REVIEW_POLICY_VERSION, "review_trigger": trigger,
+            "review_required": trigger is not None, "review_status": status,
+            "review_coverage_reason": reason}
+
+
+def current_review_policy(scan_dir: Path, record: dict | None) -> bool:
+    from autoresearch.contracts.profiles import STRICT_CARD_RULES
+    from autoresearch.scan.l4.card_io import card_rules_version
+
+    return ((record or {}).get("review_policy_version") == REVIEW_POLICY_VERSION
+            or card_rules_version(scan_dir=scan_dir) in STRICT_CARD_RULES)
+
+
+def fold_review(rating: str, record: dict | None, *, strict: bool, coverage: dict) -> str:
+    """New incomplete reviews cannot fold; historical replay retains its old policy."""
+    if strict and coverage["review_status"] != "COMPLETE":
+        return rating
+    return _apply_ensemble_fold(rating, record)
+
+
 def _ensemble_flag(rec: dict | None) -> bool:
     """🎭 人裁条件:3 run 分歧 ≥2 档;或复核 run 缺席退化(degraded,N<3)且仍有分歧(spread>0)——
     degraded(复核 run 不齐)时 workflow 与本侧均不折回,仅 ens_flag 强制人裁展示,1 档分歧
@@ -131,7 +228,7 @@ def _ensemble_flag(rec: dict | None) -> bool:
     if not rec:
         return False
     spread = int(rec.get("spread") or 0)
-    return spread >= 2 or (bool(rec.get("degraded")) and spread > 0)
+    return spread >= int(review_cfg()["spread_escalate"]) or (bool(rec.get("degraded")) and spread > 0)
 
 def _apply_ensemble_fold(rating: str, rec: dict | None) -> str:
     """复核折回:ow_review(默认)只向下(更靠 Sell)折;sell_review 只向温和折(救误卖持仓,
@@ -227,8 +324,9 @@ def dissent_line(rec: DissentRecord) -> str:
         return (f"⚠️ 持仓保护规则:{rec.code} 复核中位 {_short(rec.median_rating)} "
                 f"比卡面 {_short(rec.card_rating)} {relation};"
                 f"单向阀未加重终评(终评 {_short(rec.final_rating)})")
+    outcome = "复核未完成,保留原评级,需人工复核" if rec.degraded else "已按中位折回,建议人工复核"
     return (f"🎭 买单复核分歧:{rec.code} {len(rec.ratings)} run={list(rec.ratings)},"
-            f"已按中位折回,建议人工复核")
+            f"{outcome}")
 
 
 def dump_dissent_records(scan_dir: Path, records: list[DissentRecord]) -> None:
@@ -328,7 +426,7 @@ def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
     """
     import contextlib
     with contextlib.suppress(Exception):
-        out = {str(r.get("code", "")).zfill(6): r.get("rating", "—")
+        out = {str(r.get("code", "")).zfill(6): ("—" if r.get("card_incomplete") else r.get("rating", "—"))
                for r in rows if r.get("code") and not r.get("blind_card")}
         (Path(scan_dir) / "_final_ratings.json").write_text(
             json.dumps(out, ensure_ascii=False), encoding="utf-8")
@@ -378,7 +476,13 @@ def _build_decision_records(
         verify = vmap.get(code)
         ensemble = emap.get(code)
 
-        if final in qualified:
+        if row.get("card_incomplete"):
+            # Preserve the original model rating and raw MD; this machine record
+            # explicitly says the card is invalid instead of silently downgrading it.
+            final = "—"
+            first_rejection = "L4_CARD_INVALID"
+            reason = "card_invalid:" + str(row.get("card_validation_error") or "incomplete")
+        elif final in qualified:
             first_rejection = None
             reason = "qualified"
         elif text is None:
@@ -418,6 +522,7 @@ def _build_decision_records(
                 contract_hash=contract_hash_for(scan_dir),
                 code=code,
                 source_rating=source,
+                post_verify_rating=row.get("_post_verify_rating"),
                 rubric_rating=row.get("rubric_suggest") or "—",
                 gate_states=gate_states,
                 early_stop=early,
@@ -431,6 +536,8 @@ def _build_decision_records(
                 reason=reason,
                 evidence_refs=refs,
                 first_rejection_stage=first_rejection,
+                **review_coverage(source, pinned=str(row.get("lane") or "").strip() == "pinned",
+                                  record=ensemble, legacy=not current_review_policy(scan_dir, ensemble)),
             )
         )
     return records

@@ -1,0 +1,217 @@
+--- a/tests/session_agent/test_boundary_probe.py
++++ b/tests/session_agent/test_boundary_probe.py
+@@ -547,3 +547,214 @@
+     assert prepared['route_profile'] == 'CODEX_0_159_3_EXEC_COMMAND_TO_BASH'
+     assert prepared['wrapper_tool_name'] == 'functions.exec'
+     assert prepared['wrapper_program'] == 'const result = await tools.exec_command(' + canonical_json(prepared['tool_input']) + '); text(JSON.stringify(result));'
++
++
++# ───────────── Claude route: structured Read/Write/Bash + a second shell identity ─────────────
++#
++# Observed on Claude Code 2.1.285 (2026-10-01 acceptance readout): research roles such as
++# l4-card expose Read/Write but no shell, so arbitrary_shell and identity_spoof need a
++# second bound identity (general-purpose); Write refuses to overwrite an unread file, so
++# writable canaries start absent. Everything below is SYNTHETIC tmp-root evidence.
++
++_SHELL = {'arbitrary_shell', 'identity_spoof'}
++_WRITES = {'allowed_write', 'outside_write'}
++
++
++@pytest.fixture
++def claude_probe(tmp_path, monkeypatch):
++    from autoresearch.session_agent import boundary_probe as module
++    monkeypatch.setattr(module, 'REPO_ROOT', tmp_path)
++    monkeypatch.setattr(module.ws, 'ENGINE', 'claude')
++    monkeypatch.setattr(module.ws, 'context_root', lambda: tmp_path / 'context_claude')
++    monkeypatch.setattr(module.ws, 'reports_root', lambda: tmp_path / 'reports_claude')
++    monkeypatch.setattr(proof, '_native_source', lambda _: (_ for _ in ()).throw(ValueError('SYNTHETIC no native source')))
++    return module
++
++
++def claude_bound(probe):
++    batch = probe.create_batch()['batch_id']
++    probe.bind_batch(batch, session_id='synthetic-session', agent_id='synthetic-research',
++                     shell_agent_id='synthetic-shell')
++    return batch
++
++
++def _snapshot(path):
++    if not path.exists():
++        return None
++    text = path.read_text()
++    return {'text': text, 'sha256': access.sha256_bytes(text.encode())}
++
++
++def _claude_event_snapshots(probe, challenge):
++    request = Path(challenge['request_path'])
++    return {'manifest': _snapshot(access.manifest_path(request)),
++            'context_snapshot': _snapshot(request.with_suffix('.context.json')),
++            'binding': _snapshot(access._binding_path('claude', 'synthetic-session', challenge['agent_id'], probe.REPO_ROOT)),
++            'state': _snapshot(request.parent.parent / 'tasks.json'),
++            'deep_grant': _snapshot(request.with_suffix('.deep-access.json'))}
++
++
++def test_claude_bind_freezes_research_and_shell_identities(claude_probe):
++    batch = claude_bound(claude_probe)
++    root = claude_probe.ws.context_root() / '_acceptance/boundary/probes' / batch
++    research = access._load_manifest(root / 'session/dispatch/stock.card-a1.json')
++    shell = access._load_manifest(root / 'session/dispatch/canary.shell-a1.json')
++    assert (research['identity']['agent_type'], research['identity']['role']) == ('l4-card', 'stock.card')
++    assert (shell['identity']['agent_type'], shell['identity']['role']) == ('general-purpose', 'canary.shell')
++    assert shell['conditional_reads'] == [] and research['conditional_reads']
++    for agent, role in (('synthetic-research', 'l4-card'), ('synthetic-shell', 'general-purpose')):
++        access.load_bound_access({'session_id': 'synthetic-session', 'agent_id': agent, 'agent_type': role},
++                                 'claude', repo_root=claude_probe.REPO_ROOT)
++    with pytest.raises(ValueError, match='role'):
++        access.load_bound_access({'session_id': 'synthetic-session', 'agent_id': 'synthetic-research',
++                                  'agent_type': 'general-purpose'}, 'claude', repo_root=claude_probe.REPO_ROOT)
++    # Claude Write cannot overwrite a file its agent has not read: writable canaries start absent.
++    for name in ('boundary-canary-outside-write.txt',
++                 'staging/session_outputs/attempts/stock.card/a0001/outputs/boundary-canary-write.txt',
++                 'staging/session_outputs/attempts/canary.shell/a0001/outputs/boundary-canary-shell-write.txt'):
++        assert not (root / name).exists() and (root / name).parent.is_dir()
++
++
++def test_shell_identity_is_required_exactly_on_shell_less_hosts(claude_probe):
++    batch = claude_probe.create_batch()['batch_id']
++    with pytest.raises(ValueError, match='shell-capable'):
++        claude_probe.bind_batch(batch, session_id='synthetic-session', agent_id='synthetic-research')
++    with pytest.raises(ValueError, match='distinct'):
++        claude_probe.bind_batch(batch, session_id='synthetic-session', agent_id='same', shell_agent_id='same')
++    assert not (claude_probe.ws.context_root() / '_acceptance/boundary/probes' / batch / 'session').exists()
++
++
++def test_codex_route_rejects_a_shell_identity(probe):
++    batch = probe.create_batch()['batch_id']
++    with pytest.raises(ValueError, match='shell-capable'):
++        probe.bind_batch(batch, session_id='synthetic-session', agent_id='synthetic-child',
++                         shell_agent_id='synthetic-shell')
++    assert set(json.loads((probe.ws.context_root() / '_acceptance/boundary/probes' / batch / 'batch.json').read_text())['canaries']) == {
++        'read', 'deep', 'outside', 'write'}
++
++
++@pytest.mark.parametrize('case', list(BOUNDARY_CASES))
++def test_claude_prepared_calls_match_existing_case_semantics(claude_probe, case):
++    batch = claude_bound(claude_probe)
++    if case == 'deep_after':
++        claude_probe.prepare_case(batch, 'deep_before')
++        claude_probe.complete_case(batch)
++    prepared = claude_probe.prepare_case(batch, case)
++    assert prepared['status'] == 'PREPARED', prepared
++    challenge = json.loads(Path(prepared['challenge_path']).read_text())
++    proof._case_semantics(challenge, _claude_event_snapshots(claude_probe, challenge))  # real verifier
++    tool = 'Bash' if case in _SHELL else ('Write' if case in _WRITES else 'Read')
++    assert (prepared['tool_name'], challenge['tool_name']) == (tool, tool)
++    assert prepared['tool_input'] == challenge['tool_input'] == prepared['proof_tool_input']
++    assert prepared['agent_id'] == challenge['agent_id'] == (
++        'synthetic-shell' if case in _SHELL else 'synthetic-research')
++    assert prepared['route_profile'] == 'CLAUDE_CODE_2_1_285_STRUCTURED_TOOLS'
++    assert 'wrapper_program' not in prepared and canonical_json(prepared['tool_input']) in prepared['agent_message']
++    if tool == 'Bash':
++        assert set(prepared['tool_input']) == {'command', 'description'}
++    else:
++        assert prepared['tool_input']['file_path'] == challenge['target']
++
++
++def test_claude_shell_case_uses_and_clears_only_the_shell_pointer(claude_probe):
++    batch = claude_bound(claude_probe)
++    active = claude_probe.ws.context_root() / '_acceptance/boundary/active'
++    shell = active / (proof._hash(['synthetic-session', 'synthetic-shell']) + '.json')
++    research = active / (proof._hash(['synthetic-session', 'synthetic-research']) + '.json')
++    prepared = claude_probe.prepare_case(batch, 'arbitrary_shell')
++    assert json.loads(shell.read_text())['nonce'] == prepared['nonce'] and not research.exists()
++    assert claude_probe.complete_case(batch)['status'] == 'NOT_OBSERVED'
++    assert not shell.exists()
++
++
++@pytest.mark.parametrize('case', ['stale_attempt', 'tampered_binding', 'missing_binding'])
++def test_claude_fault_restore_touches_only_the_research_identity(claude_probe, case):
++    batch = claude_bound(claude_probe)
++    research = access._binding_path('claude', 'synthetic-session', 'synthetic-research', claude_probe.REPO_ROOT)
++    shell = access._binding_path('claude', 'synthetic-session', 'synthetic-shell', claude_probe.REPO_ROOT)
++    tasks = claude_probe.ws.context_root() / '_acceptance/boundary/probes' / batch / 'session/tasks.json'
++    target = tasks if case == 'stale_attempt' else research
++    before, shell_before = target.read_bytes(), shell.read_bytes()
++    claude_probe.prepare_case(batch, case)
++    assert (not target.exists()) if case == 'missing_binding' else target.read_bytes() != before
++    if case == 'stale_attempt':
++        state = json.loads(tasks.read_text())['tasks']
++        assert state['stock.card']['state'] == 'SUCCEEDED' and state['canary.shell']['state'] == 'RUNNING'
++    assert claude_probe.restore_case(batch)['status'] == 'RESTORED'
++    assert target.read_bytes() == before and shell.read_bytes() == shell_before
++
++
++def test_claude_denied_outside_write_must_leave_the_target_absent(claude_probe):
++    batch = claude_bound(claude_probe)
++    prepared = claude_probe.prepare_case(batch, 'outside_write')
++    challenge = json.loads(Path(prepared['challenge_path']).read_text())
++    assert prepared['before_sha256'] is None and challenge['before_sha256'] is None
++    assert not Path(challenge['target']).exists()
++    Path(challenge['target']).write_text(prepared['tool_input']['content'])   # SYNTHETIC unexpected execution
++    assert claude_probe.complete_case(batch)['status'] == 'ABORTED_CANARY_CHANGED'
++    assert claude_probe.summarize_batch(batch)['aborted']
++
++
++def test_claude_expected_write_from_an_absent_baseline_is_not_an_abort(claude_probe):
++    batch = claude_bound(claude_probe)
++    prepared = claude_probe.prepare_case(batch, 'allowed_write')
++    challenge = json.loads(Path(prepared['challenge_path']).read_text())
++    Path(challenge['target']).write_text(prepared['tool_input']['content'])   # SYNTHETIC expected canary state
++    result = claude_probe.complete_case(batch)
++    assert result['status'] == 'NOT_OBSERVED' and not claude_probe.summarize_batch(batch)['aborted']
++    claude_probe.prepare_case(batch, 'allowed_read')
++    assert claude_probe.complete_case(batch)['status'] == 'NOT_OBSERVED'
++
++
++@pytest.mark.parametrize('native_variant', ['observed_shape', 'paged_read', 'missing_host_record'])
++def test_claude_real_issue_and_import_need_the_host_read_record(claude_probe, monkeypatch, native_variant):
++    """SYNTHETIC native rows in the observed Claude shape: real export/import crypto and gate."""
++    batch = claude_bound(claude_probe)
++    monkeypatch.setattr(proof, '_now', lambda: '2026-09-30T01:00:01+00:00')
++    prepared = claude_probe.prepare_case(batch, 'allowed_read')
++    challenge = json.loads(Path(prepared['challenge_path']).read_text())
++    event = {key: challenge[key] for key in ['nonce', 'engine', 'session_id', 'agent_id', 'tool_name', 'policy_hash']}
++    event.update(schema_version=1, decision='ALLOW', reason='', call_id='toolu_synthetic',
++                 input_hash=proof._hash(prepared['tool_input']), observed_at='2026-09-30T01:00:03+00:00',
++                 **_claude_event_snapshots(claude_probe, challenge))
++    events = claude_probe.ws.context_root() / '_acceptance/boundary/events' / (prepared['nonce'] + '.jsonl')
++    events.parent.mkdir(parents=True)
++    events.write_text(canonical_json(event) + '\n')
++    text = Path(challenge['target']).read_text()
++    common = {'sessionId': 'synthetic-session', 'agentId': 'synthetic-research', 'version': 'SYNTHETIC-2.1.285'}
++    rows = [
++        {**common, 'type': 'user', 'timestamp': '2026-09-30T01:00:00+00:00',
++         'message': {'role': 'user', 'content': 'SYNTHETIC probe turn'}},
++        {**common, 'type': 'assistant', 'timestamp': '2026-09-30T01:00:02+00:00',
++         'message': {'role': 'assistant', 'content': [
++             {'type': 'tool_use', 'id': 'toolu_synthetic', 'name': 'Read', 'input': prepared['tool_input']}]}},
++        {**common, 'type': 'user', 'timestamp': '2026-09-30T01:00:04+00:00',
++         'message': {'role': 'user', 'content': [
++             {'type': 'tool_result', 'tool_use_id': 'toolu_synthetic', 'content': '1\t' + text}]},
++         'toolUseResult': {'type': 'text', 'file': {'filePath': challenge['target'], 'content': text,
++                                                    'numLines': 2, 'startLine': 1, 'totalLines': 2}}}]
++    if native_variant == 'paged_read':
++        rows[2]['toolUseResult']['file']['numLines'] = 1
++    elif native_variant == 'missing_host_record':
++        rows[2].pop('toolUseResult')
++    native = claude_probe.REPO_ROOT / 'SYNTHETIC-native.jsonl'
++    native.write_text(''.join(canonical_json(row) + '\n' for row in rows))
++    monkeypatch.setattr(proof, '_native_source', lambda _: native)
++    issuer = proof.initialize_issuer()  # explicit test fixture provisioning only
++    proof.trust_issuer(issuer['public_key_path'], engine='claude', expected_fingerprint=issuer['issuer_id'])
++    monkeypatch.setattr(proof, '_now', lambda: '2026-09-30T01:00:05+00:00')
++    result = claude_probe.complete_case(batch)
++    if native_variant != 'observed_shape':
++        assert result['status'] == 'OBSERVED_UNPROVABLE' and 'complete canary bytes' in result['issue_error']
++        assert 'export' not in result
++        return
++    assert result['status'] == 'IMPORTED', result.get('import_error', result.get('issue_error'))
++    summary = claude_probe.summarize_batch(batch)
++    assert summary['select_spec'] == {'engine': 'claude', 'proof_hashes': {'allowed_read': result['export']['proof_hash']}}
++    assert len(summary['missing']) == 10 and not summary['gate']['acceptance_satisfied']
++
++
++def test_unregistered_engine_has_no_probe_route(probe, monkeypatch):
++    monkeypatch.setattr(probe.ws, 'ENGINE', 'gemini')
++    with pytest.raises(ValueError, match='codex and claude only'):
++        probe.create_batch()

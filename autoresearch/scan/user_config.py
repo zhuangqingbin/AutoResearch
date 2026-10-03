@@ -22,16 +22,12 @@ raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 
 from __future__ import annotations
 
 import json
-import math
-import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
 
-#: `relative_buy.activate_date` 的形状校验(YYYY-MM-DD);错型静默生效比缺键更难查。
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.jsonc")
 DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.jsonc")
 
@@ -80,167 +76,15 @@ def _read_jsonc(p: Path):
     """读 JSONC 文件 → 去注释 → `json.loads`。"""
     return json.loads(_strip_jsonc(p.read_text(encoding="utf-8")))
 
-# 顶层白名单;funnel/pinned/reuse/l4_intel/l3 额外校验子键。agents 子键是 role 闭集
-# (Wave11 B1:_AGENT_ROLES,T7 的 jsonc 键/T8 的 AGENT_DEFAULTS/T9 的 reconcile 全都以它
-# 为词表)——每个 role 下只认 model/effort 两个子键,值也做枚举校验(见 load_user_config
-# 内 agents 校验块),不再是"消费方各自解释"的自由形状。
-# l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
-# `l3_select.prepare_l3_table` 消费。原 l3.finalist_max 已于 2026-09-26 退役(写了即报错指路):
-# 卡数只由 l4.max_cards 决定(唯一算法 scan/l4/card_count.effective_caps)。
-_TOP_WHITELIST = {
-    "agents", "agent_engines", "funnel", "pinned", "l4_intel", "l3",
-    "budgets", "performance",
-    # 2026-08-11 配置单一事实源波:L0/L2/行业 brief 运行旋钮入白名单(消费点=knob() 解析,
-    # 见各块注;jsonc 里每键必须标【生效点】,SKILL.md「配置」节列全表)。
-    "l0", "l2", "sector",
-    # 2026-08-19 E6 转正瘦身波(task-2.1):相对 BUY 决策层的 mode/exclude_pinned 开关——
-    # 默认值仍是 shadow/False(=现行为,parity);翻 active 是用户裁决表批准后的独立动作,
-    # 白名单本身只负责「开关存在且类型对」,不隐含已经打开。
-    "relative_buy",
-    # 2026-09-12(scene-reconstruction Task 4):transcript 绑定总开关。默认 true(=尝试
-    # 绑定,消费点 `autoresearch.scan.transcript_binder._configured_bind_transcripts`);
-    # 白名单同样只负责「开关存在且类型对」,解析+默认值兜底留在消费侧(同
-    # `relative_buy.configured_relative_buy()` 的既有分工)。
-    "retention",
-    # 2026-09-25 指数调样事件 §2.3:日历第三腿总开关(平铺布尔,镜像 l2.knife_cap)。默认 false = parity;
-    # 消费点 scan/calendar.harvest_calendar(index_rebalance=knob)。
-    "calendar",
-    # 2026-09-26 用户需求「最终进入 L4 卡的个数可配置、且真实生效」:max_cards / budget_flags,
-    # 唯一算法 scan/l4/card_count.effective_caps(GATE1 回显,Workflow 与 session_agent 只读)。
-    "l4",
-    # 2026-09-26 daily-engine 批 4(spec §6 C3):无人值守场的送达渠道。默认 channel="none"
-    # = parity(什么都不发);消费点 scan/delivery.configured_delivery → send()/notify()。
-    "delivery",
-}
-_SUB_WHITELIST = {
-    "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
-    "funnel": {"recall_channels", "channel_quotas", "channel_floors",
-               "regime_aware", "recall_n", "l2_n",
-               "weight_profile", "preference_weights"},
-    "l2": {"sector_cap", "floors", "knife_cap", "sector_seats"},
-    "sector": {"reuse_ttl_days", "max_briefs"},
-    "pinned": {"cap", "ttl_days"},
-    "l4_intel": {"enabled", "max_queries",
-                 # 2026-09-26 §4 A3 intel 死票门(默认 false = parity;派发接线冻结窗后)
-                 "skip_when_dead"},
-    "l3": {"two_pass", "pass1_target", "lowturn", "composite_seat"},
-    "l4": {"max_cards", "budget_flags"},
-    "budgets": {
-        "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
-        "min_real_scans", "baseline_run", "run_weighted_warn",
-        "run_weighted_target",
-    },
-    "performance": {
-        "streaming_l4",
-    },
-    "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering", "rebalance_gate"},
-    "retention": {"bind_transcripts"},
-    "calendar": {"index_rebalance", "index_rebalance_flow"},
-    "delivery": {"channel", "file_dir"},
-}
+# ── 白名单 / 类型:从注册表派生(2026-09-27 配置标准)。键的块 / 类型 / 缺省 / 分区 / 宿主 /
+#   消费者的唯一事实源是 `autoresearch/contracts/scan_config.py`;这里的三张表只是它的视图,
+#   改键请改注册表(`tests/scan/test_config_standard.py` 与 PostToolUse hook 会对账现场)。
+from autoresearch.contracts import scan_config as _registry
 
-# ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
-def _t_num(v): return isinstance(v, (int, float)) and not isinstance(v, bool)
-def _t_bool(v): return isinstance(v, bool)
-def _t_posint(v): return isinstance(v, int) and not isinstance(v, bool) and v > 0
-def _t_posnum(v): return _t_num(v) and math.isfinite(v) and v > 0
-def _t_nonneg(v): return _t_num(v) and v >= 0
-def _t_nonneg_int(v): return isinstance(v, int) and not isinstance(v, bool) and v >= 0
-def _t_source(v): return v in {"em", "tushare"}
-def _t_dict(v): return isinstance(v, dict)
-def _t_rbmode(v): return v in {"shadow", "active"}
-def _t_rbpool(v): return v in {"finalists", "composite"}
-def _t_date_or_null(v): return v is None or (isinstance(v, str) and _DATE_RE.fullmatch(v) is not None)
-def _t_profile(v): return v in {"calibrated", "preference"}
-def _t_channel(v): return isinstance(v, str) and v in {"none", "bark", "mail", "file"}
-def _t_path_or_null(v): return v is None or (isinstance(v, str) and v.strip() != "")
+_TOP_WHITELIST = _registry.top_whitelist()
+_SUB_WHITELIST = _registry.sub_whitelist()
+_KNOB_TYPES: dict[tuple[str, str], tuple] = _registry.knob_types()
 
-
-def _t_pref_weights(v):
-    """键集恰为 `_GROUPS`、逐个有限、且绝对值之和≠0(2026-09-25 终审 M3)。
-
-    全零权重会让 `combine_group_scores` 的 `wabs`(Σ|w|)恒为 0,`raw = comp / wabs.replace(0,
-    nan)` 全 NaN → composite 全 NaN → 下游 `sector_neutral` 的 `fillna(-1e18)` 把 L2 退化成
-    输入行序,且不抛异常、不留红灯。键集/有限性校验各自独立,单独失败也不该被这条新检查
-    的报错吞掉——所以先各自判、最后才判"和"。
-    """
-    from autoresearch.common.scoring import _GROUPS
-    if not isinstance(v, dict) or set(v) != set(_GROUPS):
-        return False
-    if not all(_t_num(x) and math.isfinite(x) for x in v.values()):
-        return False
-    return sum(abs(float(x)) for x in v.values()) > 0
-
-
-_KNOB_TYPES: dict[tuple[str, str], tuple] = {
-    ("l0", "cap_floor_yi"): (_t_nonneg, "number≥0"),
-    ("l0", "include_bj"): (_t_bool, "boolean"),
-    ("l0", "source"): (_t_source, "em|tushare"),
-    ("l0", "min_amount_yi"): (_t_nonneg, "number≥0"),
-    ("l0", "min_list_days"): (_t_nonneg_int, "int≥0"),
-    ("funnel", "regime_aware"): (_t_bool, "boolean"),
-    ("funnel", "recall_n"): (_t_posint, "正整数"),
-    ("funnel", "l2_n"): (_t_posint, "正整数"),
-    # 召回权重档(2026-09-24 §2.1):"calibrated"=读 weights.json(旧行为,回滚杆)/
-    # "preference"=固定偏好档,十组权重就在下面这个键里(唯一事实源,无自动重标定)。
-    ("funnel", "weight_profile"): (_t_profile, "calibrated|preference"),
-    ("funnel", "preference_weights"): (_t_pref_weights, "object:恰含 scoring._GROUPS 十键的有限数、且绝对值之和≠0"),
-    ("l2", "sector_cap"): (_t_num, "number"),
-    ("l2", "floors"): (_t_dict, "object"),
-    # 落刀帽总开关(2026-09-24 §2.2):true → merit/backfill/非豁免风格桶按 L0 落刀份额封顶
-    # (见 recall/l2_stratify.KNIFE_CAP_EXEMPT_STYLES);false(默认)= 不设帽 = parity。
-    ("l2", "knife_cap"): (_t_bool, "boolean"),
-    # 行业席位块(2026-09-24 §2.3):{enabled: bool, per_sector: int, max_sectors: int}——
-    # 键义见 scan/sector_seats.pick_sector_seats;false/缺省(默认)= 不出席 = parity。
-    ("l2", "sector_seats"): (_t_dict, "object:{enabled,per_sector,max_sectors}"),
-    # 日历第三腿(2026-09-25 §2.3):true → prelude calendar 步顺带取中证调样公告落 index_events.csv,
-    # calendar.csv 多出 kind=index_rebalance 行(L4 简报/summary/档案 §6/sector pack 自动继承);
-    # false(默认)= 逐字 parity(不取网、不落文件、无新行)。回滚杆就是这一个键。
-    ("calendar", "index_rebalance"): (_t_bool, "boolean"),
-    # flow_adv_days 描述字段总开关(2026-09-25 §2.2 批 B3):ETF 规模描述字段;true → prelude 多两次
-    # tushare 调用(fund_share/fund_nav);false(默认)= 字段留空(parity)。消费点
-    # `index_events.harvest_index_events`(`with_flow=knob(...)`)。只填一个 calendar.csv 的括注
-    # 数字,不进任何门/排序/评级——回滚杆就是这一个键。
-    ("calendar", "index_rebalance_flow"): (_t_bool, "boolean"),
-    # intel 死票门(2026-09-26 daily-engine §4 A3):true → `scan/l4/intel_gate.decide` 落
-    # `_intel_gate.json`(slim 三线同负 ∧ 无 📅/事件催化 ∧ 非 📌/证据席 的票不派 intel);
-    # false(默认)= 不落文件、逐字 parity。派发两条路径读该文件是批 6 Task 3(冻结窗后)。
-    ("l4_intel", "skip_when_dead"): (_t_bool, "boolean"),
-    ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
-    ("sector", "max_briefs"): (_t_posint, "正整数"),
-    ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),
-    ("budgets", "run_weighted_target"): (_t_posnum, "number>0"),
-    ("l3", "lowturn"): (_t_dict, "object"),   # 低位转强阈值块(2026-08-21;键义见 common/turnup.LOWTURN_DEFAULTS)
-    # composite 席位块(2026-08-26 §3 路A):{enabled: bool, m: int}——键义见 scan/l3/merge.COMPOSITE_SEAT_*
-    ("l3", "composite_seat"): (_t_dict, "object"),
-    # L4 卡数(2026-09-26):max_cards = 非 📌 卡上限(含 composite 席位);budget_flags=false 忽略五面旗。
-    ("l4", "max_cards"): (_t_posint, "正整数"),
-    ("l4", "budget_flags"): (_t_bool, "boolean"),
-    ("relative_buy", "mode"): (_t_rbmode, "shadow|active"),
-    ("relative_buy", "exclude_pinned"): (_t_bool, "boolean"),
-    ("relative_buy", "activate_date"): (_t_date_or_null, "YYYY-MM-DD 或 null"),
-    # BUY 候选池来源(2026-08-26 §3 路A):"finalists"=v2 逐字行为(判断层持有 BUY)/
-    # "composite"=v3(证据层持有 BUY,判断层只否决)。回滚杆就是这一个键。
-    ("relative_buy", "pool"): (_t_rbpool, "finalists|composite"),
-    # 入场门 + A/R 分级总开关(2026-09-24 可买性对齐 §2.6,v4.0):true → 卡面
-    # entry_stance=PROHIBITED 进 no_redflag 硬门 + BUY 按 entry_stance=ALLOWED 分
-    # A/R 两级;false(默认)= v3.0 逐字(parity)。回滚杆是这一个键 + pool 两个一起改
-    # (见 scan_config.jsonc 该块注:单独关 tiering 会让 pool 扩容跑在没有否决门的情况下)。
-    ("relative_buy", "tiering"): (_t_bool, "boolean"),
-    # E6 第五门总开关(2026-09-25 指数调样事件 §2.4,v4.1):true → 扫描日 = 调样生效前夜的调样票
-    # (调入/调出、六指数任一)`rebalance_close` 硬门否决,决策文件多 `index_events` 块;false(默认)
-    # = v4.0 逐字(除 rule_version 字符串)。回滚杆就是这一个键;它不依赖 calendar.index_rebalance
-    # (文件缺席 → 门放行并记 source=absent),但两键在生产里应同开同关。
-    ("relative_buy", "rebalance_gate"): (_t_bool, "boolean"),
-    # transcript 绑定总开关(2026-09-12 scene-reconstruction Task 4)。默认 true;
-    # false 或无 active run 时 `transcript_binder.safe_bind_run` 仍写带 reason 的
-    # 禁用报告,不清除已有证据。
-    ("retention", "bind_transcripts"): (_t_bool, "boolean"),
-    # 送达(2026-09-26 批 4,spec §6 C3):channel 闭集;file_dir 只在 channel=file 时读(null=未配)。
-    # 凭证(BARK_TOKEN / DELIVERY_MAIL_TO)**不进本文件**,只在 .env —— 这里没有它们的键。
-    ("delivery", "channel"): (_t_channel, "none|bark|mail|file"),
-    ("delivery", "file_dir"): (_t_path_or_null, "非空路径字符串 或 null"),
-}
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
 # 静默掉回缺省(如 l3_rank 拼成 l3rank,不会报错只会静默丢配置)。10 role 现役,均已见于
@@ -248,10 +92,9 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
 # l3_repair/dossier_init/gp_shell/gp_shell_json)。
 # D3(2026-08-19,用户裁定 A5)t1-review LLM 腿退役后 role 收口 12→10——t1_diag/t1_synth
 # 两名已随之从闭集摘除(该二 role 唯一消费者 t1-review.js 已整文件删除)。
-_AGENT_ROLES = {
-    "strategist", "sector_brief", "l3_rank", "l4_intel", "l4_card",
-    "ens_review", "l3_repair", "dossier_init", "gp_shell", "gp_shell_json",
-}
+from autoresearch.contracts.agent_roles import configured_agents
+
+_AGENT_ROLES = set(configured_agents())
 _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _MODELS = {"haiku", "sonnet", "opus"}
 _CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
@@ -275,18 +118,9 @@ _RUNTIME_CONFIG_KEYS = {"engine", "resolved_agents", "resolved_agent_bundle"}
 # 那一层;resolved 里给它硬塞一个 model,workflow 就会显式传 model,**回退链第三层从此
 # 永远吃不到**——那是行为变更,不是重构。所以下表里判断类 role 只有 effort。
 _ROLE_FALLBACK: dict[str, dict] = {
-    # 壳类(执行壳机械参数,不是 agent 档位):08-05 事故后钉 sonnet,不得静默回落
-    "gp_shell":      {"model": "sonnet", "effort": "low"},
-    "gp_shell_json": {"model": "sonnet", "effort": "low"},
-    # 判断类:只给 effort,model 留空 → 落各自 agent def frontmatter
-    "strategist":    {"effort": "high"},
-    "sector_brief":  {"effort": "high"},
-    "l3_rank":       {"effort": "max"},
-    "l3_repair":     {"effort": "medium"},
-    "l4_intel":      {"effort": "max"},
-    "l4_card":       {"effort": "xhigh"},
-    "ens_review":    {"effort": "xhigh"},
-    "dossier_init":  {"effort": "max"},
+    key: {"effort": spec["fallback_effort"],
+          **({"model": "sonnet"} if spec["tier"] == "relay" else {})}
+    for key, spec in configured_agents().items()
 }
 
 #: 生产必填 role —— 生产 `scan_config.jsonc` 必须**显式列全**(10 个)。缺一即 fail-fast。
@@ -406,12 +240,9 @@ def validate_user_config(cfg: dict) -> dict:
             if unknown_sub:
                 raise ValueError(f"scan_config.json 的 {key} 含未知子键: {unknown_sub}"
                                  f"(白名单={sorted(sub_whitelist)})")
-    performance = cfg.get("performance")
-    if performance is not None:
-        if not isinstance(performance, dict):
-            raise ValueError("scan_config.json 的 performance 必须是 object")
-        if "streaming_l4" in performance and not isinstance(performance["streaming_l4"], bool):
-            raise ValueError("scan_config.json performance.streaming_l4 必须是 boolean")
+    for key in _TOP_WHITELIST:
+        if key in cfg and cfg[key] is not None and not isinstance(cfg[key], dict):
+            raise ValueError(f"scan_config.json 的 {key} 必须是 object")
     for (blk, key), (ok_fn, want) in _KNOB_TYPES.items():
         block = cfg.get(blk)
         if isinstance(block, dict) and key in block and not ok_fn(block[key]):
@@ -440,11 +271,52 @@ def validate_user_config(cfg: dict) -> dict:
     return cfg
 
 
+_PRODUCTION_DEFAULT_PATH = DEFAULT_PATH
+_FROZEN_CACHE: dict = {}
+
+
+def _frozen_contract_config() -> dict | None:
+    """Q10(2026-09-27):`AUTORESEARCH_RUN_ID` 在场且 run 根有 `run_contract.json` → 该 run 冻结的 user_config。
+
+    legacy workflow 的各确定性 CLI 此前逐步读活文件(跑到一半改文件就生效),session_agent 宿主前奏后冻结;
+    现在两宿主同一语义:run 开始即冻结。显式 `path` 或被覆盖的 `DEFAULT_PATH`(测试 / SA 的冻结拷贝)恒优先。
+    非 scan run 只取嵌套的 orchestration_config;历史契约未记录则为空,不把业务参数当 scan 旋钮。
+    """
+    try:
+        run_id = ws.active_run_id()
+        if not run_id:
+            return None
+        kind = ws.active_run_kind() or "scan-market"
+        path = ws.run_root(kind, run_id) / "run_contract.json"
+        if not path.is_file():
+            return None
+        mtime = path.stat().st_mtime
+        cached = _FROZEN_CACHE.get(path)
+        if cached is not None and cached[0] == mtime:
+            return dict(cached[1])
+        from autoresearch.common.run_identity import load_run_contract
+        contract = load_run_contract(path)
+        config = dict(contract.user_config or {})
+        if contract.run_kind != "scan-market":
+            config = config.get("orchestration_config", {})
+        cfg = {k: v for k, v in config.items()
+               if k not in _RUNTIME_CONFIG_KEYS}
+        _FROZEN_CACHE[path] = (mtime, cfg)
+        return dict(cfg)
+    except Exception:  # noqa: BLE001 — 冻结拷贝读不到就回活文件(降级不留痕在这里是可接受的:契约缺席=尚未 begin)
+        return None
+
+
 def load_user_config(path: str | Path | None = None) -> dict:
     """读 scan_config.json → 白名单校验后的 dict;缺文件 → `{}`(=现行为,parity)。
 
     未知顶层键、或 funnel/pinned/reuse/l4_intel 内未知子键 → `ValueError`(消息含具体键名)。
+    生产路径(不传 path、DEFAULT_PATH 未被覆盖)且有活动 run → 读该 run 冻结的契约配置(Q10)。
     """
+    if path is None and DEFAULT_PATH == _PRODUCTION_DEFAULT_PATH:
+        frozen = _frozen_contract_config()
+        if frozen is not None:
+            return validate_user_config(frozen)
     p = Path(path) if path is not None else DEFAULT_PATH
     if not p.exists():
         return {}
@@ -465,17 +337,12 @@ def knob(block: str, key: str, cli_value, default, cfg: dict | None = None):
     白名单 + 类型校验在 `load_user_config`(`_KNOB_TYPES`),测试锁在
     `tests/scan/test_config_knobs.py`。三件套缺一不许上生产(SKILL.md「配置」节)。
     """
-    if cli_value is not None:
-        return cli_value
-    if cfg is None:
-        try:
-            cfg = load_user_config() or {}
-        except Exception as e:  # noqa: BLE001 — 坏配置响亮警告后按默认跑,不让扫描失败
-            print(f"[warn] scan_config 读取失败({e!r})→ {block}.{key} 用内建默认 {default!r}",
-                  file=sys.stderr)
-            return default
-    v = (cfg.get(block) or {}).get(key)
-    return default if v is None else v
+    _registry.install_loader(load_user_config)
+    return _registry.knob(block, key, cli_value, default, cfg)
+
+
+# 注册表级 knob 的加载器 = 本模块的 load_user_config(下层模块经 contracts.scan_config.knob 读同一文件)。
+_registry.install_loader(load_user_config)
 
 
 def _dual_role_specs(cfg: dict, engine: str, role: str) -> tuple[dict, dict | None]:
@@ -757,7 +624,7 @@ def _add_trading_days_approx(d: date, n: int) -> date:
 
 
 def load_pinned(today: str, path: str | Path | None = None,
-                cap: int = 5, ttl_days: int = 10) -> dict:
+                cap: int | None = None, ttl_days: int | None = None) -> dict:
     """读 `pinned.json`(保送票)→ `{"kept": [...], "expired": [...]}`。
 
     条目 `{code, note, added, expires}`:`code` 必填(归一成 6 位裸码,容忍 `.SH`/`.SS`
@@ -776,6 +643,10 @@ def load_pinned(today: str, path: str | Path | None = None,
     缺文件/空列表 → `{"kept": [], "expired": []}`(parity:无 pinned.json = 现行为不变)。
     条目缺 `code` → `ValueError`(防拼写错静默失效,呼应 `load_user_config` 的风格)。
     """
+    # 显式形参 > scan_config pinned.{cap,ttl_days} > 内建 5/10 —— 不传形参的调用方
+    # (universe / l3 merge / l3 prompt / report)也必须吃到 config 的值(2026-09-27 分裂脑修复)。
+    cap = int(knob("pinned", "cap", cap, 5))
+    ttl_days = int(knob("pinned", "ttl_days", ttl_days, 10))
     p = Path(path) if path is not None else DEFAULT_PINNED_PATH
     if not p.exists():
         return {"kept": [], "expired": []}

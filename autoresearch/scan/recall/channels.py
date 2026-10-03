@@ -51,6 +51,16 @@ def reversal_confirm(frame, date, k):
     return gate_rank(g, g["reversal_confirm_gate"], "reversal_confirm_score", k)
 
 
+HEAT_WEIGHTS_DEFAULT: dict = {"turnover": 0.15, "vol_ratio": 0.10}
+
+
+def heat_weights(cfg: dict | None = None) -> dict:
+    """`scan_config.funnel.heat_weights`:heat 路换手 / 量比分位的加成权重(缺键 = HEAT_WEIGHTS_DEFAULT)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("funnel", "heat_weights", None, {}, cfg) or {}
+    return {**HEAT_WEIGHTS_DEFAULT, **(user if isinstance(user, dict) else {})}
+
+
 def _lowturn_cfg() -> dict:
     """低位转强阈值 = `LOWTURN_DEFAULTS` 叠 `scan_config.jsonc` 的 `l3.lowturn` 块。
 
@@ -187,11 +197,12 @@ def heat(frame, date, k):
     if "amount_yi" not in frame.columns:
         return gate_rank(frame, None, "heat_score", k)   # 无成交额主轴 → 空帧
     g = frame.copy()
+    w = heat_weights()
     kicker = pd.Series(1.0, index=g.index)
     if "turnover" in g.columns:
-        kicker = kicker + 0.15 * _pct(g["turnover"]).fillna(0.0)
+        kicker = kicker + w["turnover"] * _pct(g["turnover"]).fillna(0.0)
     if "vol_ratio" in g.columns:
-        kicker = kicker + 0.10 * _pct(g["vol_ratio"]).fillna(0.0)
+        kicker = kicker + w["vol_ratio"] * _pct(g["vol_ratio"]).fillna(0.0)
     g["heat_score"] = _num(g["amount_yi"]).fillna(0.0) * kicker
     return gate_rank(g, None, "heat_score", k)
 

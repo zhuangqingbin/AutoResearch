@@ -1,0 +1,101 @@
+--- a/tests/scan/test_self_review_brief.py
++++ b/tests/scan/test_self_review_brief.py
+@@ -579,3 +579,55 @@
+     rows = self_review.brief_lint(empty, empty)
+     assert isinstance(rows, list)
+     assert "brief·缺失" in _checks(rows)
++
++
++# ───── ⑥ 续:E6 v4 分级行(2026-09-27/28/29 三场真扫的 GATE4 假 fail) ─────
++#
++# R 级把 ③ 行的前导字形从 ✅ 换成了 🟥(`brief._buy_lines`),而 ⑥ 仍按「行里有 🕶 或 ✅」找那一行
++# → 找不到 → brief 侧代码集合恒空 → 与决策文件 `buys[].code` 对不上 → fail → GATE4 毙掉一场
++# 已经出了 BUY 的扫描。定位口径改为渲染器导出的 `brief.relative_buy_line`(同一组前缀常量)。
++
++def _tiered_decision(tier: str) -> dict:
++    decision = _decision(mode="active", buys=1)
++    decision["buys"][0].update(
++        {"tier": tier, "basis": "relative_forced" if tier == "R" else "card_backed"})
++    decision["tiering"] = True
++    decision["tier_counts"] = {"A": int(tier == "A"), "R": int(tier == "R")}
++    return decision
++
++
++@pytest.mark.parametrize("tier", ["R", "A"])
++def test_active_tiered_relative_buy_is_same_source(tmp_path, tier):
++    scan = _scan(tmp_path, decision=_tiered_decision(tier))
++    report = _publish(tmp_path, scan)
++    text = (report / brief.BRIEF_FILENAME).read_text(encoding="utf-8")
++    assert ("🟥" in text) == (tier == "R"), "夹具没渲染出本用例要测的前导字形"
++    assert "600018" in text
++    rows = self_review.brief_lint(report, scan)
++    assert _E6_CHECK not in _checks(rows), rows
++    assert not _fails(rows), _fails(rows)
++
++
++def test_forced_tier_code_mismatch_is_still_fail(tmp_path):
++    """修定位不能把判据修没:R 级行里的代码被换掉,仍然必须 fail 并同时点出两边的代码。"""
++    scan = _scan(tmp_path, decision=_tiered_decision("R"))
++    report = _publish(tmp_path, scan)
++    path = report / brief.BRIEF_FILENAME
++    text = path.read_text(encoding="utf-8")
++    assert "🟥" in text and "600018" in text, "锚点没先出现,后面的篡改是空操作"
++    path.write_text(text.replace("600018", "600188"), encoding="utf-8")
++    hit = [r for r in self_review.brief_lint(report, scan) if r["check"] == _E6_CHECK]
++    assert hit and hit[0]["severity"] == "fail"
++    assert "600188" in hit[0]["detail"] and "600018" in hit[0]["detail"]
++
++
++def test_forced_tier_fail_reaches_gate4_only_when_codes_differ(tmp_path):
++    """端到端到门:R 级干净盘 GATE4 必过(09-29 真扫的形状);同一份盘改掉代码后 GATE4 必拦。"""
++    scan = _scan(tmp_path, decision=_tiered_decision("R"))
++    report = _publish(tmp_path, scan)
++    _, gate, fails = _lint_then_gate4(report, scan)
++    assert gate["ok"] is True, (gate, fails)
++    path = report / brief.BRIEF_FILENAME
++    path.write_text(path.read_text(encoding="utf-8").replace("600018", "600188"), encoding="utf-8")
++    _, gate, fails = _lint_then_gate4(report, scan)
++    assert gate["ok"] is False and any(r["check"] == _E6_CHECK for r in fails), (gate, fails)
+--- a/tests/scan/test_brief.py
++++ b/tests/scan/test_brief.py
+@@ -1285,3 +1285,40 @@
+     assert "**⑦ 10 日观察席(影子)**:2 只 → summary §12" in built["markdown"]
+     row = next(r for r in built["sources"] if r["field"] == "swing_seat.n")
+     assert row["file"] == "_swing_seat_renamed.json"
++
++
++# ───────── ③ 行定位口径与渲染器同源(2026-10-02;09-27/28/29 GATE4 假 fail 的根因) ─────────
++#
++# `self_review.brief_lint` ⑥ 要在 brief 正文里找到「相对 BUY 那一行」。它过去按行内字形(🕶/✅)
++# 自己找,渲染器把 R 级换成 🟥 之后就找不到了。现在定位函数 `brief.relative_buy_line` 与
++# `_buy_lines` 共用同一组前缀常量;本组用例把「渲染器能产出的每一种 ③ 行」都过一遍定位器,
++# 谁再给 ③ 行加第四种前导而不登记常量,这里先红。
++
++def _relative_doc(scan, *, mode, tier, shape):
++    path = scan / brief.DECISION_FILENAME
++    if shape == "absent":
++        path.unlink()
++        return
++    doc = _decision(mode=mode, blocked=(shape == "blocked"))
++    if tier is not None and shape == "buy":
++        doc["buys"][0].update(
++            {"tier": tier, "basis": "relative_forced" if tier == "R" else "card_backed"})
++        doc["tiering"], doc["tier_counts"] = True, {"A": int(tier == "A"), "R": int(tier == "R")}
++    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
++
++
++@pytest.mark.parametrize("mode", ["shadow", "active"])
++@pytest.mark.parametrize("tier", [None, "A", "R"])
++@pytest.mark.parametrize("shape", ["buy", "blocked", "absent"])
++def test_relative_buy_line_locator_is_same_source_as_renderer(scan, mode, tier, shape):
++    _relative_doc(scan, mode=mode, tier=tier, shape=shape)
++    md = brief.build(scan, run_folder=_RUN)["markdown"]
++    rendered = [ln for ln in md.splitlines() if "relative BUY**" in ln or "relative BUY(" in ln]
++    assert len(rendered) == 1, rendered
++    assert brief.relative_buy_line(md) == rendered[0]
++    codes = [c for c in ("600018",) if c in rendered[0]]
++    assert bool(codes) == (shape == "buy"), rendered[0]
++
++
++def test_relative_buy_line_returns_none_when_the_line_is_gone():
++    assert brief.relative_buy_line("**③ 结论**\n- **研究评级分布**(…BUY 见下一行…)\n") is None

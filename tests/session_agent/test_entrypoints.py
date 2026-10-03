@@ -32,7 +32,8 @@ def test_four_user_skills_have_the_same_session_agent_control_loop():
 def test_dossier_agent_and_stock_legacy_entry_are_explicitly_labeled():
     dossier = (ROOT / ".claude/agents/dossier-init.md").read_text(encoding="utf-8")
     assert "dossier-init / INIT" in dossier
-    assert "--orchestration session_v1" in dossier
+    assert "主会话负责启动、绑定、提交、发布" in dossier
+    assert "本角色不执行这些命令" in dossier
     stock = (ROOT / ".claude/skills/stock-research/SKILL.md").read_text(
         encoding="utf-8"
     )
@@ -41,7 +42,7 @@ def test_dossier_agent_and_stock_legacy_entry_are_explicitly_labeled():
 
 def test_scan_runner_host_loop_is_documented_once_as_an_opt_in_pilot():
     """批 2–3 Task 4(控制器裁定):runner + mailbox 宿主循环只写在 README 一处;
-    scan-market SKILL 默认仍是 legacy Workflow,只留一行 PILOT 指针,Task 6 真跑通过前不切换。"""
+    scan-market SKILL 只留一行 PILOT 指针；C4 后 legacy 因能力缺失阻断，真实验收前不切默认。"""
     readme = (ROOT / "docs/session-agent/README.md").read_text(encoding="utf-8")
     for anchor in ("session_agent run --executor mailbox", "mailbox wait", "mailbox complete",
                    "_dispatch/", "RUNNER_EXITED", "verify-report"):
@@ -52,5 +53,5 @@ def test_scan_runner_host_loop_is_documented_once_as_an_opt_in_pilot():
     assert len(pointer) == 1, "SKILL.md 应恰好一行 runner PILOT 指针"
     assert "PILOT" in pointer[0] and "docs/session-agent/README.md" in pointer[0]
     assert "mailbox complete" not in skill, "host 循环正文不得抄进 SKILL.md"
-    assert any("Workflow({scriptPath" in line for line in skill.splitlines()), (
-        "legacy Workflow 派发必须仍是 SKILL 默认流程(真跑验收前)")
+    assert "HOST_CAPABILITY_REQUIRED" in skill
+    assert "Workflow({scriptPath" not in skill, "缺真实任务边界时不能指示启动 legacy"

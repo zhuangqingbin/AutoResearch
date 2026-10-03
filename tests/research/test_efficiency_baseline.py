@@ -195,3 +195,106 @@ def test_deterministic_exec_probe_runs_a_real_command(tmp_path):
         "evidence": f"subprocess exit={done.returncode}, cwd={tmp_path.name}"}})
     assert report["deterministic_exec"]["available"] is True
     assert not eb.runner_is_unblocked(report)      # 单项为真不等于可以换 runner
+
+
+def sidecar(run_id="real-1", *, cache=True):
+    from autoresearch.contracts.session_metering import METRICS
+    metrics = dict.fromkeys(METRICS, None)
+    metrics.update(input_tokens=100, output_tokens=20, duration_seconds=30,
+                   cached_input_tokens=80 if cache else None,
+                   cache_creation_tokens=0 if cache else None)
+    identity = {"model": None, "effort": None, "source": "unknown"}
+    attempt = {"task_id": "t1", "attempt": 1, "role": "card", "state": "COMPLETE",
+               "dispatch_count": 1, "evidence_status": "PRESENT",
+               "evidence_source": {"binding_id": "a" * 64, "archive_sha256": "b" * 64,
+                                   "raw_path": "archive.jsonl", "start_ordinal": 0, "end_ordinal": 3},
+               "requested": dict(identity), "resolved": dict(identity),
+               "observed": dict(identity, status="UNKNOWN", observations=[]),
+               "metrics": metrics, "estimated_price": None,
+               "proxy_input_chars": 900, "errors": []}
+    summaries = {key: {"value": value, "observed_total": value,
+                       "observed_count": int(value is not None), "expected_count": 1,
+                       "coverage": float(value is not None),
+                       "status": "COMPLETE" if value is not None else "MISSING"}
+                 for key, value in metrics.items()}
+    return {"schema_version": 1, "engine": "codex", "run_id": run_id,
+            "evidence_plan_hash": "c" * 64, "attempts": [attempt], "dispatch_count": 1,
+            "dispatch_count_basis": "FROZEN_HANDOFF_NOT_MODEL_EXECUTION",
+            "not_dispatched_count": 0, "metrics": summaries, "estimated_price": None}
+
+
+def metered(run_id="real-1", **kwargs):
+    defaults = {"workflow": "scan", "mode": "FULL", "real_run": True,
+                    "source": "bound_host_usage", "quality_passed": True, "run_complete": True}
+    defaults.update(kwargs)
+    return eb.metering_row(sidecar(run_id), **defaults)
+
+
+def test_metering_keeps_tokens_cache_proxy_price_and_span_separate():
+    row = metered()
+    assert row["input_tokens"] == 100 and row["cached_input_tokens"] == 80
+    assert row["proxy_input_chars"] == 900 and row["estimated_price"] is None
+    assert row["duration_seconds"] == 30
+    assert row["duration_basis"] == "BOUND_TRANSCRIPT_SPAN_SUM"
+    assert row["net_runtime_seconds"] is None
+    assert row["coverage"] == "COMPLETE"
+
+
+def test_metering_validates_contract_and_requires_bound_evidence():
+    broken = sidecar()
+    broken["metrics"]["input_tokens"]["value"] = 200
+    with pytest.raises(ValueError, match="coverage"):
+        eb.metering_row(broken, workflow="scan", mode="FULL", real_run=True,
+                        source="bound_host_usage", quality_passed=True)
+    unbound = sidecar()
+    unbound["attempts"][0]["evidence_source"] = None
+    with pytest.raises(ValueError, match="bound"):
+        eb.metering_row(unbound, workflow="scan", mode="FULL", real_run=True,
+                        source="bound_host_usage", quality_passed=True)
+
+
+def test_metering_stability_needs_ten_distinct_complete_quality_real_runs():
+    nine = [metered(f"real-{i}") for i in range(9)]
+    group = eb.metering_cohort_summary(nine + [nine[0]])["groups"][0]
+    assert group["status"] == "OBSERVATIONS_ONLY" and group["n_complete_real_runs"] == 9
+    assert len(group["observations"]) == 9
+    failed_quality = metered("bad", quality_passed=False)
+    summary = eb.metering_cohort_summary(nine + [failed_quality])
+    assert summary["groups"][0]["status"] == "OBSERVATIONS_ONLY"
+    assert summary["quality_rejected"] == 1
+    group = eb.metering_cohort_summary(nine + [metered("tenth")])["groups"][0]
+    assert group["status"] == "STABLE"
+    assert group["median_input_tokens"] == 100
+
+
+def test_metering_groups_every_comparison_axis_and_cache_coverage():
+    rows = [metered(), metered("w", workflow="stock"), metered("m", mode="LITE"),
+            metered("r", real_run=False), metered("s", source="other_bound_source")]
+    rows.append(eb.metering_row(sidecar("cache", cache=False), workflow="scan", mode="FULL",
+                               real_run=True, source="bound_host_usage", quality_passed=True))
+    alternate = sidecar("engine")
+    alternate["engine"] = "claude"
+    rows.append(eb.metering_row(alternate, workflow="scan", mode="FULL", real_run=True,
+                               source="bound_host_usage", quality_passed=True))
+    assert len(eb.metering_cohort_summary(rows)["groups"]) == 7
+
+
+def test_metering_full_usage_is_not_proof_of_completed_run():
+    row = eb.metering_row(sidecar(), workflow="scan", mode="FULL", real_run=True,
+                          source="bound_host_usage", quality_passed=True)
+    assert row["coverage"] == "INCOMPLETE"
+    assert row["run_complete"] is None
+
+
+def test_metering_unknown_quality_and_partial_tokens_never_stabilize():
+    rows = [metered(f"incomplete-{i}", run_complete=False) for i in range(10)]
+    assert eb.metering_cohort_summary(rows)["groups"][0]["status"] == "OBSERVATIONS_ONLY"
+    assert eb.metering_cohort_summary([metered(quality_passed=None)])["quality_rejected"] == 1
+
+
+def test_metering_rows_remain_auditable_after_json_round_trip():
+    import json
+    row = json.loads(json.dumps(metered()))
+    assert row["evidence_plan_hash"] == "c" * 64
+    assert row["evidence_sources"][0]["archive_sha256"] == "b" * 64
+    assert eb.metering_cohort_summary([row])["groups"][0]["n"] == 1

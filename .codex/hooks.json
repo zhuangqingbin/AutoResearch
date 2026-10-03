@@ -2,11 +2,22 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh scripts/hooks/agent_input_boundary.sh codex || printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"AGENT_INPUT_BOUNDARY: project hook entrypoint unavailable\"}}'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "sh scripts/hooks/agent_input_boundary.sh codex"
+            "command": "sh scripts/hooks/scan_config_standard.sh"
           }
         ]
       }

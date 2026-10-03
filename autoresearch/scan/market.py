@@ -25,6 +25,17 @@ _TOP3_MIN_N = 8            # 资格门①:成分数(剔 n=1 噪声行业)
 _TOP3_KNIFE = -20.0        # 资格门③:非落刀(60日中位)
 _TOP3_MOM_CENTER = 10.0    # 倒U 动量带中心
 _TOP3_MOM_HALF = 15.0      # 倒U 半宽
+_TOP3_MAIN_POS_MIN = 0.5   # 资格门②:主力净流入为正的成分占比(或中位占比 > 0)
+_TOP3_K = 3
+
+
+def healthy_sectors_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.signals.healthy_sectors`:看多行业榜的资格门与长度(缺键 = 上面的常量)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("signals", "healthy_sectors", None, {}, cfg) or {}
+    base = {"min_members": _TOP3_MIN_N, "knife_median_min": _TOP3_KNIFE, "mom_center": _TOP3_MOM_CENTER,
+            "mom_half": _TOP3_MOM_HALF, "main_pos_min": _TOP3_MAIN_POS_MIN, "top_k": _TOP3_K}
+    return {**base, **(user if isinstance(user, dict) else {})}
 
 
 def _num(df: pd.DataFrame, col: str) -> pd.Series:
@@ -231,9 +242,10 @@ def sector_healthy_table(df: pd.DataFrame) -> pd.DataFrame | None:
         "med_pe": _agg(lambda s: float(s.loc[s["_pe"] > 0, "_pe"].median()) if (s["_pe"] > 0).any() else float("nan")),
         "pe_gt_60": _agg(lambda s: float((s.loc[s["_pe"] > 0, "_pe"] > 60).mean()) if (s["_pe"] > 0).any() else float("nan")),
     })
-    t["qualified"] = ((t["n"] >= _TOP3_MIN_N)
-                      & ((t["med_main_ratio"] > 0) | (t["main_pos"] >= 0.5))
-                      & (t["med_pct_60d"] > _TOP3_KNIFE))
+    hs = healthy_sectors_cfg()
+    t["qualified"] = ((t["n"] >= hs["min_members"])
+                      & ((t["med_main_ratio"] > 0) | (t["main_pos"] >= hs["main_pos_min"]))
+                      & (t["med_pct_60d"] > hs["knife_median_min"]))
     t["score"] = float("nan")
     q = t[t["qualified"]]
     if len(q):
@@ -241,14 +253,15 @@ def sector_healthy_table(df: pd.DataFrame) -> pd.DataFrame | None:
             "fund": (q["med_main_ratio"].rank(ascending=False) + q["main_pos"].rank(ascending=False)) / 2,
             "health": q["healthy_share"].rank(ascending=False),
             "valuation": (q["med_pe"].rank(ascending=True) + q["pe_gt_60"].rank(ascending=True)) / 2,
-            "momentum": ((q["med_pct_60d"] - _TOP3_MOM_CENTER).abs() / _TOP3_MOM_HALF).rank(ascending=True),
+            "momentum": ((q["med_pct_60d"] - hs["mom_center"]).abs() / hs["mom_half"]).rank(ascending=True),
         })
         t.loc[q.index, "score"] = comp.mean(axis=1)
     return t.sort_values("score", na_position="last").reset_index(drop=True)
 
 
-def sector_healthy_top3(df: pd.DataFrame, k: int = 3) -> list[dict]:
+def sector_healthy_top3(df: pd.DataFrame, k: int | None = None) -> list[dict]:
     """过门行业按 score 取前 k(不足 k 出几个是几个,宁缺毋滥);缺列 → []。"""
+    k = int(healthy_sectors_cfg()["top_k"]) if k is None else k
     t = sector_healthy_table(df)
     if t is None:
         return []

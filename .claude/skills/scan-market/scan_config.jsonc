@@ -1,402 +1,515 @@
 {
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // scan-market 全流程用户配置 —— **唯一**参数事实源(按漏斗阶段顺序排;支持 // 注释)
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 契约(防漂移,详见 SKILL.md「配置」节):
-  //   优先级:CLI 显式 flag / 显式形参 > 本文件 > 代码内建默认;删 key = 内建默认(parity)。
-  //   每个 key 必须标【生效点】=真实消费代码;白名单在 autoresearch/scan/user_config.py,
-  //   **白名单外的键 load 即 raise**(写错键名当场炸,不静默失效)。
-  //   新增参数三件套:白名单 + 消费点(grep 调用链)+ 测试锁(tests/scan/test_config_knobs.py)。
-  //   ⚠️ 改值 ≠ 无害:召回/L3/L4/评级类旋钮属行为变更,先走实验治理(STAGES.md 控制面),
-  //   config 是放参数的地方,不是绕过治理的后门。
-  //   装载链:frame --json 白名单校验后回显 → Workflow args.config →(L4 每股 args.cfg 透传);
-  //   确定性 CLI(universe/prelude/frame/sector.*)在入口经 user_config.knob() 读同一文件兜底。
-  //   保送票**清单**在 pinned.jsonc(此处只管 cap/TTL 策略);L1 因子权重在
-  //   context_<引擎>/factor_lab/weights.json(factor_lab calibrate 产,不入本文件)。
+  // scan-market 唯一参数事实源。优先级:CLI 显式 flag > 本文件 > 代码内建默认;删 key = 内建默认。
+  // 每键的块 / 类型 / 缺省 / 分区 / 宿主 / 消费者登记在 autoresearch/contracts/scan_config.py(白名单由它派生,
+  //   白名单外或错型 → load 即 raise);新增键三件套 = 注册表 + 真实消费点 + 测试锁。
+  // 本文件只写「值 + 作用」;标准九条见 SKILL.md「配置」节;lint:python -m autoresearch.scan.config_standard。
+  // 装载:frame --json 校验回显 → Workflow args.config / args.cfg;确定性 CLI 经 user_config.knob() 读同一文件。
+  // 例外:保送票清单 pinned.jsonc;L1 校准权重 $CTX/factor_lab/weights.json(仅 calibrated 档);凭证只在 .env。
 
-  // ── 全局 · 预算/并发(观测与派发,不拥有截断权)─────────────────────────────
-  // 【生效点】autoresearch/scan/budget.py resolve_budget_policy(post_run 预算告警:超线只写
-  //   warning/DEGRADED,不截候选/查询/卡);concurrency 由 scan/l4_tasks.py init 读取形成
-  //   L4 派发帽(l4_stock=派发宽度,缺省 64=事实无上限 Wave11-C1;tushare/web_search/web_fetch
-  //   为资源帽,tushare 由 prepare_slim K 槽信号量执行)。回滚杆:l4_stock 改 4 = 旧滑窗宽度。
-  "budgets": {
-    "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
-    "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED/DEGRADED,不截断)
-    "run_weighted_target": 5000000,    // 成熟 cohort 的 weighted input P50 目标
-    "stage_cost_usd": {},              // 每阶段成本上限(空=不设;如 {"l4-card": 20})
-    "stage_wall_seconds": {},          // 每阶段墙钟上限(空=不设)
-    "concurrency": { "tushare": 4, "web_search": 4, "web_fetch": 4, "l4_stock": 64 },
-    "min_real_scans": 10,              // 成本/墙钟成熟门:不满此数恒 IMMATURE
-    "baseline_run": "20260727_2140"    // 成本基线 run(成熟门对照)
+  // ═══ 分区一 · 漏斗行为(改值会改变选股 / 评级 / BUY) ═══
+
+  // ── pinned · 保送持仓策略(票单在 pinned.jsonc) ── 生效点 scan/user_config.load_pinned · scan/run_bootstrap.prepare_scan_run
+  "pinned": {
+    "cap": 5,                          // 保送票上限(超出按 pinned.jsonc 顺序截断)
+    "ttl_days": 10                     // 条目缺 expires 时的失效窗(交易日)
   },
 
-  // ── Stage 0 · 保送持仓策略 ─────────────────────────────────────────────────
-  // 【生效点】autoresearch/scan/frame.py(load_pinned → 烤进 run_contract;票单读
-  //   .claude/skills/scan-market/pinned.jsonc,cap=截断条数、ttl_days=缺 expires 时的失效窗)。
-  "pinned": { "cap": 5, "ttl_days": 10 },
+  // ── signals · 跨阶段谓词阈(落刀 / 健康上涨 / 主力失真 / 质押 / regime / 温度 / 看多行业) ── 生效点 common/scoring.falling_knife_mask · common/scoring.healthy_riser_mask · common/scoring.main_net_distortion_label · common/scoring.pledge_flag_label · common/regime.classify_regime · scan/temperature.temperature_bands · scan/temperature.phase · scan/market.healthy_sectors_cfg · scan/market.sector_healthy_top3
+  "signals": {
+    "knife_pct_60d": -20.0,            // 落刀:60 日跌幅超此值(L2 帽 / 席位剔刀 / 菜单体检共用)
+    "healthy_pct60_range": [0, 40],    // 健康上涨带:lo < 60 日涨幅 < hi(且主力与 cmf 为正)
+    "main_flow_distortion": {          // 主力占比失真判型(L3 表列 = L4 简报同一定义)
+      "ratio": 0.02,                   // 占比 ≥ 此值才谈微量失真
+      "abs_yi": 0.5                    // |绝对净额| < 此值(亿)= 微量
+    },
+    "pledge_pct": {                    // 股权质押旗
+      "high": 40,                      // > 此值 = 爆雷红旗
+      "warn": 20                       // > 此值 = 偏高
+    },
+    "regime_thresholds": {             // regime 分类(站上 MA60 占比)
+      "risk_on": 0.55,                 // ≥ 且中位动量 > 0 = trend
+      "risk_off": 0.30                 // ≤ 且中位动量 < 0 = risk_off
+    },
+    "temperature_bands": {             // 温度相位(冰点 / 修复·发酵 / 高潮)
+      "cold": 20,                      // < 冰点
+      "warm": 40,                      // ≥ 发酵(上行)或退潮
+      "hot": 65,                       // ≥ 高潮
+      "hysteresis": 3                  // 带内小幅变动不切相位
+    },
+    "healthy_sectors": {               // 看多行业榜资格(席位 / brief / market_pack 共用)
+      "min_members": 8,                // 成分股数 ≥
+      "knife_median_min": -20.0,       // 行业 60 日中位涨幅 >
+      "mom_center": 10.0,              // 倒 U 动量带中心
+      "mom_half": 15.0,                // 倒 U 半宽
+      "main_pos_min": 0.5,             // 主力净流入为正的成分占比 ≥(或中位占比 > 0)
+      "top_k": 3                       // 榜长度
+    }
+  },
 
-  // ── Stage 0 · agent 角色意图(10 role 闭集,**必须列全**,缺一 fail-fast)────────
-  // 【生效点】user_config.resolve_agent_bundle(唯一解释点)→ _resolved_agent_config.json →
-  //   Claude workflows / Codex project agents + usage_reconcile 逐 role 对账。角色只选 tier;
-  //   model/effort 词汇归各 engine profile,不再拿 Claude 枚举解释 Codex。
+  // ── l0 · 选集硬门 ── 生效点 scan/frame.build_market_frame · scan/universe.run · scan/run_bootstrap._effective_data_policy
+  "l0": {
+    "cap_floor_yi": 30,                // 市值地板(亿)
+    "include_bj": true,                // 是否纳入北交所
+    "source": "tushare",               // 取数源 tushare | em
+    "min_amount_yi": 0,                // 日成交额门槛(亿;0 = 关)
+    "min_list_days": 0                 // 上市天数门槛(0 = 关)
+  },
+
+  // ── funnel · L1 召回(多路 → quota_union → top recall_n) ── 生效点 scan/prelude.run_prelude · scan/universe.run · scan/universe._funnel_overlay · scan/self_review.channel_liveness_lint · scan/universe.configured_recall_mode · scan/recall/channels.heat_weights · scan/recall/channels.heat · scan/frame.panel_cfg · scan/universe.event_lookback_days · scan/universe.lens_top_n
+  "funnel": {
+    "regime_aware": true,              // L1 权重按当日 regime 选块(仅 weight_profile = calibrated 时有效)
+    "recall_n": 1000,                  // L1 召回收口数
+    "l2_n": 200,                       // L2 粗排收口数
+    "recall_channels": ["composite", "momentum", "reversal", "reversal_confirm", "value", "main_fund", "heat", "growth", "healthy", "lowturn"],   // 启用的召回通道(删本键 = 全部注册通道,含默认停用的 event)
+    "channel_quotas": { "value": 312, "momentum": 188, "heat": 112, "healthy": 112, "growth": 112, "main_fund": 150, "reversal_confirm": 150, "lowturn": 120 },   // 各通道配额覆盖(缺的键回落注册表默认)
+    "channel_floors": {},              // 各通道保底覆盖(空 = 注册表默认)
+    "weight_profile": "preference",    // 权重档 calibrated(读 weights.json)| preference(读 preference_weights)
+    "preference_weights": { "momentum": 0.20, "tech": 0.15, "volprice": 0.15, "fund_main": 0.15, "chip": 0.05, "north": 0.05, "growth": 0.05, "value": 0.05, "fund_retail": -0.05, "rz": 0.0 },   // 偏好档十组权重(仅 preference 档读)
+    "recall_mode": "multi",            // multi = 多路召回 | composite = 单复合分(对拍 / 回退)
+    "heat_weights": {                  // heat 路:成交额 × (1 + 换手分位 × turnover + 量比分位 × vol_ratio)
+      "turnover": 0.15,                // 换手分位加成
+      "vol_ratio": 0.10                // 量比分位加成
+    },
+    "panel_lookback_days": 60,         // 量价面板回看交易日(lowturn / vol_ratio_20 的数据)
+    "panel_min_days": {                // 面板最少交易日,不足则整列 NaN
+      "vol": 10,                       // volprice 组(A 级)
+      "turnup": 40                     // 低位转强列(B 级)
+    },
+    "event_lookback_days": 10,         // event 路事件回看交易日
+    "lens_top_n": 50                   // 镜头诊断每镜头 top 数
+  },
+
+  // ── l2 · 粗排(确定性分层采样) ── 生效点 scan/universe.run · scan/recall/l2_stratify.knife_cap_exempt_styles · scan/sector_seats.pick_sector_seats
+  "l2": {
+    "sector_cap": 0.20,                // 任一申万一级占比上限(≥1.0 = 关)
+    "knife_cap": true,                 // 落刀帽:merit / 回填 / 非豁免桶按 L0 落刀份额封顶
+    "knife_cap_exempt_styles": ["反转", "低位转强"],   // 不受落刀帽的风格桶
+    "floors": { "趋势": 20, "健康": 25, "反转": 6, "价值": 12, "成长": 12, "吸筹": 12, "主力": 10, "低位转强": 6, "事件": 0 },   // 风格桶保底(启用集外的桶运行时归零)
+    "sector_seats": {                  // 行业席位:当日 healthy top3 行业内取非落刀成员注入 L1
+      "enabled": true,                 // 是否出席
+      "per_sector": 2,                 // 每行业席数
+      "max_sectors": 3                 // 最多几个行业
+    }
+  },
+
+  // ── sector · 行业 brief 旁路(L2 后并发) ── 生效点 sector/reuse.main · session_agent/domain_ops.scan_sector_prepare · session_agent/domain_ops.collect_sector_snapshot · sector/pack.main · sector/pack.select_briefing_sectors · workflows/scan-market.js · session_agent/dispatch.sector_brief_web_searches · sector/reuse.configured_mom_shift_pp · sector/pack.sector_cfg
+  "sector": {
+    "reuse_ttl_days": 5,               // brief 复用回看天数
+    "max_briefs": 6,                   // 每日行业 brief 上限
+    "healthy_top3_extra": true,        // 看多 top3 行业在上限外追加;false = max_briefs 为真上限
+    "brief_web_searches": 2,           // 行业 brief 写手可发的有界网查条数(0 = 零新取数;两宿主派发文案同源)
+    "reuse_mom_shift_pp": 3.0,         // 行业动量位移超此值不复用 brief
+    "red_top_n": 3,                    // brief 来源:红榜行业数
+    "l2_conc_top_n": 3,                // brief 来源:L2 集中度行业数
+    "leaders_n": 5,                    // 喂 sector-brief 的市值龙头数
+    "terrain_max_rows": 40,            // L3 表前地形段行数上限
+    "readthrough_max": 4               // 产业链 readthrough 每层项数上限
+  },
+
+  // ── calendar · 日历事实(解禁 / 指数调样) ── 生效点 scan/calendar.harvest_calendar · scan/health.index_events_health · scan/relative_buy._index_events_input · scan/report_sections.prepare_report_model · scan/index_events.harvest_index_events · scan/calendar.calendar_cfg · scan/calendar.calendar_flags · scan/calendar.calendar_section · scan/index_events.post_window
+  "calendar": {
+    "index_rebalance": true,           // 取指数调样公告,写 calendar.csv 第三腿(与 relative_buy.rebalance_gate 同开同关)
+    "index_rebalance_flow": false,     // 调样行补 ETF 规模描述字段(多两次 tushare 调用)
+    "horizon_days": 35,                // 解禁往前看的自然日
+    "unlock_flag": {                   // L4 简报 ⚠ 解禁旗
+      "within_days": 30,               // 窗口(自然日)
+      "min_ratio_pct": 2.0             // 占流通比门槛(%)
+    },
+    "section": {                       // summary 📅 日历块
+      "window_days": 14,               // 未来几天
+      "big_ratio_pct": 5.0             // 大解禁门槛(%)
+    },
+    "index_post_window": 3             // 调样生效后继续展示的交易日
+  },
+
+  // ── sentinel · 哨兵档(全市场健康上涨占比过低时跳过 L3/L4) ── 生效点 scan/menu.sentinel_thresholds
+  "sentinel": {
+    "auto_below": 0.03,                // 全市场健康上涨占比 < 此值 = 自动哨兵档(跳 L3/L4)
+    "consider_below": 0.05             // 此值以下提示「可考虑哨兵」,人拍板
+  },
+
+  // ── l3 · 精排(pass1 确定性分诊 + pass2 holistic) ── 生效点 scan/l3/prompt.prepare_l3_table · workflows/scan-market.js · session_agent/dispatch._pass1_target · scan/l3/merge.composite_seat_cfg · scan/l3/merge.composite_seat_exclude_knife · scan/l4/card_count.effective_caps · scan/l3/merge.guards_cfg · scan/l3/merge.merge_l3_finalists_v3 · scan/l3/merge._exclusion_reason · scan/l3/merge.pick_composite_seats · scan/l3/triage.pass1_cfg · scan/l3/triage.triage_l2_for_l3 · scan/l3/prompt.table_cfg · scan/l3/prompt.profile_cfg · scan/l3/prompt.row_profile · scan/l3/prompt.lookback_days · scan/l3/evidence.harvest_l3_evidence · scan/agents/l3_news.harvest_l3_news · scan/agents/l3_catalyst.harvest_catalyst · scan/recall/channels._lowturn_cfg · common/turnup.lowturn_flag
+  "l3": {
+    "two_pass": true,                  // 两遍法;false = 单遍读全表
+    "pass1_target": 40,                // pass1 分诊留给 l3-rank 的行数
+    "finalist_min": 7,                 // L3 finalist 区间下限(上限由 l4.max_cards 算出,GATE1 回显)
+    "composite_seat": {                // composite 证据席
+      "enabled": true,                 // 席位开关
+      "m": 3,                          // 强送 finalists 的席位数(计入 l4.max_cards)
+      "exclude_knife": true            // 席位剔落刀
+    },
+    "guards": {                        // finalists 守卫阈(merge_l3_finalists_v3)
+      "chase_1d_pct": 9.5,             // 当日涨幅 ≥ 此值剔除(席位共用)
+      "sector_cap": 3,                 // 同行业 finalist 上限
+      "healthy_quota_frac": 0.0,       // healthy 配额比例(0 = 关)
+      "conv_force_in": 75,             // 确信 ≥ 此值强制补入
+      "conv_min": 55,                  // 确信 < 此值禁止 finalist
+      "qualify_conv": { "backfill": 55, "lane": 65, "lowturn": 55 },   // 回填 / lane 置换 / lowturn 置换的够格线
+      "lane_floors": { "trend": 2, "lowturn": 1 }   // lane 保底席数(行业帽剔票不可击穿)
+    },
+    "pass1": {                         // 确定性分诊(triage_l2_for_l3)
+      "resonance_cap": 5,              // 多路共振强留上限
+      "resonance_min_channels": 3,     // 命中几路算共振
+      "healthy_mandatory": false       // healthy lane 是否全部强留
+    },
+    "table": {                         // 喂 l3-rank 的紧凑表(l3_table_md)
+      "delta": true,                   // 略去「昨判弃且今无变化」的行
+      "delta_tol": { "composite": 2.0, "pct_60d": 2.0 },   // 判「有变化」的阈
+      "sections": { "dist": true, "reg": true, "cat": true, "sector_terrain": true, "misread": true, "pinned": true, "lane_blocks": true }   // 表内证据列 / 地形段开关
+    },
+    "profile": {                       // 画像词阈值(row_profile)
+      "pct60_high": 40,                // 60 日涨幅 ≥ 此值 = 高位
+      "pct60_mid": 10,                 // ≥ 此值 = 中位
+      "pct60_low": -10,                // > 此值 = 低位,否则深跌
+      "pct1_big": 9.5,                 // 今日大涨
+      "near_high": -2,                 // 距 60 日高 ≥ 此值 = 贴顶
+      "vol_ratio_big": 2,              // 放量
+      "pe_low": 20,                    // PE 低 / 中分界
+      "pe_high": 60,                   // PE 中 / 高分界
+      "winner_full": 90,               // 获利盘 ≥ 此值 = 满盈利
+      "winner_trapped": 25,            // 获利盘 < 此值 = 深套牢
+      "rsi_overbought": 80,            // RSI6 ≥ 超买
+      "rsi_oversold": 20               // RSI6 ≤ 超卖
+    },
+    "lookback_days": { "evidence": 10, "news": 10, "catalyst": 10 },   // L3 证据 / 公告情感 / 催化回看交易日
+    "lowturn": {                       // 低位转强旗 + pass1 强留(谓词 common/turnup.lowturn_flag,L1 同阈值)
+      "enabled": true,                 // 旗列与 pass1 强留开关
+      "max_dist_high_60": -15.0,       // 距 60 日高 ≤ 此值(%,负数 = 仍在水下)
+      "max_pct_60d": 10.0,             // 60 日涨幅 <
+      "min_vol_ratio_20": 1.2,         // 20 日量比 ≥
+      "min_pct_5d": 0.0,               // 近 5 日涨幅 >
+      "require_above_ma20": true,      // 须站回 MA20
+      "require_ma5_gt_ma10": true,     // 须 MA5 > MA10
+      "fund": "main_or_cmf",           // 资金转正判据 main | cmf | main_or_cmf
+      "knife_pct_60d": -35.0,          // 60 日跌超此值且主力不为正 = 落刀不接
+      "pass1_cap": 8                   // pass1 强留上限
+    }
+  },
+
+  // ── l4 · 决策卡卡数 ── 生效点 scan/l4/card_count.effective_caps · scan/self_review.l4_card_count_lint · scan/menu.budget_cfg · scan/menu.l4_budget · scan/menu.zero_buy_streak · scan/l4/rubric.rubric_cfg · scan/l4/rubric.rubric_rating · scan/l4/rubric.force_full_card · scan/dossier.configured_max_days · scan/l4/prompts.configured_echo_lookback · scan/l4/producers.producers_cfg · scan/l4/producers.fetch_pledge · scan/l4/producers.fetch_seats · scan/l4/producers.fetch_consensus · scan/l4/producers.slim_min_bytes · scan/l4_tasks.prepare_slim · scan/l4/prompts.slim_hint · workflows/l4-stock.js · scan/decision_finalize.review_cfg · scan/decision_finalize.review_trigger · scan/decision_finalize._ensemble_flag · session_agent/domain_ops.scan_review_plan · session_agent/workflows/scan.review3_expansion
+  "l4": {
+    "max_cards": 10,                   // 非 📌 卡上限(含 composite 席位;📌 持仓恒出卡不占额)
+    "budget_flags": true,              // finalist 名额再与菜单预算取小(max_cards = 13 时预算档最低 10,旗咬不到)
+    "budget": {                        // 菜单感知 L4 预算(menu.l4_budget;只降不升)
+      "base": 30,                      // 预算基准
+      "floor": 12,                     // 预算下限
+      "flags": { "knife_share_max": 0.60, "knife_rel_min": 0.40, "knife_rel_mult": 2.0, "healthy_min": 2, "risk_off": true, "streak_warn": 3, "streak_heavy": 5, "streak_hard": 7, "streak_lookback": 10 },   // 五面旗阈:落刀占比 / 相对落刀 / 健康数 / 避险市 / 0 买连败
+      "tiers": { "one_flag": 0.75, "multi": 0.5, "hard_min": 8, "hard_div": 3 }   // 降档比例:一面旗 / 多面旗 / 长连败硬压
+    },
+    "rubric": {                        // 评分卡(rubric_rating / force_full_card)
+      "rating_bands": { "Buy": 4, "Overweight": 2, "Hold": -1, "Underweight": -3 },   // 六维净分 → 建议评级的下限
+      "force_full": { "conviction_min": 70, "channels_min": 4 }   // 强先验票强制满卡:确信 ≥ 且召回路数 ≥
+    },
+    "brief": {                         // 任务包简报回看窗
+      "dossier_days": 10,              // 前科卡回看几个 scan 日
+      "echo_lookback_days": 5          // 昨卡回声回看自然日
+    },
+    "producers": {                     // 卡片输入数据窗(l4/producers)
+      "pledge_reuse_days": 7,          // 质押数据复用天数
+      "lhb_reuse_days": 7,             // 龙虎榜席位复用天数
+      "lhb_window_days": 20,           // 龙虎榜统计窗(自然日)
+      "lhb_tail": 15,                  // 龙虎榜取最近几个交易日
+      "consensus_window_days": 30,     // 一致预期缓存窗
+      "consensus_min_days": 10         // 一致预期最少缓存日,不足不落盘
+    },
+    "slim": {                          // slim 取数稿
+      "min_bytes": 4096                // 合格地板(字节;任务包可信句同源)
+    },
+    "review": {                        // ≥OW / 持仓卖出双复核(两宿主同读)
+      "ow_ratings": ["Buy", "Overweight", "增持", "买入"],   // 触发 ow_review 的评级
+      "sell_review_pinned_only": true, // sell_review 只对 📌 持仓
+      "max_runs": 3,                   // 复核最多几个 run(2 = 不派裁决票)
+      "spread_escalate": 2             // run 间分歧 ≥ 此档数 → 人裁
+    }
+  },
+
+  // ── l4_intel · 活体情报站 ── 生效点 workflows/l4-stock.js · session_agent/workflows/scan.expansions_after_task · session_agent/domain_ops.scan_l4_prepare · scan/l4/intel_guard.configured_soft_cap · scan/self_review.product_shape_lint · scan/l4/intel_gate.decide · scan/l4/intel_guard.guard_cfg · scan/l4/intel_status.status_cfg · scan/l4/intel_gate.dead_gate_factors
+  "l4_intel": {
+    "enabled": true,                   // 派活体情报员;false = 卡内网查兜底
+    "max_queries": 20,                 // 情报员网查条数软顶(prompt 上限 + 裁稿 + 发布前 lint)
+    "skip_when_dead": false,           // 死票不派 intel(尚未接线:开关暂无效果)
+    "hard_cap": 30,                    // 自报网查条数硬顶(超顶按时效裁稿,裁无可裁才拒稿)
+    "soft_trim_keep": 10,              // 超软顶时按时效裁到保留的事件行数
+    "stale_gap_days": 7,               // 事件超此天数且非催化挂 → 净分归零
+    "max_attempts": 3,                 // 盲搜首发 + 重试总次数(仅 legacy workflow)
+    "resume_max_age_s": 86400,         // 同日续传:稿与 status 不超过此秒数
+    "dead_gate": {                     // 死票三线(随 skip_when_dead 接线)
+      "main_inflow_max": 0.0,          // 主力绝对净额 < 此值
+      "cmf_max": 0.0,                  // cmf_20 < 此值
+      "obv_max": 0.0                   // obv_mom_20 < 此值
+    }
+  },
+
+  // ── relative_buy · 相对 BUY(E6) ── 生效点 scan/relative_buy.configured_relative_buy · scan/relative_buy.configured_rebalance_gate · scan/relative_buy.rule_params · scan/relative_buy.build_decision · scan/relative_buy._hard_gate · scan/relative_buy._raw_faces · scan/relative_buy._faces_table
+  "relative_buy": {
+    "mode": "active",                  // shadow 只记账 | active 正式出 BUY
+    "exclude_pinned": true,            // 📌 持仓不参与当日 BUY
+    "pool": "finalists",               // 候选池 finalists | composite(只在证据席里选)
+    "tiering": true,                   // 入场门 + A/R 分级(卡面 PROHIBITED 否决)
+    "rebalance_gate": true,            // 调样生效前夜的调样票否决(与 calendar.index_rebalance 同开同关)
+    "max_buys": 1,                     // 每日 BUY 上限(取排序前 N)
+    "liquidity_pctl_floor": 0.10,      // tradable 门:成交额分位下限
+    "redflag": {                       // no_redflag 硬门否决集
+      "early_stop_reasons": ["基本面恶化", "估值透支", "涨停追高", "数据不足"],   // 早停停因红灯
+      "ratings": ["Sell", "Underweight"],   // 卡面评级红灯
+      "proposals": ["SELL"]            // 卡面机读提案红灯
+    },
+    "risk_early_stop_reasons": ["涨停追高", "题材透支", "资金流出", "估值透支", "基本面恶化"],   // 风险面计入的停因
+    "scoring": {                       // 四面记分
+      "recall_weights": { "n_channels": 0.5, "best_channel": 0.5 },   // 召回强度面:路数分位 / 最强单路分位权重
+      "evidence": { "full": 1.0, "early_stop": 0.4, "intel": 0.2, "dossier": 0.2, "price_claim_clean": 0.2 },   // 证据面记分
+      "risk_bonus": 1.0,               // 早停风险类停因加的风险分
+      "missing_fill": 0.5              // 缺失的面按此分位填
+    }
+  },
+
+  // ── execution · 执行时钟(运营入场截止 / 过期滞后) ── 生效点 contracts/agent_output.exec_line_thresholds · scan/exec_anchor.entry_cutoff · scan/exec_anchor.expiry_lag_sessions
+  "execution": {
+    "entry_line": {                    // 决策卡「执行线」两行的阈值(任务包渲染给 l4-card;事后记账 exec_ok 同源)
+      "pct_chg_max": 3.0,              // T+1 当日涨幅超此值放弃尾盘入场
+      "pos_in_range_max": 0.7          // 收盘位于当日区间的位置 ≥ 此值放弃入场
+    },
+    "entry_cutoff": "14:45",           // T+1 运营入场截止(人读完报告还要下单;exec_anchor 与 overseas 同用)
+    "expiry_lag_sessions": 3           // 报告迟到几个交易日后从「需重新核验」降为「过期」
+  },
+
+  // ═══ 分区二 · 运行时(改值只影响成本 / 速度 / 时序 / 通知 / 留存) ═══
+
+  // ── agents · agent 角色 → 档位(注册角色闭集,必须列全) ── 生效点 scan/user_config.validate_user_config · scan/user_config.resolve_agent_bundle
   "agents": {
-    "strategist":   { "tier": "critical" },
-    "sector_brief": { "tier": "analytical" },
-    "l3_rank":      { "tier": "critical" },
-    "l3_repair":    { "tier": "repair" },
-    "l4_intel":     { "tier": "critical" },
-    "l4_card":      { "tier": "critical" },
-    "ens_review":   { "tier": "critical" },
-    "dossier_init": { "tier": "critical" },
-    "gp_shell":      { "tier": "relay" },
-    "gp_shell_json": { "tier": "relay" }
+    "strategist":    { "tier": "critical" },      // 市场研判(macro-brief)
+    "sector_brief":  { "tier": "analytical" },    // 行业 brief 写手
+    "l3_rank":       { "tier": "critical" },      // L3 精排
+    "l3_repair":     { "tier": "repair" },        // L3 产物修复
+    "l4_intel":      { "tier": "critical" },      // 活体情报员
+    "l4_card":       { "tier": "critical" },      // 决策卡
+    "ens_review":    { "tier": "critical" },      // ≥OW / SELL 双复核
+    "dossier_init":  { "tier": "critical" },      // 档案首覆
+    "stock_full":    { "tier": "critical" },      // 单股 FULL 逻辑角色共用
+    "macro_full":    { "tier": "critical" },      // 宏观 FULL
+    "sector_full":   { "tier": "critical" },      // 行业 FULL
+    "company_intel": { "tier": "critical" },      // A 股公司情报
+    "us_intel":      { "tier": "critical" },      // 美股公司情报
+    "sector_intel":  { "tier": "critical" },      // 行业情报
+    "global_intel":  { "tier": "critical" },      // 全球宏观情报
+    "gp_shell":      { "tier": "relay" },         // 命令壳
+    "gp_shell_json": { "tier": "relay" }          // 命令壳(JSON 回报)
   },
 
-  // ── engine profile · declared expectation，不代表 actual execution ─────────
-  // Claude 映射与迁移前逐 role 完全等价；判断类仍不显式 model，继续落 agent frontmatter。
-  // Codex reasoning_effort 由 model capability 校验，支持到 ultra；fallback 只有 capability
-  // 明确不支持 declared 时才可应用并留 mismatch。l4_intel 明确要求 live web search。
+  // ── agent_engines · 档位 → 各引擎 model / effort ── 生效点 scan/user_config.validate_user_config · scan/user_config._dual_role_specs
   "agent_engines": {
     "claude": {
       "tiers": {
-        "critical":   { "effort": "max" },
-        "analytical": { "effort": "xhigh" },
-        "repair":     { "effort": "medium" },
-        "relay":      { "model": "sonnet", "effort": "low" }
+        "critical":   { "effort": "max" },                    // 判断类(模型落 agent 定义文件)
+        "analytical": { "effort": "xhigh" },                  // 描述类
+        "repair":     { "effort": "medium" },                 // 修复类
+        "relay":      { "model": "sonnet", "effort": "low" }  // 命令壳
       }
     },
     "codex": {
       "tiers": {
-        "critical": {
-          "model": "gpt-5.6-sol", "reasoning_effort": "xhigh",
-          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "high" }
-        },
-        "analytical": {
-          "model": "gpt-5.6-sol", "reasoning_effort": "high",
-          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "high" }
-        },
-        "repair": {
-          "model": "gpt-5.6-sol", "reasoning_effort": "medium",
-          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "medium" }
-        },
-        "relay": {
-          "model": "gpt-5.6-luna", "reasoning_effort": "low",
-          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "low" }
-        }
+        "critical":   { "model": "gpt-5.6-sol", "reasoning_effort": "xhigh", "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "high" } },     // 判断类
+        "analytical": { "model": "gpt-5.6-sol", "reasoning_effort": "high", "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "high" } },      // 描述类
+        "repair":     { "model": "gpt-5.6-sol", "reasoning_effort": "medium", "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "medium" } },  // 修复类
+        "relay":      { "model": "gpt-5.6-luna", "reasoning_effort": "low", "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "low" } }        // 命令壳
       },
       "role_overrides": {
-        "l4_intel": { "web_search": "live" }
+        "l4_intel": { "web_search": "live" },
+        "company_intel": { "web_search": "live" },
+        "us_intel": { "web_search": "live" },
+        "sector_intel": { "web_search": "live" },
+        "global_intel": { "web_search": "live" }                  // 情报员必须实时网查
       }
     }
   },
 
-  // ── L0 · 选集硬门 ──────────────────────────────────────────────────────────
-  // 【生效点】autoresearch/scan/frame.py build_market_frame(L0 单一代码路径,universe.run 与
-  //   frame CLI 共用——market_pack 的 regime/宽度统计与漏斗用同一把地板)+ universe.run
-  //   (meta/weights_used 记实际生效值)。CLI:--cap-floor/--exclude-bj/--source 恒优先。
-  //   ⚠️ 哲学:每加一条硬门=一块永久盲区(missed_l0≈赢家 9%);收紧属召回行为变更,走实验治理。
-  "l0": {
-    "cap_floor_yi": 30,        // 市值地板(亿);capfloor20 影子变体在验 20 的反事实,勿在此直接改
-    "include_bj": true,        // 纳入北交所(false=剔;92xxxx 历史坑见 pledge 记忆)
-    "source": "tushare",       // 取数源:tushare=默认(东财 push2 常被网络封,用户裁定);em=push2
-    "min_amount_yi": 0,        // L0 流动性门(日成交额亿 >;0=关=parity)
-    "min_list_days": 0         // L0 次新门(上市天数 ≥;0=关=parity)
-  },
-
-  // ── L1 · 召回(多路 → quota_union → top recall_n)──────────────────────────
-  // 【生效点】universe.run(_funnel_overlay + knob;prelude 生产路与 universe 直跑 CLI 同源)。
-  //   regime_aware 另生效于 prelude.run_prelude(生产路缺省 true;universe 直跑 CLI 内建缺省
-  //   false,--regime-aware/--no-regime-aware 恒优先)。
-  "funnel": {
-    "regime_aware": true,      // L1 权重按当日 regime 选块(weights.json regimes;07-02 校准开启)。
-                               // ⚠️ 只在 weight_profile="calibrated" 下生效;当前档是 preference
-                               // (见下方「召回权重档」)→ 本键此刻无效,regime_applied 恒 null。
-    "recall_n": 1000,          // L1 召回收口数
-    "l2_n": 200,               // L2 粗排收口数
-    // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13 日累计裁决):剔 accumulation
-    // (unique超额T2 −0.21%)、northbound(hk_ratio T+2 IC −0.108)。
-    // ⚠️ **删掉本行 = 用全部注册 12 路,会把默认停用·取证中的 event 一并
-    // 上线,违反 pr_20260725_001 入场纪律** —— 要动通道先走实验治理。
-    // ⚠️ momentum 勘误(2026-08-04):07-11 的「unique +0.75%」已过期且符号翻负(26 日 −1.07%);
-    // 切相位后=混合物(回撤侧≈0/上涨侧整区间为负,docs/research/2026-08-04-momentum-phase-
-    // conditional-ic.md)——「统一砍 momentum quota」是错处方,相位条件 quota 属 B 类须 registry,
-    // 故 quota 维持不动。
-    // reversal_confirm 沿革:2026-08-19 摘出(第 9→8 路,名义启用实际恒空 4 周+——起爆硬门
-    // vol_ratio_20 从未接入生产 L1 帧,缺列即整段判 False,与旧 reversal 的 A/B 全程空转);
-    // **2026-08-21 重开(第 8→9 路)**,reopen 条件已满足且门已修:
-    //   ① 数据腿 —— frame._harvest_vol_series 拉 60 日面板 + common/turnup.py 十列(vol_ratio_20/
-    //      above_ma20/ma5_gt_ma10/vol_ma*_prev…)入 keep 白名单,L1 帧真有这些列了;
-    //   ② 门修法 —— ③ 起爆硬门由 ma_bull(MA5>MA10>MA20>MA60 全多头)改为 above_ma20 ∧ ma5_gt_ma10:
-    //      60 日跌 ≥25% 的票起爆当日 MA20 不可能在 MA60 上方,旧代理与①前置低位**定义互斥**,
-    //      只接列不改门通道仍会近空(design 2026-08-21 §2.3);② 缩量改看 D−1 截止、RSI 上限 50→85。
-    // 与旧 reversal **两路同时活体 A/B**:channel_ledger 按 lane 分行,≥10 扫描日后人批裁决去留
-    // (判据见 docs/research/scan-negative-results.md「开放线头」)。self_review「通道活性」探针盯它 0 行,防同族复发。
-    // lowturn(2026-08-22 加,第 9→10 路):低位转强画像的**生产者**。2026-08-21 首跑实测该
-    // 画像全帧 120 只亮旗、L1 剩 17、**L2 恰 0** —— L3 侧整套(旗列/pass1 强留/守卫⑥/硬约束 G)
-    // 是「没有生产者的消费者」。门 = common/turnup.lowturn_mask(与 L3 旗同谓词同阈值,阈值在
-    // 下面 l3.lowturn 块),排序 = reversal_confirm_score。**证据边界**:决策尺 −0.24pp
-    // (t=−6.36)与现任 healthy 同负,正超额在 5~10 日尺;接生产者的理由是「不比现任差 + 打开
-    // 候选池形状」,不是「隔夜能赚」。回滚 = 从本行摘掉 "lowturn"(L2『低位转强』桶 floor 会
-    // 随之运行时归零,逐字 parity)。design 2026-08-22-funnel-shape-after-lowturn-first-run。
-    "recall_channels": ["composite", "momentum", "reversal", "reversal_confirm", "value", "main_fund", "heat", "growth", "healthy", "lowturn"],
-    // 各路配额覆盖(channel_ledger advisory 档,36 日版累计裁决 2026-08-19 拍板,取代 2026-07-11
-    // 的 18 日版:value 250→312(57.6%胜率/+0.9%最优,加码)、momentum 250→188、heat 150→112、
-    // healthy 150→112、growth 150→112(三路 unique 超额持续为负,减码);main_fund 保持 150。
-    // 六键全写(逐一核对:六个目标值均不等于各路 @channel 注册表默认 momentum250/growth150/
-    // value200/main_fund200/healthy150/heat200,任一键缺省都会回落注册表默认而非维持原覆盖值,
-    // 故不可只写变动键)。accumulation 120→90 未随本次拍板落地——该路已于 2026-07-11 退役出
-    // recall_channels(见下方 recall_channels 键),调 quota 无生效点,是幽灵行。
-    // 删本行 = 注册表默认 quota。floor 覆盖同名 "channel_floors":{}(未用)。
-    "channel_quotas": { "value": 312, "momentum": 188, "heat": 112, "healthy": 112, "growth": 112, "main_fund": 150,
-                        "reversal_confirm": 150,    // 2026-08-21 重开:中档起步(design R6)
-                        "lowturn": 120 },           // 2026-08-22 新路:与注册默认同值,写明防「缺键回落注册表默认」
-    // ── 召回权重档(2026-09-24 可买性对齐 §2.1)──
-    // 【生效点】scoring.resolve_weights ← universe.run(knob funnel.weight_profile/preference_weights)。
-    // ⚖️ 证据:weights.json(08-19,gap_c1_o2 IC 校准)range 块 momentum/tech/volprice/fund_main 全负
-    //   → composite 实为超卖分(09-17 L1 池 spearman 对 pct_20d −0.80),落刀逐级叠加(L0 23%→L2 40%)。
-    //   偏好档符号 = 「上涨趋势 + 有支撑 + 主力真在 + 散户不拥挤」,量级是裁定不是拟合,无自动重标定。
-    // 回滚杆 = "weight_profile": "calibrated"(一行;preference_weights 留着无害)。
-    "weight_profile": "preference",
-    "preference_weights": { "momentum": 0.20, "tech": 0.15, "volprice": 0.15, "fund_main": 0.15,
-                            "chip": 0.05, "north": 0.05, "growth": 0.05, "value": 0.05,
-                            "fund_retail": -0.05, "rz": 0.0 }
-  },
-
-  // ── L2 · 粗排(确定性分层采样,不预测)────────────────────────────────────
-  // 【生效点】universe.run → recall/l2_stratify.select_l2。风格桶 floors 内建默认(趋势20/健康15/…)
-  //   =行为归属,留在 l2_stratify.DEFAULT_FLOORS,想再调先立实验;此处另放行业集中度帽 + 落刀帽/floor 生产覆盖(§2.2,见下)。
-  "l2": {
-    "sector_cap": 0.20,        // 任一申万一级 ≤ 20%(=40/200);≥1.0=关
-    // ── 落刀帽 + floor(2026-09-24 可买性对齐 §2.2)──
-    // 【生效点】universe.run(knob l2.knife_cap → L0 落刀占比 → select_l2 knife_cap_share)+
-    //   recall/l2_stratify.stratified_l2(merit/回填/非豁免桶各按份额设配额;反转/低位转强豁免)。
-    // ⚖️ 证据:09-01→09-17 七场 L2 落刀 27–56% vs L0 15–27%(恒 ≈2×);floor 桶落刀率
-    //   健康 0 / 成长 33 / 趋势 44 / 低位转强 54 / 反转 67(%)。健康桶供给 L1 8–11% ≈ 80–115 行,floor 25 够。
-    // 回滚杆 = "knife_cap": false + 删掉 "floors"(回 DEFAULT_FLOORS,静态 101/生效 89)。
-    // 🚨 **这根杆盖不住本批的全部改动(2026-09-25 终审 I1 补记)**:`l3/merge.pick_composite_seats`
-    //   在 2026-09-24(commit ac66a27,「席位不接刀」)里**无条件**加了一道 `falling_knife_mask`
-    //   过滤,**没有任何旋钮、没有回滚杆**。它违反「每批一根回滚杆」,只是今天在生产里休眠
-    //   ——因为 relative_buy.pool 已改 "finalists",不再走 composite 席位那条路。
-    //   后果:有人把 pool 扳回 "composite" 回滚批 3 时,拿到的不是 2026-08-26 的那个世界,
-    //   而是「旧池 + 旧分级 + **新 composite 权重**(批 1)+ **新的席位剔刀**(本条)」——
-    //   一个从未被测量过的第三种状态。要真正回到旧行为,除三根批次杆外还须 revert ac66a27。
-    //   注:「每批一根杆」承诺的是**关掉本批**,不是关掉整波;扳批 3 的杆留下批 1/2 属设计如此。
-    //   真正的缺口只有这一条 —— 一个不受任何杆管辖的行为改动。
-    // ⚠️ 幽灵行(2026-09-25 记):下面的 "吸筹": 12 **运行时恒为 0** —— 吸筹桶只映射
-    //   accumulation 一路,该路已于 2026-07-11 退役出 funnel.recall_channels,
-    //   `l2_stratify.effective_floors()` 按启用集把它归零。故本块静态合计 103、**生效合计 91**,
-    //   merit_need = 200 − 91 = **109**(不是 200 − 103 = 97)。保留 12 而不写 0,是为了让
-    //   「删掉 floors 回 DEFAULT_FLOORS」这根回滚杆逐位对得上(DEFAULT_FLOORS 里它也是 12);
-    //   重开 accumulation 路时它会自动复活。同一病的另一处见上方 channel_quotas 的幽灵行注释。
-    "knife_cap": true,
-    "floors": { "趋势": 20, "健康": 25, "反转": 6, "价值": 12, "成长": 12, "吸筹": 12,
-                "主力": 10, "低位转强": 6, "事件": 0 },
-    // ── 行业席位(2026-09-24 可买性对齐 §2.3;用户裁定③ 交由 Claude 决定 → 决定「接」)──
-    // 【生效点】universe.run 在 scored 就绪后、recall_select 之前:
-    //   sector_seats.pick_sector_seats(当日 healthy top3 行业内,取 healthy_riser ∧ ¬落刀
-    //   的成员,按偏好档 composite 降序每行业 per_sector 只;剔 📌/ST/当日涨幅≥9.5%)
-    //   → _inject_sector_seats_l1 镜像 pinned 注入 L1 → select_l2 作保留行追加
-    //   → l3/prompt 的 🏭 列 + triage ①c 强留 → l3/merge 给**已在场**的行打 guard 留痕。
-    // ⚖️ 证据:09-01→09-17 七日离线重放每日恰 3 行业 / 6 席、**席位全非落刀**(A6 7/7);
-    //   不净增 L4 卡数 —— 席位换掉菜单 200 行里的其他行,finalist 名额仍由 l4.max_cards(与 l4_budget)决定,
-    //   merge.py 只对 l3-rank 自己判成 finalist 的行打 sector_seat 标(不强推额外卡)。
-    // 🚨 2026-09-25:本键此前**只在离线重放里以参数形式存在,生产配置从未写过**,
-    //   而 user_config 的默认是「缺省 = 不出席 = parity」——即裁定③ 的交付物一直是关的。
-    //   批 2 的回滚杆文案写着 sector_seats.enabled=false,却指向一个没人打开过的开关。
-    // 回滚杆 = "enabled": false(一行,逐字 parity)。
-    "sector_seats": { "enabled": true, "per_sector": 2, "max_sectors": 3 }
-  },
-
-  // ── 日历 · 指数调样事件第三腿(2026-09-25 指数调样事件 §2.3;用户裁定 E1「日历事实 + 生效前夜守卫」,
-  //   非加分)──────────────────────────────────────────────────────────────
-  // 【生效点】scan/calendar.harvest_calendar(index_rebalance=knob)→ scan/index_events.
-  //   harvest_index_events(中证指数公司公告 list→detail→xlsx 名单,六指数白名单,全量落
-  //   index_events.csv,不过 want 过滤)→ calendar.harvest_calendar 按 L2∪finalists 且
-  //   phase 已解析(非 unknown_eff)且生效日非空过滤,写 calendar.csv 第三腿 kind=
-  //   "index_rebalance" → calendar_flags(L4 简报注入 / 档案 §6 / sector pack 四处继承)+
-  //   calendar_section(summary 📅 未来 14 天里的市场级计数,读全量 index_events.csv,不过
-  //   want 过滤——一次调样常常谁都不在当日 L2∪finalists 名单里)。
-  // ⚖️ 证据(2026-09-25 隔夜尺普查,17 次调样·1652 调入票次,对照 = 同指数未变动成分股,
-  //   主尺 gap_c1_o2):公告夜 −0.07pp;跑道(A+1..E−3)−0.10pp(t_day −5.4);**生效前夜
-  //   (E−1,买 E 收盘→卖 E+1 开盘)−0.31pp、胜率 35%**(中证500 −0.72pp·胜 22%、中证1000
-  //   −0.25pp 两个显著为负;沪深300/A500/科创50 的 E−1 ≈0)。唯一正相位在 A−1 预测夜且需
-  //   预测名单(路线 C 已因精度不足而不立项,见 §2.8/spec 附录 B)。日历行是**事实日期**:
-  //   六个相位里只有 passive_close_eve 那一行带方向词,且方向是「禁止」(防锚定,不给正向
-  //   加分)。已知覆盖缺口:399006 创业板指的调样公告不在本源发布,该指数的调样事件永远
-  //   只能靠 census(index_weight 月末快照普查)对账,不会经这条路径产出日历行。
-  // 回滚杆 = "index_rebalance": false(一行,逐字 parity:不取网、不落 index_events.csv、
-  //   calendar.csv 无第三腿新行)——**与 relative_buy.rebalance_gate 应同开同关**(两根杆
-  //   分别控制「看得见」与「否决」,但本项目从未打算只开一半)。
-  "calendar": { "index_rebalance": true },
-
-  // ── 旁路 · 行业 brief(L2 后并发)──────────────────────────────────────────
-  // 【生效点】sector/reuse.py main(--ttl 恒优先)/ sector/pack.py main(--k 恒优先)。
-  "sector": {
-    "reuse_ttl_days": 5,       // brief TTL 复用回看天数(♻️ 复用判据之一)
-    "max_briefs": 6            // 每日行业 brief 上限 K(红榜top3 ∪ L2集中度top3 ∪ watchlist 行业)
-  },
-
-  // ── L3 · 精排(两遍法:pass1 确定性分诊 + pass2 holistic 深比较)────────────
-  // 【生效点】scan/l3/prompt.py prepare_l3_table(two_pass/pass1_target)。finalist tier 上限
-  //   不在本块:由下方 l4.max_cards 决定(原 finalist_max 已退役,写了即报错)。
-  //   本块是**回滚杆**非 opt-in:two_pass 改 false / 删块 = 回「单遍读全表」旧行为。
-  "l3": {
-    "two_pass": true,
-    "pass1_target": 40,        // 60→40(2026-07-18 线A:影子回放 20 日 mandatory 0 漏、delta 无赢家
-                               // 富集);回滚=改回 60 或 two_pass=false;被切的落影子 _l3_pass1_cut.csv
-    // ── composite 证据席(2026-08-26 §3 路A · 守卫⑨)────────────────────────────
-    // 【生效点】scan/l3/merge.composite_seat_cfg → ① write_finalists 的
-    //   inject_composite_seats(把当日 L2 菜单 composite 最高的 m 只强制送进 finalists,
-    //   guard=composite_seat / lane=composite,不占 finalist 名额但计入 l4.max_cards、不受 lt55/cap 约束)
-    //   ② scan/l3/prompt.prepare_l3_table → triage 的 ①b 强留(让 l3-rank 真判到它们 ——
-    //   pass1 切了它们,finalists 里就只剩空 thesis 行,pinned 当年踩过这个坑)。
-    // 剔除:📌 保送 / ST·退 / 当日涨幅 ≥9.5%(追高在隔夜尺四年逐年为负)。
-    // ⚖️ 证据与边界同 relative_buy.pool 那段(两键是**同一个裁定**的产物,同批改)。
-    // 回滚杆 = "enabled": false(一行,逐字 parity);l4.max_cards 固定时 m 每加 1 = L3 名额 −1(卡数不变);卡数压到 ≤ m 时席位让位到 max_cards−1。
-    "composite_seat": { "enabled": true, "m": 3 },
-    // ── 低位转强第三画像(2026-08-21 低位转强波;design §6.1)────────────────────
-    // 【生效点】scan/l3/prompt.py prepare_l3_table → l3_table_md(lowturn_flag, lowturn_cfg)
-    //   (表内 lowturn 旗列 + 图例)+ scan/l3/triage.py triage_l2_for_l3(lowturn_cap, lowturn_cfg)
-    //   (pass1 强留 ≤pass1_cap)。谓词真身 = common/turnup.lowturn_flag(单一事实源,L1/研究/L3 共用)。
-    //   `enabled: false` 或删本块 = **逐字 parity**(旗列与 pass1 强留同关;merge 守卫⑥在无
-    //   lowturn lane 时天然无操作)——这就是本特性的回滚杆,改一行即可。
-    // ⚖️ **上线理由与证据边界(必须连读)**:Gate 0 132 成型日实测,本画像在**决策尺**
-    //   `gap_c1_o2` 的相对超额 **−0.24pp(t=−6.36)= 显著为负**;之所以仍上线,是因为**现任
-    //   healthy 画像同样显著为负**(−0.17pp,t=−5.74)且量级相当 —— 理由是「不比现任差 +
-    //   打开候选池形状」,**不是**「隔夜能赚」。它在周级尺 fwd_5/fwd_10 才翻正且显著
-    //   (+0.63 / +0.99pp),即兑现窗口 5~10 日 ≠ 隔夜。读数全文:
-    //   docs/research/2026-08-21-lowturn-precheck.md。≥10 扫描日后按 l3_audit/lane 账裁决去留。
-    "lowturn": {
-      "enabled": true,
-      "max_dist_high_60": -15.0,  // 低位:距 60 日高 ≥15%(仍在水下)
-      "max_pct_60d": 10.0,        //   且 60 日涨幅 <10(没涨回去)
-      "min_vol_ratio_20": 1.2,    // 放量(通道硬门 1.5 的放宽档;L3 还有 agent 复核)
-      "min_pct_5d": 0.0,          // 近 5 日为正(转强)
-      "require_above_ma20": true, // 站回 MA20
-      "require_ma5_gt_ma10": true,// 短均线拐头
-      "fund": "main_or_cmf",      // 主力净额>0 或 cmf_20>0;可选 main | cmf
-      "knife_pct_60d": -35.0,     // 落刀:60 日跌超此值且主力不为正 → 不接
-      "pass1_cap": 8              // pass1 强留上限(保护 40 席预算)
+  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history
+  "budgets": {
+    "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
+    "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED,不截断)
+    "run_weighted_target": 5000000,    // 成熟 cohort 的 weighted input P50 目标
+    "stage_cost_usd": {},              // 每阶段成本上限(空 = 不设;如 {"l4-card": 20})
+    "stage_wall_seconds": {},          // 每阶段墙钟上限(空 = 不设)
+    "concurrency": { "tushare": 4, "l4_stock": 64 },   // 并发帽:tushare = slim 取数槽;l4_stock = L4 派发宽度(session_agent 下 = 全角色并发)
+    "min_real_scans": 10,              // 成熟门:不满此数恒 IMMATURE
+    "baseline_run": "20260727_2140",   // 成本基线 run
+    "maturity": {                      // 成本 / 墙钟成熟门目标
+      "phase1": { "cost_reduction": 0.15, "p50": 75, "p90": 100 },   // 一期:成本降幅 / P50 分钟 / P90 分钟
+      "phase2": { "cost_reduction": 0.25, "p50": 65, "p90": 90 }     // 二期
     }
   },
 
-  // ── L4 · 卡数(2026-09-26 用户需求:最终进入 L4 卡的个数可配置、且真实生效)──────
-  // 【生效点】scan/l4/card_count.effective_caps(唯一算法)→ ① gates.gate1 回显 l3cap/max_cards
-  //   (scan-market.js 与 session_agent 都只读 GATE1 结果;原 JS 写死的 Math.min(10, …) 已删;
-  //   l3cap 进 L3 prompt 的 finalist 区间,max_cards 做 GATE2 预算)
-  //   ② l3/merge.write_finalists 守卫⑩:非 📌 行(含 composite 席位)总数 ≤ max_cards,超出按
-  //   「席位优先、再按 conviction」截尾进 bench(guard="max_cards")③ self_review.l4_card_count_lint
-  //   发布前对账:任务簿非 📌 票数 > max_cards → warn「L4 卡数·超配置上限」。
-  // 语义:max_cards = 非 📌 卡上限;📌 持仓恒出卡不占额。finalist 名额 = max_cards − composite m;
-  //   budget_flags=true 时 finalist 名额再与 menu.l4_budget(五面旗只降不升)取小(席位另计);false 忽略旗。
-  // 默认 13 = 原 finalist_max 10 + composite m 3(逐字 parity)。改小立刻生效;改大时 L3 候选
-  //   (pass1_target 40)与当日够格票数才是上限 —— 卡数 = min(max_cards, 够格 finalist + 席位)。
-  "l4": { "max_cards": 13, "budget_flags": true },
-
-  // ── L4 · 活体情报站(sonnet 盲搜 ∥ slim 预取)──────────────────────────────
-  // 【生效点】.claude/workflows/l4-stock.js(intelOn/maxQ;**缺块=intel 关**)+
-  //   scan/l4/intel_status.py + self_review 超查探针。真硬顶 hard_cap=30 在
-  //   scan/l4/intel_guard.py(超顶稿件 .rejected 弃用,只拒稿不拒票)=代码常量不入 config。
-  "l4_intel": {
-    "enabled": true,           // 2026-07-12 开启(P1 波验收过);false=干净回滚(卡内网查兜底)
-    // 2026-09-26 §4 A3 intel 死票门【生效点】scan/l4/intel_gate.decide(true → 落 _intel_gate.json:
-    //   主力净额/cmf_20/obv_mom_20 三线同负 ∧ 无 📅 日历催化/近 10 日事件 ∧ 非 📌/证据席 → 不派 intel)。
-    //   派发接线(l4-stock.js / runner 读该文件)是批 6 Task 3,冻结窗后才做 —— 在那之前开它不少派任何 intel。
-    //   false = 不落文件、逐字 parity;离线回放证据见 docs/research/2026-09-26-intel-gate-replay.md。
-    "skip_when_dead": false,
-    "max_queries": 20          // 15→20(Wave8 W8-13):对齐实测中位,让 warn 重新变信号
+  // ── prelude · 前奏步骤 ── 生效点 scan/prelude.configured_skip_steps · scan/prelude.announcement_lookback
+  "prelude": {
+    "skip_steps": [],                  // 常态跳过的前奏步骤(与 CLI --skip 取并集;名字须在 STEP_NAMES 内)
+    "announcement_lookback": 5         // 公告源盲区往回查几个 scan 日
   },
 
-  // ── L4 · 调度性能(只改调度/上下文布局,**不拥有评级**)─────────────────────
-  // 【生效点】.claude/workflows/scan-market.js(streamingL4 分支:任务簿流式 vs 旧批量 GATE3)。
+  // ── runner · 无人值守场时钟(scan_run) ── 生效点 scan/scan_run.runner_cfg
+  "runner": {
+    "window_start": "21:10",           // 定时场最早开跑时刻
+    "hard_stop": "01:00",              // 夜间硬截止(次日凌晨)
+    "min_runner_minutes": 10,          // 距硬截止不足此分钟数不开
+    "run_timeout_minutes": 180,        // runner 墙钟上限
+    "live_run_window_min": 90,         // 心跳在此分钟窗内 = 人工会话仍在扫,拒绝开场
+    "kill_grace_s": 5.0,               // 停进程组:TERM 后等多久再 KILL
+    "subprocess_timeout_s": 1800,      // begin / verify / finalize 子进程超时
+    "force_full": false                // 无人值守场是否做人工 override 的全扫
+  },
+
+  // ── readiness · 湖就绪探针与预热结算时刻 ── 生效点 scan/readiness.readiness_cfg · scan/prewarm.settle_minutes
+  "readiness": {
+    "min_rows": 5300,                  // 湖就绪:stk_factor_pro 当日行数下限
+    "stable_polls": 2,                 // 行数连续不变几次才算齐
+    "interval_s": 300,                 // 轮询间隔(秒)
+    "deadline": "22:30",               // 就绪探针截止
+    "late_recheck_s": 30,              // 截止已过时补读的间隔(秒)
+    "settle_hhmm": "19:15"             // 预热:当日 EOD 视为已结算的最早时刻
+  },
+
+  // ── l4_tasks · L4 任务簿:重试 / 卡死 / slim / tushare 槽 ── 生效点 scan/l4_tasks.tasks_cfg
+  "l4_tasks": {
+    "max_attempts": 2,                 // 任务簿每票最多尝试次数
+    "stale_after_s": 3600,             // RUNNING 超过此秒数算卡死可重领
+    "slim_retries": 1,                 // slim 取数重试次数
+    "slim_workers": 4,                 // slim 批量并发
+    "slot_poll_s": 5.0,                // tushare 槽轮询间隔(秒)
+    "slot_heartbeat_s": 60             // 等槽时心跳间隔(秒)
+  },
+
+  // ── l4_watch · L4 进度播报 ── 生效点 scan/l4_watch.watch_cfg
+  "l4_watch": {
+    "stale_min": 30,                   // 在飞超过此分钟数提示一次
+    "interval_s": 5.0                  // 轮询间隔(秒)
+  },
+
+
+  // ── performance · 调度开关 ── 生效点 workflows/scan-market.js
   "performance": {
-    "streaming_l4": true       // false=回滚到整批 slim GATE3
+    "streaming_l4": true               // L4 流式任务簿;false = 整批 slim GATE3(仅 legacy workflow)
   },
 
-  // ── 收尾 · 相对 BUY(E6)──【生效点:scan/post_run.publish_run_observation → relative_buy.write_decision/verify_decision】
-  // 2026-08-19 用户裁决表(docs/specs/2026-08-18-e6-activation-learning-slimdown-design.md §6)
-  // A1/A2 一次性拍板:下面三键是**同一个裁定**的产物,同一 commit 落地,不得分次改。
-  // mode: shadow=影子只记账;active=正式接管 BUY。**A1=GO,本次已翻 active**(翻回 shadow
-  //   即回滚)。【消费侧生效点(task-2.4)】relative_buy.is_active() → scan/report_sections
-  //   (组合视角/仓位 overlay 改 managed 占位+收尾注入)· scan/health.count_buys(改读决策
-  //   文件)· scan/brief(③ BUY 结论区)。
-  // exclude_pinned: 📌 持仓是否不参与当日 BUY 选择(保送不算判例)。**A2=是,本次已翻
-  //   true** —— BUY 只从非📌合格候选取 rank1;📌 持仓不再抢当日 BUY,走各自的 pinned
-  //   复核路(08-18 影子 BUY 688766 普冉本身就是📌,正是这条裁定要堵住的形状)。
-  // activate_date: 保留键(YYYY-MM-DD 或 null)。原生效点 learning/legacy_freeze 已随
-  //   2026-08-21「整个 learning 层退役」裁定删除,本键现无消费点,仅作 E6 转正日的记录。
-  // pool(2026-08-26 §3 路A · A1/A3;2026-09-24 可买性对齐 §2.6 复核):BUY 候选池来源。
-  //   "finalists" = v2 候选池(判断层 finalist 全体,席位票含在内);
-  //   "composite" = v3 证据席(L3 守卫⑨ 的 composite 席位),排序改按 composite 分。
-  // 【生效点】relative_buy.configured_pool() → post_run.publish_run_observation →
-  //   build_decision(pool=...);席位真身 = scan/l3/merge.pick_composite_seats。
-  // tiering(2026-09-24 可买性对齐 §2.6,v4.0,controller Ruling P21):入场门 + A/R 分级
-  //   总开关。true → ①卡面 entry_stance=PROHIBITED 进 no_redflag 硬门否决;②BUY 按
-  //   entry_stance=ALLOWED 分 A 级(card_backed)/R 级(其余 eligible,relative_forced)。
-  //   false(v3.0 逐字)= 不否决、不分级,entry_stance 只进 conflicts 展示。
-  // 【生效点】relative_buy.configured_tiering() → post_run.publish_run_observation →
-  //   build_decision(tiering=...)。
-  // 2026-09-24 可买性对齐 §2.6:池回到全部派发卡(席位含在内);tiering 开 = 入场门 + A/R 分级。
-  // ⚖️ 证据:pool=composite 19 席位卡面 UW 15/Sell 3/Hold 1;7 笔 active BUY −0.55pp 胜 2/7。
-  // 🚨 **这次反转推翻的是一组 42 日显著证据,理由必须写下来(2026-09-25 终审 I6 补)**:
-  //   本键 2026-08-26 改成 composite 时,注释里记着两个统计量 ——
-  //     · L2 菜单内按 composite 取 top20/top50,隔夜相对超额 **+0.14/+0.17pp(t 1.96/2.78,42 日)**
-  //     · L3·finalist 一族 **−0.27pp(t=−3.94,40 日)显著为负**
-  //   把 pool 改回 finalists,等于逆转一组 n=42 的显著读数。**但那两个量今天都已失效,
-  //   而且失效的方向未知**:批 1 把 composite 的权重符号整组翻了(旧档 momentum/tech/
-  //   volprice/fund_main 全负,是超卖分),所以 +0.14pp 描述的那个 composite **已经不存在**;
-  //   同理 −0.27pp 描述的 finalist 是从**旧菜单**里挑出来的,而批 1+2 换掉了菜单。
-  //   两边证据同时作废,这不是「新证据推翻旧证据」,是**两组数都不再描述当前系统**。
-  //   ⇒ 本次改回 finalists 真正依据的是两条,**都不是 alpha 证据**,必须明说:
-  //     ① 设计必要性:A/R 分级要读卡面入场行,而 composite 席位每天只有 ~3 只,
-  //        其中 19 张历史席位卡 18 张写 UW/Sell —— 池子里几乎没有能说「允许」的卡。
-  //     ② 实现结果读数(n 很小):该池 7 笔 active BUY 平均 −0.55pp、胜 2/7。
-  //   **n=7 的实现读数不足以证明 finalists 更好**,它只证明 composite 席位这条路走不通。
-  //   合并前请人工复核这一条;若要保守,回滚杆是 "pool": "finalists" → "composite"
-  //   **但必须与 tiering 一起回**(见下),且回去之后 8 天里有 4 天会重新变成 0 买日。
-  // 📌 另注:2026-08-26 设计稿(记忆标注「现行总调度权威」)至今仍把 finalists 池列为缺陷,
-  //   那份文档**未随本次改动更新**。两处说法冲突时以本注释与 2026-09-24 spec §2.6 为准。
-  // 回滚杆 = "tiering": false(v3 逐字)+ "pool": "composite"。
-  //
-  // ── rebalance_gate · E6 第五硬门(2026-09-25 指数调样事件 §2.4,`RULE_VERSION="e6.v4.1"`)──
-  // 【生效点】relative_buy.configured_rebalance_gate()→ post_run 的两个决策写者
-  //   (safe_write_decision / safe_verify_decision,同一个开关值传两边,同 tiering 纪律)→
-  //   build_decision(rebalance_gate=…, index_events=盘上 index_events.csv 按 code 分组)→
-  //   `_hard_gate` 第⑤段 rebalance_close:扫描日 = 调样生效前夜(index_events.csv 里
-  //   phase=="passive_close_eve")的调样票(调入/调出、六指数任一,E2 裁定一刀不分)否决;
-  //   独立计数、不并入 no_redflag;决策文件多顶层 index_events 块(source ok|absent|disabled|error、
-  //   gate_evaluated、n_rows、n_unresolved_eff、hits)、field_usage.hard_gate.fields 变五项。源缺席/
-  //   读取失败/日历腿本身关着 → 门放行 + source=absent|disabled|error 留痕(「没看见」≠「没事件」,三者门后果相同但因不同,
-  //   各自留痕不合并)。
-  // ⚖️ 证据:同上 calendar.index_rebalance 那条(17 次调样普查,生效前夜 −0.31pp、胜率
-  //   35%,中证500/中证1000 显著为负)——这一门否决的正是那一夜的买入。E2 裁定:全部调样票
-  //   一刀,不分调入/调出、不分指数(沪深300/A500/科创50 的 E−1 ≈0 不亏,但差异不足以支撑
-  //   「只挡中证500/1000」这种更精细的规则,证据只够支撑「一刀」)。
-  // 回滚杆 = "rebalance_gate": false(一行;关时决策文件与 v4.0 逐字节相同,除
-  //   rule_version 字符串本身)——**与 calendar.index_rebalance 应同开同关**。
-  "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19",
-                    "pool": "finalists", "tiering": true, "rebalance_gate": true },
+  // ── self_review · 发布前自检(GATE4 判据) ── 生效点 scan/self_review.self_review_cfg · scan/self_review.review · scan/self_review._intel_stale_days
+  "self_review": {
+    "coverage_min": 0.8,               // 决策卡覆盖率低于此值拦发布
+    "composite_floor": 30.0,           // 买单 composite 下限(warn)
+    "sector_max": 0.6,                 // 买单行业集中度上限(warn)
+    "winner_rate_max": 88,             // 买单获利盘超此值拦发布(需 override)
+    "overheat": {                      // 过热买单提醒(warn)
+      "pct60": 50,                     // 60 日涨幅 >
+      "rsi6": 80                       // 且 RSI6 >
+    },
+    "liveness_escalate_streak": 3,     // 召回通道连续 0 行几天升红灯
+    "citation_min": 6,                 // 满卡带日期引用行数下限
+    "intel_stale_days": {              // intel 事件未按时效衰减的判定窗(自然日)
+      "v1": 7,                         // v1 稿
+      "v2": 31                         // v2 三窗稿(本月)
+    }
+  },
 
-  // ── 现场重建 · transcript 绑定(2026-09-12 scene-reconstruction Task 4)──
-  // 【生效点】autoresearch/scan/post_run.publish_run_observation(决策校验完成之后、
-  //   retain 镜像 staging 之前、capsule 冻结之前调 transcript_binder.safe_bind_run)→
-  //   写 `_transcript_bindings.json`(staging,observe 执行时恒有此产物)。
-  // bind_transcripts: 默认 true = 尝试把本 run 的研究 agent 实际读/搜/写过什么绑定进
-  //   capsule(每个已知期望一行:BOUND/UNVERIFIED_BY_PRODUCT/AMBIGUOUS/GONE/ERROR)。
-  //   关掉(false)或没有 active run 时,仍会写一份 `enabled:false` + 原因的报告,不清除
-  //   任何已有证据;单条绑定冲突/源不可读只降级那一条(报告标 ERROR),不挡业务发布。
-  //   **注意**:一条 BOUND 只说明"证据载体找到了",不说明"研究做完整了"——分母可能是
-  //   产物推导的下界,区段可能只是 partial;完整性结论仍以 capsule 自己的 completeness
-  //   校验为准,不能用这份报告的 enabled/BOUND 替代。
-  // 回滚杆 = 本键改回 false(只停止**新增**采集,已落盘的绑定/快照不受影响)。
-  "retention": { "bind_transcripts": true },
+  // ── report · 报告体积预算 ── 生效点 scan/report_model.report_cfg
+  "report": {
+    "brief_max_bytes": 3000,           // brief 硬预算(字节)
+    "tone_chars": 34,                  // 定调句字符上限
+    "summary_target_bytes": 12288,     // summary 目标体积
+    "summary_warn_bytes": 16384,       // summary 告警体积
+    "appendix_target_bytes": 20480,    // appendix 目标体积
+    "appendix_warn_bytes": 24576,      // appendix 告警体积
+    "evidence_max_chars": 80           // 候选表「一句依据」截断长度
+  },
 
-  // ── 送达 · 无人值守场推 brief / FAILED 通知(2026-09-26 daily-engine 批 4,spec §6 C3)──
-  // 【生效点】autoresearch/scan/delivery.configured_delivery → send()(scan_run 成功后推 brief 原文,
-  //   Bark 正文 ≤3000B 超出截断 + 报告路径)与 notify()(未开/FAILED 一句话,scripts/notify.sh 同一
-  //   渠道)。每次 send 落 _delivery.json(兼容报告目录;绝不写进 canonical 发布根)。
-  // channel: "none"(默认 = parity,什么都不发)| "bark"(iOS 推送,token 只放 .env 的 BARK_TOKEN)|
-  //   "mail"(本机 mail,收件人 .env 的 DELIVERY_MAIL_TO)| "file"(brief 复制到 file_dir,如 iCloud/Obsidian)。
-  // 送达失败不改 run 状态、不抛,只记账。凭证一律不进本文件。
-  "delivery": { "channel": "none", "file_dir": null }
+  // ── retention · 现场留存 ── 生效点 scan/transcript_binder._configured_bind_transcripts · scan/retention.retention_cfg · trace/capsule.stale_after · scan/salvage.salvage_windows · scan/transcript_binder.codex_lookback_days
+  "retention": {
+    "bind_transcripts": true,          // 把研究 agent 的读 / 搜 / 写绑定进 capsule
+    "archive_transcript_agents": ["l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief"],   // 归档哪些 role 的 transcript
+    "lake_window_days": 70,            // 湖清单回看窗(交易日)
+    "capsule_stale_after_min": 5,      // 陈旧 run 自动冻结的心跳静默分钟数
+    "salvage_window_min": 20,          // 现场恢复:mtime 归入取证窗口的容差(分钟)
+    "salvage_max_hours": 8,            // 现场恢复:终点未知时顶替的最长 run 时长(小时)
+    "codex_transcript_lookback_days": 10   // Codex transcript 候选回看天数
+  },
+
+  // ── delivery · 无人值守场送达 ── 生效点 scan/delivery.configured_delivery · scan/delivery.delivery_limits
+  "delivery": {
+    "channel": "none",                 // none | bark | mail | file(凭证只在 .env)
+    "file_dir": null,                  // channel = file 时的目标目录
+    "bark_body_limit": 3000,           // 推送正文字节上限(超出截断)
+    "http_timeout_s": 15.0,            // Bark 请求超时(秒)
+    "mail_timeout_s": 60               // 本机 mail 命令超时(秒)
+  },
+
+  // ── overseas · 海外事件日历(只做风险可见) ── 生效点 scan/overseas.overseas_cfg
+  "overseas": {
+    "horizon_days": 14,                // 海外事件往前看的天数
+    "rows_summary": 4,                 // summary 显示行数
+    "rows_brief": 1,                   // brief 显示行数
+    "rows_tripwire": 3                 // 盯梢显示行数
+  },
+
+  // ── tripwire · 持仓盯梢 ── 生效点 scan/tripwire_watch.date_lead_days
+  "tripwire": {
+    "date_lead_days": 3                // 持仓日期线提前几天预警
+  },
+
+  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
+  "session": {
+    "global_intel_max_queries": 8,     // 全球情报搜索与原文抓取总额度;仅 session_agent
+    "timeouts": {                      // 角色超时(秒,从被领取算起;仅 session_agent)
+      "mailbox": {},                   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
+      "headless": {},                  // headless 模式逐 role 覆盖(缺 = HEADLESS_TIMEOUTS)
+      "fallback_s": 1800               // 表外角色的超时
+    },
+    "max_turns": {},                   // headless --max-turns 逐 role 覆盖(缺 = MAX_TURNS;仅 session_agent)
+    "tier_max_turns": {},              // 表外角色按档位的轮数上限覆盖(缺 = TIER_MAX_TURNS;仅 session_agent)
+    "default_max_turns": 60,           // 档位也没有时的轮数上限(仅 session_agent)
+    "mailbox": {                       // mailbox 执行器(仅 session_agent)
+      "never_taken_factor": 4.0,       // 无人领取:超过角色预算的几倍放弃
+      "wait_s": 90.0,                  // mailbox wait 缺省秒数(要 < 宿主 Bash 120 秒)
+      "dead_heartbeats": 6             // 心跳超过几拍未更新判 runner 已死
+    },
+    "max_attempts": 2,                 // SESSION 任务瞬时错最多尝试次数(仅 session_agent)
+    "runner": {                        // runner 循环(仅 session_agent)
+      "poll_seconds": 5.0,             // 轮询间隔
+      "max_rounds": 20000,             // 轮数上限
+      "timeout_multiplier": 1.0        // 超时倍率
+    }
+  },
+
+  // ── shells · legacy workflow 中继壳 ── 生效点 workflows/scan-market.js · workflows/l4-stock.js
+  "shells": {
+    "detached_max_rounds_scan": 40,    // scan-market 长命令有界等待轮数(仅 legacy workflow)
+    "detached_max_rounds_l4": 20,      // l4-stock 长命令有界等待轮数(仅 legacy workflow)
+    "wait_seconds": 100,               // 每轮前台等待秒数(仅 legacy workflow)
+    "misses_lost": 3,                  // 中继壳连续几次无有效回报判 LOST(仅 legacy workflow)
+    "trace_calls_per_target": 2,       // 每个业务 agent 的取证壳数(仅 legacy workflow)
+    "tail_lines": 15                   // 命令壳回报 stdout 尾行数(仅 legacy workflow)
+  },
+
+  // ── dossier · 覆盖档案层 ── 生效点 dossier/config.dossier_cfg · dossier/pool._pool_cap · dossier/pool._recent_scan_days · dossier/pool._refresh_unlocked · dossier/debt_slo · dossier/delta.intel_dossier_gaps · dossier/schema
+  "dossier": {
+    "pool_cap": 30,                    // 覆盖池上限(LRU 驱逐,📌 不退)
+    "recent_days": 20,                 // 入退池观察窗(scan 日)
+    "entry_min": 2,                    // 观察窗内真入选几次入池
+    "init_per_night": 3,               // 每晚首覆上限
+    "max_pending_age_days": 2,         // SLO:待首覆最长天数
+    "throughput_window_days": 7,       // SLO:吞吐统计窗
+    "intel_gap_max_lines": 2,          // intel 侧档案缺口留痕行数上限
+    "summary_cap": 3000,               // 注入摘要 token 硬帽
+    "research_body_cap": 12000,        // 研报体素材 token 硬帽
+    "stale_days": 90                   // 档案陈旧告警阈值(天)
+  },
+
+  // ── observability · 账本读数样本门与 lint 阈(只影响观测) ── 生效点 scan/observability.observability_cfg
+  "observability": {
+    "min_ledger_n": 20,                // 结果账本统计最少样本
+    "min_session_n": 20,               // 账本视图分段统计最少样本
+    "realized_min_n": 20,              // brief 实现收益区间最少样本
+    "winner_decile": 0.9,              // 赢家分位
+    "swing_readout_min_days": 40,      // 10 日观察席统计最少天数
+    "swing_readout_min_clusters": 10,  // 10 日观察席区间最少簇数
+    "menu_knife_tolerance": 0.06,      // 不可买归因:菜单落刀容差
+    "price_claim_tol_pp": 1.5,         // 价格断言对账容差(百分点)
+    "unknown_rate_tolerance": 0.05,    // 价格断言 unknown 率容差
+    "nan_warn": 0.30                   // 列 NaN 率告警线
+  }
 }

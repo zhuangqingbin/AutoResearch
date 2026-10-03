@@ -81,3 +81,8 @@ $CTX/macro/<date>/        # 分节草稿(gitignored);assemble → $RPT/macro/<YY
 4. 跨资产相关性随 regime 漂移(通胀期股债翻正)→ 配置表声明当前相关性假设。
 5. 期货(GC=F/CL=F)盘后可能 n/a → 用现货 ETF 或标注时点。
 6. 行业资金流 + 两融 + 涨停 + 北向 + 指数估值:context **tushare 优先**(`tushare_macro`,非 push2 更稳),akshare(Eastmoney→THS)补龙虎榜游资;都失败才 WebSearch『行业净流入排名 / 两融余额 / 涨停家数 / 北向净流入』。
+
+
+### 配置表完整性
+
+FULL 跨资产配置必须覆盖本说明列明的 11 项 KEY；行业配置范围取本 run `data.md` 中“行业资金净流入”表，不默认扩展到全申万。缺少确定性行业表时拒绝发布 FULL 配置，保留既有状态。仅更新 spine 状态时不要求其余研究段，但跨资产表仍须完整；存在行业配置表时同样核对本 run 数据范围。历史表的只读解析保留原兼容接口。

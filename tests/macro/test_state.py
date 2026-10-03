@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from autoresearch.macro.state import load_macro_state, write_macro_state
+from autoresearch.macro.assemble import CROSS_ASSET_KEYS
 
 AS_OF = "2026-07-01"
 
@@ -19,6 +20,10 @@ DECISION = """## S1 · 执行摘要
 - 美股: **Rating**: Underweight — 估值高位盈利下修
 - A股·港股: **Rating**: Overweight — 政策+估值双底
 """
+DECISION += "\n".join(
+    f"- {key}: **Rating**: Hold" for key in CROSS_ASSET_KEYS
+    if key not in {"OVERALL 风险档", "美股", "A股·港股"}
+)
 
 SECTOR_MAP = """## M1
 - 电子: **Rating**: Overweight — 景气上行
@@ -41,6 +46,11 @@ def _mk_macro_ctx(tmp_path: Path) -> Path:
     (root / "1_spine" / "decision.md").write_text(DECISION, encoding="utf-8")
     (root / "2_meso" / "sector_map.md").write_text(SECTOR_MAP, encoding="utf-8")
     (root / "1_spine" / "premortem.md").write_text(PREMORTEM, encoding="utf-8")
+    (root / "data.md").write_text(
+        "**行业资金净流入(tushare)**:\n| 行业 | 主力净流入(亿) | 领涨股 |\n"
+        "|---|---:|---|\n| 电子 | 1 | 示例甲 |\n| 煤炭 | -1 | 示例乙 |\n",
+        encoding="utf-8",
+    )
     return root
 
 
@@ -122,3 +132,67 @@ def test_default_reader_prefers_receipt_committed_state(monkeypatch, tmp_path):
 
     assert loaded == {key: value for key, value in committed.items() if key != "global_tape_asof"}
     assert "新鲜" in note
+
+
+def test_invalid_macro_state_preserves_previous_bytes_and_asof(tmp_path):
+    import pytest
+
+    root = _mk_macro_ctx(tmp_path)
+    out = root.parent
+    previous = write_macro_state(root, out_dir=out, scan_root=tmp_path / "noscan")
+    before = (out / "macro_state.json").read_bytes()
+    for body in ("", "prose without allocation", "- 美股: **Rating**: Invalid"):
+        (root / "1_spine/decision.md").write_text(body)
+        with pytest.raises(ValueError):
+            write_macro_state(root, out_dir=out, scan_root=tmp_path / "noscan")
+        assert (out / "macro_state.json").read_bytes() == before
+        assert json.loads(before)["as_of"] == previous["as_of"]
+
+
+def test_invalid_optional_sector_table_preserves_state(tmp_path):
+    import pytest
+
+    root = _mk_macro_ctx(tmp_path)
+    write_macro_state(root, out_dir=root.parent, scan_root=tmp_path / "noscan")
+    before = (root.parent / "macro_state.json").read_bytes()
+    (root / "2_meso/sector_map.md").write_text("- 电子: **Rating**: Invalid")
+    with pytest.raises(ValueError):
+        write_macro_state(root, out_dir=root.parent, scan_root=tmp_path / "noscan")
+    assert (root.parent / "macro_state.json").read_bytes() == before
+
+
+def test_macro_state_validates_declared_keys_before_replacing(tmp_path):
+    import pytest
+    from autoresearch.macro.assemble import DECISION_REL, SECTOR_MAP_REL
+
+    root = _mk_macro_ctx(tmp_path)
+    write_macro_state(root, out_dir=root.parent, scan_root=tmp_path / "noscan")
+    before = (root.parent / "macro_state.json").read_bytes()
+    with pytest.raises(ValueError, match="missing"):
+        write_macro_state(root, out_dir=root.parent, expected_keys={
+            DECISION_REL: ["OVERALL 风险档", "美股", "A股·港股"],
+            SECTOR_MAP_REL: ["电子", "煤炭", "银行"],
+        })
+    assert (root.parent / "macro_state.json").read_bytes() == before
+
+
+def test_macro_state_atomic_replace_failure_preserves_previous_file(tmp_path, monkeypatch):
+    import pytest
+    from autoresearch.common import atomic
+
+    root = _mk_macro_ctx(tmp_path)
+    write_macro_state(root, out_dir=root.parent, scan_root=tmp_path / "noscan")
+    state_path = root.parent / "macro_state.json"
+    before = state_path.read_bytes()
+    newer = root.with_name("2026-07-02")
+    root.rename(newer)
+
+    def fail_replace(source, destination):
+        raise OSError("injected replacement failure")
+
+    monkeypatch.setattr(atomic.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replacement failure"):
+        write_macro_state(newer, out_dir=newer.parent, scan_root=tmp_path / "noscan")
+    assert state_path.read_bytes() == before
+    assert json.loads(state_path.read_bytes())["as_of"] == AS_OF
+    assert not list(newer.parent.glob(".macro_state.json.*.tmp"))

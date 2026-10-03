@@ -237,6 +237,10 @@ def record_response(
             "available_at": context["available_at"],
             "consumer_refs": context["consumer_refs"],
         }
+        if "source_timing" in context:
+            value.update(schema_version=2, source_timing=context["source_timing"],
+                         source_status=context.get("source_status", "CURRENT"),
+                         supersedes_receipt_ids=context.get("supersedes_receipt_ids", []))
         value["receipt_id"] = source_receipt_id(value)
         return validate_source_receipt(value)
 
@@ -251,13 +255,18 @@ def record_active_response(
     outcome: object,
     consumer_artifact_ids: list[str],
     raw_bytes: bytes | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+    source_timing: dict | None = None,
 ) -> dict | None:
     """Record one high-level supplier snapshot for the active operation, if any.
 
     This is the bridge for legacy suppliers that do not yet flow through the data-lake
     cache (notably direct yfinance/akshare calls).  The payload codec remains one of the
     non-executable SourceReceipt codecs, and the task/attempt identity comes from the
-    captured child environment rather than caller prose.
+    captured child environment rather than caller prose. Optional request timestamps
+    and source_timing preserve supplier evidence as v2; omitted fields retain the
+    legacy v1 behavior. Unknown first availability stays null in v2.
     """
     from autoresearch.common import workspace as ws
     from autoresearch.common.execution_context import current_execution_context
@@ -292,25 +301,37 @@ def record_active_response(
         }
         for artifact_id in consumer_artifact_ids
     ]
-    return record_response(
-        handle,
-        {
-            "engine": handle.engine,
-            "run_id": handle.run_id,
-            "task_id": task_id,
-            "attempt": attempt,
-            "provider": str(provider),
-            "endpoint": str(endpoint),
-            "normalized_params": normalized_params(params),
-            "started_at": timestamp,
-            "ended_at": timestamp,
-            "as_of": str(params.get("analysis_date") or params.get("date") or "") or None,
-            "available_at": timestamp,
-            "consumer_refs": consumers,
-        },
-        outcome,
-        raw_bytes=raw_bytes,
-    )
+    context = {
+        "engine": handle.engine,
+        "run_id": handle.run_id,
+        "task_id": task_id,
+        "attempt": attempt,
+        "provider": str(provider),
+        "endpoint": str(endpoint),
+        "normalized_params": normalized_params(params),
+        "started_at": started_at or timestamp,
+        "ended_at": ended_at or timestamp,
+        "as_of": str(params.get("analysis_date") or params.get("date") or "") or None,
+        "available_at": timestamp,
+        "consumer_refs": consumers,
+    }
+    if source_timing is not None:
+        context["source_timing"] = source_timing
+        context["available_at"] = source_timing.get("first_available_at")
+    return record_response(handle, context, outcome, raw_bytes=raw_bytes)
+
+
+def capture_active_responses(function):
+    """Install the existing receipt bridge at a supplier orchestration boundary."""
+    from functools import wraps
+
+    from autoresearch.common.source_capture import use_source_recorder
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with use_source_recorder(record_active_response, if_unset=True):
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def _failure(error: dict, *, unmeasured: bool) -> BaseException:
@@ -434,6 +455,10 @@ def materialize_tool_receipts(handle) -> list[dict]:
                 "ended_at": completed_at,
                 "as_of": None,
                 "available_at": completed_at,
+                "source_timing": {
+                    "published_at": None, "first_available_at": None, "received_at": completed_at,
+                    "timestamp_precision": {"published_at": None, "first_available_at": None, "received_at": "second"},
+                },
                 "consumer_refs": [{
                     "task_id": task_id,
                     "attempt": attempt,

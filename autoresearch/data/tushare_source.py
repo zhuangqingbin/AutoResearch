@@ -6,7 +6,7 @@ design: docs/specs/2026-06-20-scan-market-design.md(§4.4 坑③ 的"切换 univ
 背景:东财实时快照 `stock_zh_a_spot_em` / 资金流 `stock_individual_fund_flow_rank`
 都在 `push2.eastmoney.com` 上,该主机常被中国大陆以外/部分 ISP 网络级封锁。tushare
 (`api.tushare.pro`)是另一条链路,且 `daily_basic` 一把覆盖 市值/PE/PB/量比/换手/
-**股息率**,`daily` 给价/量、算 60日·YTD 动量,`moneyflow` 给主力净流入;高权限 token
+**股息率**,`daily` 给价/量、算 60日·YTD 动量,`moneyflow` 给主动买卖单净流入;高权限 token
 还能拿 `stk_factor_pro`(MA多头排列/RSI/MACD)与 `cyq_perf`(筹码获利比例)——比原
 push2 设计更厚。
 
@@ -281,13 +281,16 @@ def _moneyflow_struct_cols(mf: pd.DataFrame) -> pd.DataFrame:
     retail_net = g("buy_sm_amount") - g("sell_sm_amount")
     return pd.DataFrame({
         "code": _code6(mf["ts_code"]),
-        "main_net_yi": main_net / 1e4,        # 大单+特大单净(亿)= 主力
-        "retail_net_yi": retail_net / 1e4,    # 小单净(亿)= 散户
+        "main_net_yi": main_net / 1e4,        # 大单+特大单净(亿)，非机构身份
+        "retail_net_yi": retail_net / 1e4,    # 小单净(亿)，非散户身份
     })
 
 
 def _fetch_moneyflow_struct(last: str, analysis_date: str) -> pd.DataFrame | None:
-    """moneyflow 结构(主力/散户净额 + 主力净流入)——**经湖**。失败 → None(降级)。
+    """moneyflow 结构(大单/小单净额 + 主动买卖单净流入)——**经湖**。失败 → None(降级)。
+
+    main_inflow_yi/main_net_yi/retail_net_yi 保留兼容列名；指标语义见 metric_semantics。
+    交易规模与主动方向是代理，不能确认机构或散户身份。
 
     `moneyflow` 是 A 级(fund_main 组 + `main_net_ratio`)→ `DataContractError` 必须炸穿;
     权限/网络失败仍降级,但记账。
@@ -599,7 +602,7 @@ def fetch_universe_tushare(
     df = df.merge(pd.DataFrame({"code": _code6(dlys["ts_code"]), "cys": _num(dlys["close"])}), on="code", how="left")
     df["pct_60d"] = (df["close_now"] / df["c60"] - 1) * 100
     df["pct_ytd"] = (df["close_now"] / df["cys"] - 1) * 100
-    # 资金结构(主力净流入 + 大单+特大单净 + 散户净;主力净占比 = 主力净额/成交额)
+    # 资金结构(主动买卖单净流入 + 大单/特大单净 + 小单净；canonical 列名保持兼容)
     mfs = _fetch_moneyflow_struct(last, analysis_date)
     if mfs is not None:
         df = df.merge(mfs, on="code", how="left")

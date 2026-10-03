@@ -45,3 +45,34 @@ def test_basket_table_renders_rows_and_handles_missing():
     assert "| Gold | GC=F | 2400.0 | +3.10% | +15.00% |" in table
     assert "| USDCNY | CNY=X | n/a | n/a | n/a |" in table   # None last -> 'n/a', no crash
     assert table.startswith("| Asset | Symbol |")
+
+
+@pytest.mark.parametrize("block", ["us_macro_block", "global_macro_block"])
+def test_fred_blocks_forward_vintage_and_cutoff(monkeypatch, block):
+    from unittest.mock import Mock
+    tool = Mock()
+    tool.invoke.return_value = "macro"
+    monkeypatch.setattr(harvest_macro, "get_macro_indicators", tool)
+    getattr(harvest_macro, block)("2025-07-15", vintage_date="2025-07-14", knowledge_cutoff="2025-07-14")
+    for call in tool.invoke.call_args_list:
+        assert call.args[0]["vintage_date"] == "2025-07-14"
+        assert call.args[0]["knowledge_cutoff"] == "2025-07-14"
+
+
+def test_snapshot_and_cli_forward_fred_options(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    for name in ("china_macro_block", "cross_asset_block", "meso_ashare_best"):
+        monkeypatch.setattr(harvest_macro, name, lambda d: "other")
+    us = Mock(spec=lambda date, **kwargs: None, return_value="US")
+    global_ = Mock(spec=lambda date, **kwargs: None, return_value="global")
+    monkeypatch.setattr(harvest_macro, "us_macro_block", us)
+    monkeypatch.setattr(harvest_macro, "global_macro_block", global_)
+    monkeypatch.setattr(harvest_macro, "global_tape_payload", lambda d: {"ok": False})
+    monkeypatch.setattr(harvest_macro, "overseas_calendar_payload", lambda d: {"ok": False})
+    snapshot = harvest_macro.collect_harvest_snapshot("2025-07-15", scan_root=tmp_path, vintage_date="2025-07-14", knowledge_cutoff="2025-07-14")
+    us.assert_called_once_with("2025-07-15", vintage_date="2025-07-14", knowledge_cutoff="2025-07-14")
+    global_.assert_called_once_with("2025-07-15", vintage_date="2025-07-14", knowledge_cutoff="2025-07-14")
+    collector = Mock(return_value=snapshot)
+    monkeypatch.setattr(harvest_macro, "collect_harvest_snapshot", collector)
+    assert harvest_macro.main(["2025-07-15", "--output-dir", str(tmp_path), "--vintage-date", "2025-07-14", "--knowledge-cutoff", "2025-07-14"]) == 0
+    collector.assert_called_once_with("2025-07-15", vintage_date="2025-07-14", knowledge_cutoff="2025-07-14")

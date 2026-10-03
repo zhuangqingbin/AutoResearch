@@ -9,14 +9,19 @@ export const meta = {
   ],
 }
 
-// args: {date, code, name, sector, cfg?}(cfg = scan_config 的 agents 回显,透传 dossier_init/
-// gp_shell/gp_shell_json 的 model/effort;省略 = 用本文件 AGENT_DEFAULTS 缺省)
+// args: {date, code, name, sector, cfg}(cfg = frame --json 回显的 user_config,同 l4-stock;透传
+// dossier_init/gp_shell/gp_shell_json 的档位;空 cfg 直接 throw,离线试装须显式 allow_empty_config:true)
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const { date, code } = A
 if (!date || !code) throw new Error('args.date/args.code 必填')
 const name = A.name || ''
 const sector = A.sector || ''
 const cfg = A.cfg || {}
+// 同 scan-market.js / l4-stock.js(07-21 事故根治):空 cfg = 全体掉回缺省 effort 且无人知晓。
+// 结构性拒绝替代文档叮嘱;确需空跑(离线试装)显式传 args.allow_empty_config=true。
+if (!Object.keys(cfg).length && !A.allow_empty_config) {
+  throw new Error('args.cfg 为空 —— 会静默降 effort(07-21 事故)。传 allow_empty_config:true 才可空跑。')
+}
 // Wave11-B2:model/effort 单一事实源=scan_config.agents(闭集见 user_config._AGENT_ROLES);
 // 本表=缺键回退值。调用点禁止内联字面量(product_shape_lint 会查)。回退链:
 // config > 本表(AGENT_DEFAULTS) > agent .md frontmatter —— dossier_init 本表不写 model 键,
@@ -37,8 +42,9 @@ const AG = (role) => (RESOLVED[role]
   ? { ...RESOLVED[role] }
   : { ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const R = 'uv run --no-sync python -m'
-// 引擎隔离根:engine 随 args.engine 下发(缺省 claude;只有 Claude 会执行本 js)
-const ENGINE = (A.engine || 'claude')
+// 引擎隔离根:engine 随 args.engine 或 config 回显下发(缺省 claude;只有 Claude 会执行本 js)
+const ENGINE = (A.engine || cfg.engine || 'claude')
+throw new Error('HOST_CAPABILITY_REQUIRED: legacy research has no C4 task-bound dispatch transport; explicit session_v1 remains PILOT') // C4_LEGACY_GUARD
 const CTX = `context_${ENGINE}`
 const DP = `${CTX}/knowledge/dossiers/${code}.md`
 

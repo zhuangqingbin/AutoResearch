@@ -1,0 +1,84 @@
+--- a/tests/analyze/test_runctl.py
++++ b/tests/analyze/test_runctl.py
+@@ -449,3 +449,32 @@
+     monkeypatch.setenv(REPLAY_ENV, str(tmp_ws))
+     domain_ops._record_card_stage(handle, card, value)
+     assert not (handle.capsule / "stages/card/attempt-2").exists()
++
++
++# ------------------------------------------------ session_v1 FULL 的写身份(2026-10-02)
++#
++# session_v1 的单股 FULL 计划登记的装配操作叫 `stock.full.assemble`,而装配器自己的 checkpoint
++# 一直以 `stock.assemble` 的身份过写守卫。带 session 计划的 run 只认计划里登记的操作,
++# 于是 FULL 跑完 15 个推理任务后会在最后一步被 `RUN_OPERATION_NOT_OWNED` 拦下。
++
++def test_session_full_assemble_checkpoint_is_owned_by_its_registered_operation(tmp_ws, monkeypatch):
++    from pathlib import Path
++
++    from autoresearch.session_agent.workflows.stock import build_stock_plan
++    from tests.session_agent.test_stock_full import _context, _full_request
++
++    started = _begin(monkeypatch, mode="FULL")
++    handle = capsule_mod.load_run(started["run_id"])
++    monkeypatch.chdir(Path(__file__).resolve().parents[2])     # 角色登记表按仓库根读 agent 定义
++    plan = build_stock_plan(_full_request(subject=TICKER), _context(tmp_ws / "plan-only"))
++    monkeypatch.chdir(tmp_ws)
++    session = handle.workspace / "session"
++    session.mkdir(parents=True, exist_ok=True)
++    (session / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
++    operation = next(task["operation"] for task in plan["tasks"] if task["task_id"] == "stock.assemble")
++    assert operation == "stock.full.assemble"
++
++    with pytest.raises(RuntimeError, match="RUN_OPERATION_NOT_OWNED"):
++        runctl.record_stage("assemble", outputs=[])                    # 旧身份不在这份计划里
++    recorded = runctl.record_stage("assemble", outputs=[], operation=operation)
++    assert recorded is not None and recorded["stage"] == "assemble"
+--- a/tests/analyze/test_assemble.py
++++ b/tests/analyze/test_assemble.py
+@@ -176,3 +176,28 @@
+     monkeypatch.setattr(sys, "argv", ["assemble.py", str(root)])
+     assert assemble.main() == 1
+     assert not (tmp_path / ws.reports_root()).exists()
++
++
++# --------------------------------------------------------------------- 写身份(2026-10-02)
++
++def test_main_guards_its_writes_under_the_callers_operation(monkeypatch):
++    """装配器的写守卫身份由调用方给:CLI 仍是 `stock.assemble`,session_v1 传自己登记的操作名。"""
++    import contextlib
++
++    seen = []
++
++    class _Stop(Exception):
++        pass
++
++    @contextlib.contextmanager
++    def guard(operation):
++        seen.append(operation)
++        raise _Stop
++        yield  # pragma: no cover
++
++    monkeypatch.setattr("autoresearch.trace.write_guard.guarded_ambient_write", guard)
++    with pytest.raises(_Stop):
++        assemble.main(write_operation="stock.full.assemble")
++    with pytest.raises(_Stop):
++        assemble.main()
++    assert seen == ["stock.full.assemble", "stock.assemble"]
+--- a/tests/session_agent/test_stock_full.py
++++ b/tests/session_agent/test_stock_full.py
+@@ -55,3 +55,15 @@
+         "stock.full.2_research.variant",
+         "stock.full.2_research.faceoff",
+     }
++
++
++def test_full_assemble_writes_under_the_operation_its_plan_registers(tmp_path):
++    """domain_ops 传给装配器的写身份,必须就是计划里 `stock.assemble` 任务登记的那个操作。"""
++    import inspect
++
++    from autoresearch.session_agent import domain_ops
++
++    plan = build_stock_plan(_full_request(), _context(tmp_path))
++    operation = next(task["operation"] for task in plan["tasks"] if task["task_id"] == "stock.assemble")
++    assert operation == domain_ops.FULL_ASSEMBLE_OPERATION
++    assert "write_operation=FULL_ASSEMBLE_OPERATION" in inspect.getsource(domain_ops.stock_full_assemble)

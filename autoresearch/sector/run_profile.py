@@ -1,6 +1,8 @@
 """Evidence profiles for standalone sector research runs."""
 from __future__ import annotations
 
+from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+
 from dataclasses import replace
 
 from autoresearch.contracts import stages as vocab
@@ -20,6 +22,7 @@ def sector_profile(
     last_stage: str | None = None,
     agent_roles: tuple[str, ...] | None = None,
     card_source: str = "legacy_md",
+    card_rules_version: str = CURRENT_CARD_RULES,
     role_stages: dict[str, str] | None = None,
 ) -> RunProfile:
     if mode not in vocab.SECTOR_MODES:
@@ -46,6 +49,7 @@ def sector_profile(
         last_stage=last_stage,
         captured_stages=(),
         card_source=card_source,
+        card_rules_version=card_rules_version,
         role_stages=(
             dict(vocab.SECTOR_ROLE_STAGES) if role_stages is None else role_stages
         ),

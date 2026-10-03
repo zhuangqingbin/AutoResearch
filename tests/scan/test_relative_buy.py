@@ -37,7 +37,6 @@ from autoresearch.scan.relative_buy import (
     SCHEMA_VERSION,
     _data_contract_ok,
     build_decision,
-    activate_date,
     configured_relative_buy,
     configured_tiering,
     is_active,
@@ -1203,23 +1202,19 @@ def _write_config(tmp_path, block: dict, monkeypatch) -> None:
 
 
 def test_configured_relative_buy_defaults_to_shadow_without_config(tmp_path, monkeypatch):
-    """缺配置 → shadow/False/None = 内建默认 = 现行为(parity)。`tiering`(v4.0)第五元素
-    同样缺键 = False。"""
+    """缺配置 → shadow/False = 内建默认 = 现行为(parity)。`tiering`(v4.0)末元素同样缺键 = False。"""
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
 
-    assert configured_relative_buy() == ("shadow", False, None, "finalists", False)
+    assert configured_relative_buy() == ("shadow", False, "finalists", False)
     assert is_active() is False
-    assert activate_date() is None
     assert configured_tiering() is False
 
 
 def test_configured_relative_buy_reads_all_three_knobs(tmp_path, monkeypatch):
-    _write_config(tmp_path, {"mode": "active", "exclude_pinned": True,
-                             "activate_date": "2026-08-20"}, monkeypatch)
+    _write_config(tmp_path, {"mode": "active", "exclude_pinned": True}, monkeypatch)
 
-    assert configured_relative_buy() == ("active", True, "2026-08-20", "finalists", False)
+    assert configured_relative_buy() == ("active", True, "finalists", False)
     assert is_active() is True
-    assert activate_date() == "2026-08-20"
 
 
 def test_configured_tiering_reads_config_and_defaults(tmp_path, monkeypatch):
@@ -1237,7 +1232,7 @@ def test_configured_relative_buy_degrades_loudly_on_broken_config(tmp_path, monk
     cfg.write_text(json.dumps({"relative_buy": {"mode": "nonsense"}}), encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
 
-    assert configured_relative_buy() == ("shadow", False, None, "finalists", False)
+    assert configured_relative_buy() == ("shadow", False, "finalists", False)
     assert "scan_config 读取失败" in capsys.readouterr().err
 
 
@@ -1328,9 +1323,9 @@ def test_redflag_ratings_content_is_pinned():
     七词早停表内,规则逐字实现下永不命中,是纯死码(ratchet 见
     `tests/scan/test_early_stop_parse.py::test_redflag_reasons_subset_of_closed_set`)。
     """
-    assert REDFLAG_RATINGS == frozenset({"Sell", "Underweight"})
-    assert REDFLAG_EARLY_STOP_REASONS == frozenset({
-        "基本面恶化", "估值透支", "涨停追高", "数据不足"})
+    assert frozenset({"Sell", "Underweight"}) == REDFLAG_RATINGS
+    assert frozenset({
+        "基本面恶化", "估值透支", "涨停追高", "数据不足"}) == REDFLAG_EARLY_STOP_REASONS
 
 
 def test_composite_pool_only_picks_from_seats(tmp_path):
@@ -2521,3 +2516,73 @@ def test_verify_decision_must_use_the_same_gate_switch_as_the_writer(tmp_path):
     assert (scan / "_relative_buy_decision.mismatch.json").exists()          # 不同开关 → 留证据、不覆盖
     on_disk = json.loads((scan / "_relative_buy_decision.json").read_text(encoding="utf-8"))
     assert on_disk["index_events"]["hits"] == ["002345"]                     # 盘上那份没被改写
+
+
+# ───────────────────────── P2 扩容:E6 规则参数进 config(2026-09-27)─────────────────────────
+
+
+def test_rule_params_deep_merge_config_over_constants(tmp_path, monkeypatch):
+    _write_config(tmp_path, {"liquidity_pctl_floor": 0.5, "redflag": {"ratings": ["Sell"]},
+                             "scoring": {"missing_fill": 0.1}}, monkeypatch)
+    from autoresearch.scan.relative_buy import rule_params
+
+    p = rule_params()
+    assert p["liquidity_pctl_floor"] == 0.5 and p["max_buys"] == 1
+    assert p["redflag"]["ratings"] == ["Sell"] and p["redflag"]["proposals"] == ["SELL"]
+    assert set(p["redflag"]["early_stop_reasons"]) == {"基本面恶化", "估值透支", "涨停追高", "数据不足"}
+    assert p["scoring"]["missing_fill"] == 0.1 and p["scoring"]["evidence"]["full"] == 1.0
+    assert p["scoring"]["recall_weights"] == {"n_channels": 0.5, "best_channel": 0.5}
+
+
+def test_liquidity_floor_from_config_blocks_every_candidate(tmp_path, monkeypatch):
+    _write_config(tmp_path, {"liquidity_pctl_floor": 0.999}, monkeypatch)
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+    assert doc["buys"] == []
+    assert doc["candidates"] and all(c["hard_gate"]["no_redflag"] is False for c in doc["candidates"])
+
+
+def test_max_buys_from_config_takes_top_n(tmp_path, monkeypatch):
+    _write_config(tmp_path, {"max_buys": 2}, monkeypatch)
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+    assert [b["rank"] for b in doc["buys"]] == [1, 2]
+    assert doc["second_buy"]["fired"] is True
+
+
+def test_decision_carries_a_rule_params_digest_that_moves_with_the_params(tmp_path, monkeypatch):
+    doc1 = build_decision(_build_scan(tmp_path / "a", _RANK_CANDS))
+    assert len(doc1["rule_params_sha256"]) == 64 and doc1["rule_params"]["max_buys"] == 1
+    _write_config(tmp_path, {"liquidity_pctl_floor": 0.2}, monkeypatch)
+    doc2 = build_decision(_build_scan(tmp_path / "b", _RANK_CANDS))
+    assert doc2["rule_params_sha256"] != doc1["rule_params_sha256"]
+
+
+def test_candidate_freezes_pre_normalization_raw_faces_without_changing_selection(tmp_path,monkeypatch):
+    from autoresearch.scan import relative_buy as rb
+    observed={}
+    original=rb._raw_faces
+    def capture(entry,context):
+        value=original(entry,context)
+        observed[entry['code']]=dict(value)
+        return value
+
+    monkeypatch.setattr(rb, "_raw_faces", capture)
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    result = rb.build_decision(scan)
+    for candidate in result["candidates"]:
+        assert candidate["raw_face_metrics"] == observed[candidate["code"]]
+        assert "risk_safety_risk" in candidate["raw_face_metrics"]
+        assert "risk_safety" not in candidate["raw_face_metrics"]
+    faces = rb._faces_table
+
+    def altered_metadata(entries, context):
+        rows = faces(entries, context)
+        for row in rows.values():
+            row["raw_face_metrics"] = {"sentinel": 999}
+        return rows
+
+    monkeypatch.setattr(rb, "_faces_table", altered_metadata)
+    altered = rb.build_decision(scan)
+    assert altered["selection"] == result["selection"] and altered["buys"] == result["buys"]
+    assert [r["relative_decision_score"] for r in altered["candidates"]] == [
+        r["relative_decision_score"] for r in result["candidates"]
+    ]

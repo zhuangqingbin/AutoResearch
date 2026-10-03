@@ -77,8 +77,9 @@ LENS_NAMES = ["momentum", "growth", "value", "reversal"]
 # 四透镜(lens_momentum/growth/value/reversal)在 autoresearch.common.scoring,顶部 import 复用。
 
 
-def run_lenses(uni: pd.DataFrame, top_per_lens: int = 50) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+def run_lenses(uni: pd.DataFrame, top_per_lens: int | None = None) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     """跑四透镜,返回(去重 survivors, 各透镜 topN 榜)。survivors 带 lens 命中标签 + 复合分。"""
+    top_per_lens = lens_top_n() if top_per_lens is None else top_per_lens
     fns = {"momentum": lens_momentum, "growth": lens_growth,
            "value": lens_value, "reversal": lens_reversal}
     tops: dict[str, pd.DataFrame] = {}
@@ -318,6 +319,24 @@ def _lowturn_counts(scored, recall, l2, cfg: dict) -> dict:
     return out
 
 
+def configured_recall_mode(cfg: dict | None = None) -> str:
+    """`scan_config.funnel.recall_mode`:multi(多路)| composite(单复合分对拍);缺键 multi。"""
+    from autoresearch.scan.user_config import knob
+    return str(knob("funnel", "recall_mode", None, "multi", cfg))
+
+
+def event_lookback_days(cfg: dict | None = None) -> int:
+    """`scan_config.funnel.event_lookback_days`:event 路事件回看交易日(缺键 10)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("funnel", "event_lookback_days", None, 10, cfg))
+
+
+def lens_top_n(cfg: dict | None = None) -> int:
+    """`scan_config.funnel.lens_top_n`:镜头诊断每镜头 top 数(缺键 50)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("funnel", "lens_top_n", None, 50, cfg))
+
+
 def _funnel_overlay(recall_channels, channel_quotas, channel_floors):
     """scan_config.json funnel 兜底(仅补 None 的键;显式参数恒优先)。缺文件/坏文件 → 原样返回。"""
     if recall_channels is not None and channel_quotas is not None and channel_floors is not None:
@@ -339,7 +358,7 @@ def _funnel_overlay(recall_channels, channel_quotas, channel_floors):
 
 def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool | None = None,
         recall_n: int | None = None, l2_n: int | None = None, outdir: Path | None = None,
-        source: str | None = None, recall_mode: str = "multi", recall_channels=None,
+        source: str | None = None, recall_mode: str | None = None, recall_channels=None,
         pinned_path=None,                                                # 保送 pinned.json 路径(None=默认路径;缺文件→kept=[]→no-op parity)
         regime_aware: bool | None = None,                                # L1 权重按 regime 选(None→config funnel.regime_aware;内建 False)
         l0_min_amount_yi: float | None = None, l0_min_list_days: int | None = None,  # L0 流动性/次新硬门(内建 0=关=parity)
@@ -388,6 +407,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     source = str(knob("l0", "source", source, "tushare", cfg=_ucfg))
     l0_min_amount_yi = float(knob("l0", "min_amount_yi", l0_min_amount_yi, 0.0, cfg=_ucfg))
     l0_min_list_days = int(knob("l0", "min_list_days", l0_min_list_days, 0, cfg=_ucfg))
+    recall_mode = str(knob("funnel", "recall_mode", recall_mode, "multi", cfg=_ucfg))
     recall_n = int(knob("funnel", "recall_n", recall_n, 1000, cfg=_ucfg))
     l2_n = int(knob("funnel", "l2_n", l2_n, 200, cfg=_ucfg))
     regime_aware = bool(knob("funnel", "regime_aware", regime_aware, False, cfg=_ucfg))
@@ -415,7 +435,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     scored = composite_score(uni, weights)
     try:                                   # Wave4:事件列(湖优先),B 级增强腿,失败不阻扫描
         from autoresearch.scan.events import attach_event_cols, market_event_counts
-        scored = attach_event_cols(scored, market_event_counts(analysis_date))
+        scored = attach_event_cols(scored, market_event_counts(analysis_date, lookback_days=event_lookback_days()))
     except Exception as e:  # noqa: BLE001 — 但**必须留痕**:Review Round 1 I-2 实测,原
         # `contextlib.suppress(Exception)` 只有"三腿取数全失败"那一种形态有痕(那是
         # `market_event_counts` 内部自己打的);聚合层抛 / `attach_event_cols` 抛 / import

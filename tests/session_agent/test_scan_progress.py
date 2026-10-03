@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from autoresearch.session_agent import service
 from autoresearch.session_agent.progress import scan_progress
 
@@ -79,3 +81,53 @@ def _scan_handle(tmp_path):
         staging=staging,
         contract=SimpleNamespace(run_kind="scan-market"),
     )
+
+
+def test_legacy_taskbook_terminals_cannot_prove_research_coverage(tmp_path):
+    handle = _scan_handle(tmp_path)
+    result = scan_progress(handle)["coverage"]
+    assert result["terminal_tasks"]["terminal"] == 1
+    assert result["successful_cards"]["completed"] == 0
+    assert result["deep_research"]["unresolved_conditions"] == ["600519"]
+    assert result["report_completeness"]["complete"] is False
+
+
+def test_scan_without_frozen_population_cannot_claim_research_complete(tmp_path, monkeypatch):
+    from .test_scan_runner_full import _scan_run
+    handle = _scan_run(tmp_path, monkeypatch)
+    coverage = service.status(handle.run_id, handle_loader=lambda _: handle)["result"]["coverage"]
+    assert coverage["population"]["frozen"] is False
+    assert coverage["report_completeness"]["research_complete"] is False
+
+
+@pytest.mark.parametrize("missing", ["taskbook", "empty_taskbook", "session_entry"])
+def test_terminal_coverage_keeps_frozen_denominator_when_owner_records_are_missing(tmp_path, monkeypatch, missing):
+    from ._runner_support import begin_synthetic_run, det, inf
+
+    run = begin_synthetic_run(tmp_path, monkeypatch, [
+        det("l4.600519.a1", owner="L4_TASKBOOK", subject="600519"),
+        inf("l4.600519.a1.card", subject="600519"),
+    ], run_kind="scan-market")
+    book = run.handle.staging / "_l4_tasks.json"
+    book.write_text(json.dumps({"schema_version": 1, "tasks": {
+        "600519": {"status": "SUCCEEDED", "attempt": 1},
+    }}))
+    task_store = service._store_path(run.handle)
+    payload = json.loads(task_store.read_text())
+    payload["tasks"]["l4.600519.a1.card"]["state"] = "SUCCEEDED"
+    task_store.write_text(json.dumps(payload))
+    assert scan_progress(run.handle)["coverage"]["terminal_tasks"] == {
+        "total": 2, "terminal": 2, "succeeded": 2,
+    }
+
+    if missing == "taskbook":
+        book.unlink()
+    elif missing == "empty_taskbook":
+        book.write_text(json.dumps({"schema_version": 1, "tasks": {}}))
+    else:
+        del payload["tasks"]["l4.600519.a1.card"]
+        task_store.write_text(json.dumps(payload))
+
+    coverage = scan_progress(run.handle)["coverage"]
+    assert coverage["terminal_tasks"] == {"total": 2, "terminal": 1, "succeeded": 1}
+    assert coverage["report_completeness"]["complete"] is False

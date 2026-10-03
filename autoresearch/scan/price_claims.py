@@ -548,12 +548,15 @@ def _limit_floor(code6: str) -> float:
 
 
 def reconcile_claims(claims: list[dict], bars: dict[str, float], *,
-                     code6: str, tol_pp: float = 1.5) -> list[dict]:
+                     code6: str, tol_pp: float | None = None) -> list[dict]:
     """不符断言列表;**同一 (日期, 类型, 声称值) 只报一次**(Wave7 B′-b)。
 
     同一条断言在一张卡里被复述多遍(摘要段 + 证据段 + 附录)时,逐条计数会让「3 条不符」
     读起来像三次独立捏造,实际是一次 —— 计数本身就是读者判断严重性的依据,不能虚高。
     """
+    if tol_pp is None:
+        from autoresearch.scan.observability import observability_cfg
+        tol_pp = observability_cfg()["price_claim_tol_pp"]
     bad: list[dict] = []
     seen: set[tuple] = set()
     for c in claims:
@@ -676,9 +679,9 @@ def check_unknown_rate(live: float | None, baseline: float | None) -> tuple[bool
     """live unknown-rate 是否仍在冻结基线 +5pp 之内。缺任一侧 → 不判(不是"通过")。"""
     if live is None or baseline is None:
         return True, "UNMEASURED(缺 live 或基线,不作判定)"
-    ok = live <= baseline + UNKNOWN_RATE_TOLERANCE_PP
+    ok = live <= baseline + __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["unknown_rate_tolerance"]
     return ok, (f"live {live:.2%} vs 基线 {baseline:.2%} "
-                f"(+{UNKNOWN_RATE_TOLERANCE_PP:.0%} 容差)→ {'在容差内' if ok else '⚠️ 超出'}")
+                f"(+{__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["unknown_rate_tolerance"]:.0%} 容差)→ {'在容差内' if ok else '⚠️ 超出'}")
 
 
 def main(argv: list[str] | None = None) -> int:

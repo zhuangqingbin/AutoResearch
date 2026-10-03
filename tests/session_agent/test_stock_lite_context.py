@@ -88,3 +88,21 @@ def test_lite_contract_rejects_malformed_or_inconsistent_cards(tmp_path, text):
     digest = artifacts.bind_artifact_hash(handle, "stock.card.output")["sha256"]
     with pytest.raises(DomainValidationError):
         validate_registered_contract(handle, _submission(digest), _task())
+
+
+def test_new_lite_deep_file_exists_but_unobserved_read_is_unverified(tmp_path):
+    from autoresearch.common.atomic import atomic_write_json
+    from tests.scan.test_research_card_migration import FULL_CARD
+
+    handle = _handle(tmp_path)
+    atomic_write_json(handle.capsule / "verification/profile.json", {"card_rules_version": "skills-gap-v2"})
+    card = handle.staging / 'card.md'
+    card.write_text(FULL_CARD.replace('600000', '600519').replace('估值不透支 ✗', '估值不透支 ✓')
+                    + '\n进入P4倾向: Overweight\n')
+    deep = handle.staging / 'deep.md'
+    deep.write_text('真实深度财务证据')
+    artifacts.register_artifact(handle, 'stock.card.output', card, 'READ')
+    artifacts.register_artifact(handle, 'stock.deep', deep, 'READ')
+    task = {**_task(), 'role': 'stock.card', 'subject': '600519.SS', 'input_artifact_ids': ['stock.deep']}
+    with pytest.raises(DomainValidationError, match='未核'):
+        validate_registered_contract(handle, {'outputs': [], 'envelope': {'attempt': 1}}, task)

@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import sys
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,7 +70,7 @@ BEHAVIOR_ROOTS = (
 )
 
 
-def paired_daily_selection(frame: pd.DataFrame) -> pd.DataFrame:
+def paired_daily_selection(frame: pd.DataFrame, *, allow_unknown_selection: bool = False) -> pd.DataFrame:
     """一行一候选(`date, code, baseline, refined, value`)→ 逐日共同人口的等权 delta。"""
     required = {"date", "code", "baseline", "refined", "value"}
     if required - set(frame.columns) or frame.duplicated(["date", "code"]).any():
@@ -77,13 +78,21 @@ def paired_daily_selection(frame: pd.DataFrame) -> pd.DataFrame:
     if frame[["date", "code"]].isna().any().any():
         raise ValueError("candidate identity required")
     for col in ("baseline", "refined"):
-        if frame[col].isna().any() or not frame[col].map(lambda x: isinstance(x, (bool, np.bool_))).all():
+        if ((not allow_unknown_selection and frame[col].isna().any())
+                or not frame[col].dropna().map(lambda x: isinstance(x, (bool, np.bool_))).all()):
             raise ValueError("selection must be explicit boolean")
     rows = []
     for day, group in frame.groupby("date", sort=True):
         values = pd.to_numeric(group["value"], errors="coerce")
         if np.isinf(values.to_numpy(dtype=float)).any():
             raise ValueError("infinite return")
+        unknown = group[['baseline', 'refined']].isna().any(axis=1)
+        if unknown.any():
+            rows.append({'date': day, 'baseline': None, 'refined': None, 'delta': None,
+                         'status': 'UNKNOWN_SELECTION', 'n_baseline': int(group['baseline'].eq(True).sum()),
+                         'n_refined': int(group['refined'].eq(True).sum()),
+                         'missing_outcomes': int(values.isna().sum()), 'unknown_selections': int(unknown.sum())})
+            continue
         baseline, refined = group["baseline"].astype(bool), group["refined"].astype(bool)
         needed = baseline | refined
         missing = int(values[needed].isna().sum())
@@ -105,9 +114,10 @@ def evaluate_candidates(
     stage: str,
     ruler: str,
     evidence_root: Path | str,
+    allow_unknown_selection: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """Evaluate one candidate table and bind its exact standalone operation evidence."""
-    result = paired_daily_selection(frame)
+    result = paired_daily_selection(frame, allow_unknown_selection=allow_unknown_selection)
     from autoresearch.trace.operation_evidence import record_operation_evidence
 
     evidence = record_operation_evidence(
@@ -132,7 +142,7 @@ def evaluate_candidates(
 def pairs_from_population(table: pd.DataFrame, *, stage: str, ruler: str) -> tuple[pd.DataFrame, dict]:
     """populations 表 → 某阶段对在某把尺上的 (`date, code, baseline, refined, value`) + coverage。
 
-    旗为 pd.NA 的行**不当 False**:进 coverage 的 `unknown_flags`,从本阶段对里剔除。
+    旗为 pd.NA 的行**不当 False**:保留在共同人口与 coverage,整日不计配对统计。
     尺未成熟(`status_<ruler>` ≠ MATURE)的行 value 记 NaN → 该日 INCOMPLETE。
     """
     spec = STAGE_PAIRS[stage]
@@ -146,21 +156,34 @@ def pairs_from_population(table: pd.DataFrame, *, stage: str, ruler: str) -> tup
     if date_col not in table.columns:
         raise ValueError("population table lacks analysis_date")
     flags = table[list(cols)]
+    for column in flags:
+        if not flags[column].dropna().map(lambda v: isinstance(v, (bool, np.bool_))).all():
+            raise ValueError('population flags must be boolean or unknown')
     unknown = flags.isna().any(axis=1)
-    kept = table.loc[~unknown]
-    refined = kept[spec["refined"]].astype(bool)
-    if "refined_not" in spec:
-        refined = refined & ~kept[spec["refined_not"]].astype(bool)
-    value = pd.to_numeric(kept[ruler], errors="coerce")
-    status_col = f"status_{ruler}"
-    if status_col in kept.columns:
-        value = value.where(kept[status_col] == "MATURE")
-    frame = pd.DataFrame({"date": kept[date_col].astype(str).values,
-                          "code": kept["code"].astype(str).str.zfill(6).values,
-                          "baseline": kept[spec["baseline"]].astype(bool).values,
-                          "refined": refined.values, "value": value.values})
-    coverage = {"stage": stage, "ruler": ruler, "n_rows": int(len(table)),
-                "unknown_flags": int(unknown.sum()), "n_used": int(len(frame))}
+    baseline = table[spec['baseline']].astype('boolean')
+    refined = table[spec['refined']].astype('boolean')
+    if 'refined_not' in spec:
+        refined = refined & ~table[spec['refined_not']].astype('boolean')
+    # Even a logically false conjunction cannot hide an unobserved stage decision.
+    refined = refined.mask(unknown)
+    value = pd.to_numeric(table[ruler], errors='coerce')
+    status_col = f'status_{ruler}'
+    if status_col in table:
+        value = value.where(table[status_col] == 'MATURE')
+    frame = pd.DataFrame({'date': table[date_col].astype(str).values,
+                          'code': table['code'].astype(str).str.zfill(6).values,
+                          'baseline': baseline.array, 'refined': refined.array, 'value': value.values})
+    coverage = {'stage': stage, 'ruler': ruler, 'n_rows': int(len(table)),
+                'unknown_flags': int(unknown.sum()), 'n_used': int((~unknown).sum()),
+                'unknown_dates': int(table.loc[unknown, date_col].nunique())}
+    sector_column = next((c for c in ('sector', 'industry') if c in table.columns), None)
+    sectors = Counter(str(v) for v in table[sector_column].dropna() if str(v)) if sector_column else Counter()
+    sector_n = sum(sectors.values())
+    coverage.update(date_count=int(table[date_col].nunique()), security_days=int(len(table)),
+                    rejected_rows=int((~refined).sum()),
+                    unselected_rows=int((~frame['baseline'] & ~frame['refined']).sum()),
+                    industry_counts=dict(sorted(sectors.items())), industry_missing=len(table)-sector_n,
+                    industry_hhi=sum((n/sector_n)**2 for n in sectors.values()) if sector_n else None)
     return frame, coverage
 
 
@@ -169,7 +192,7 @@ def summarize_daily(daily: pd.DataFrame, *, seed: int, n_boot: int,
     """COMPLETE 日的 delta:日等权区间(A 包原语)+ 块长敏感性(全报)+ 成熟判定。"""
     complete = daily[daily["status"] == COMPLETE]
     counts = daily["status"].value_counts().to_dict()
-    out = {"n_days": int(len(daily)), "n_complete": int(len(complete)),
+    out = {"n_days": int(len(daily)), "n_complete": int(len(complete)), "paired_date_count": int(len(complete)),
            "status_counts": {k: int(v) for k, v in counts.items()},
            "point": None, "lo": None, "hi": None, "n_boot": n_boot, "seed": seed,
            "block_sensitivity": None, "maturity": None}
@@ -226,6 +249,9 @@ def _readout(spec: dict, stats: dict, coverage: list[dict]) -> str:
               "- 不据此改 BUY 语义、三门、权重或 prompt(F07);敏感尺读数不构成换尺依据。",
               "- 零 BUY 日是 EMPTY_SELECTION,不是策略失败;缺反事实的被否决票未被推断。",
               "- 未达成熟门的行不写「优势成立」;区间跨零写「不确定」。", ""]
+    if spec['evidence_mode'] == 'RETRO_REPLAY':
+        lines.append('- RETRO_REPLAY 不能排除模型记忆泄漏；文件截止正确不等于历史模型无未来信息。')
+    lines.append('- 本仪器不自动推广候选；软件错误、未来信息、越界、必需证据丢失或错误发布任一非零均禁止采纳。')
     return "\n".join(lines)
 
 
@@ -254,6 +280,7 @@ def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None)
                     stage=stage,
                     ruler=ruler,
                     evidence_root=output / "_operation_evidence",
+                    allow_unknown_selection=True,
                 )
                 operation_ids.append(evidence["operation_id"])
             else:

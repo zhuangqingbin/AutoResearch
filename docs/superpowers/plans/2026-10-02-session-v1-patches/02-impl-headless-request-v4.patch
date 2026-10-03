@@ -1,0 +1,25 @@
+--- a/autoresearch/scan/scan_run.py
++++ b/autoresearch/scan/scan_run.py
+@@ -126,7 +126,7 @@
+     ``claude -p``(``safe_resume=false``)。没有主会话 transcript,所以不给 ``transcript-file:``。
+     """
+     return {
+-        "schema_version": 1,
++        "schema_version": 4,
+         "kind": "scan-market",
+         "requested_mode": "AUTO",
+         "analysis_date": date,
+@@ -153,6 +153,13 @@
+             "evidence_refs": list(HEADLESS_EVIDENCE),
+         },
+         "predecessor_run_id": None,
++        # 与交互样例 docs/session-agent/examples/scan.request.json 同一份契约(测试锁同源):
++        # v3 起 DecisionFrame 带日历来源证据,v4 起宏观/行业候选 profile 显式取缺省。
++        "card_research_profile": "single-stage-v1",
++        "research_context": {"venue": "XSHG", "usage": "scan", "calendar_source_path": None},
++        "macro_research_profile": "serial21",
++        "macro_optional_products": [],
++        "sector_brief_profile": "legacy",
+     }
+ 
+ 

@@ -421,7 +421,7 @@ def test_frontmatter_reads_real_l4_card_agent_def():
     """
     fm = ur._frontmatter("l4-card")
     assert fm.get("model") == "opus"
-    assert fm.get("effort") == "xhigh"
+    assert fm.get("effort") == "max"   # 2026-09-27 Q6:frontmatter effort 对齐 config 档位(l4_card=critical=max)
 
 
 def test_frontmatter_missing_agent_type_returns_empty():
@@ -905,3 +905,12 @@ def test_absent_actual_is_unknown_not_a_configuration_match():
         {"resolved_agents": resolved}, [], date="2026-09-13", resolved=resolved,
     )
     assert result["actual_status"] == "UNKNOWN"
+
+
+def test_session_role_usage_is_checked_and_main_is_excluded():
+    result = ur.reconcile_with_resolved(
+        {}, [{'role': 'stock.card', 'agent': 'stock.card', 'model': 'gpt-6', 'effort': 'low'},
+             {'role': 'main', 'agent': 'main', 'model': 'gpt-6', 'effort': 'high'}],
+        date='2026-09-30', census={}, resolved_agent_config={'l4_card': {'model': 'gpt-6', 'effort': 'high'}})
+    assert result['checked'] == 1
+    assert any(row['field'] == 'effort' for row in result['mismatches'])

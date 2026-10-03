@@ -10,11 +10,14 @@
 |---|---|---|---|---|---|---|
 | `test.noop` | `message`，最多 200 字符 | 测试捕获进程，无生产写入 | session-agent 测试 | 非法参数、进程失败；仅测试 | 是 | 否 |
 | `research.calculate` | 注册 calculator ID、冻结 input artifact ID、精确 parameters | 写内容寻址的 calculation evidence | 任一能力的有界补算支路 | 仅四个纯计算器；无网络、shell、源码或动态 import | 是 | 否 |
+| `research.card.facts` | 无；subject 与输入来自冻结任务 | 写初判事实投影及来源哈希；分类 COMPUTE | `two-stage-v1` stock/scan 卡 | 仅白名单原始事实和描述性地形；不读取旧 prompt，无网络 | 是 | 否 |
 | `stock.harvest` | 冻结的 ticker、analysis_date、asset_type、peers、slim | 读供应商/数据湖，写当前 run 的 stock pack | `stock.harvest` | 数据契约及既有供应商重试上限 | 是 | 是 |
 | `stock.validate` | 无 | 写 LITE 卡校验 | `stock.validate` | 领域校验、artifact 冲突；无网络 | 是 | 否 |
 | `stock.publish` | 无 | 写 run 内发布包 | `stock.publish` | 校验、并发冲突；无网络 | 是 | 否 |
+| `stock.evidence_bundle` | 无 | 将冻结原始输入与分析章的路径/哈希写为 evidence bundle | `stock.evidence_bundle` | 只引用已注册输入；无网络或新观点 | 是 | 否 |
 | `stock.full.validate` | 无 | 写 FULL 必需产品校验 | `stock.full.validate` | 缺产品、领域校验；无网络 | 是 | 否 |
 | `stock.full.assemble` | 无 | 组装 FULL 报告、manifest、发布包 | `stock.assemble` | 缺产品、组装失败；无网络 | 是 | 是 |
+| `macro.intel.prepare` | 无 | 冻结全球情报实体、cutoff、已知日历与来源预算 | `macro.intel.prepare` | 仅消费 frame、global tape、intel policy；无网络 | 是 | 否 |
 | `macro.harvest` | 无 | 读既有宏观源并写 macro data/global tape | `macro.harvest` | 数据契约；沿用 FRED、yfinance、akshare、tushare 上限 | 是 | 是 |
 | `macro.lite.frame` | 无 | 写 market pack 与 strategist pack | `macro.frame` | 数据/投影失败；不运行 L3/L4 | 是 | 是 |
 | `macro.lite.validate` | 无 | 写六段市场研判校验 | `macro.lite.validate` | 领域校验；无网络 | 是 | 否 |
@@ -88,3 +91,11 @@
 来源层级为 T1–T4。T4 聚合页必须继续打开权威原文，并记录
 `canonical_status=FOLLOWED` 与 `canonical_url`；无法取得原文时，该证据不能作为已验证事实。
 证据对象拒绝额外字段，因此凭证、提示词和宿主私有状态无法混入证据包。
+
+## 派发能力检查
+
+`begin` 对固定任务与模板的潜在角色执行 preflight；runner 启动时检查具体 executor，动态展开后再次检查。角色、物理 agent、配置来源、独立上下文、web、工具策略与输出边界写入支持报告。未知组合提前拒绝，旧冻结任务的 `independent_context` 声明保持原意。
+
+支持报告标为 `SUPPORT_CHECK_ONLY`，不是 `REAL_SESSION` 验收。`read_evidence_capability=UNVERIFIED` 表示尚未证明宿主能产生 B1 要求的、与成功读取及字节哈希绑定的结构化阅读证据；普通 Codex `exec_command` 的 cat/sed 调用不能冒充此证据。FULL/LITE 的完整研究验收仍须用真实宿主完成证据绑定。
+
+工具策略 `HOST_ROLE_CONTRACT` 或 `PROJECT_AGENT_TOOL_SUPERSET` 是派发/角色约束；共享 Claude FULL 物理定义可能加载完整角色文档，不能据此宣称只装载本逻辑章节。`REGISTERED_ARTIFACT_VALIDATION` 说明提交后的产物边界校验，不表示已有进程或文件系统级隔离。

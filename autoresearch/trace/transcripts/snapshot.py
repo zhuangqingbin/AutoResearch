@@ -42,6 +42,8 @@ from autoresearch.trace.atomic import canonical_json, sha256_bytes
 from autoresearch.trace.identity import redact_residual_secrets, redact_value
 from autoresearch.trace.transcripts.base import ArchiveDigest, SourcePrefixDigest
 
+NATIVE_USAGE_ARCHIVE_VERSION = 'native-numeric-usage-v1'
+
 
 def _stat(path: Path) -> os.stat_result:
     """Path-based stat -- a thin, monkeypatchable seam.
@@ -155,7 +157,33 @@ def _archive_bytes(rows: Sequence[Mapping[str, object]]) -> bytes:
     own `_archive_plain_bytes` instead of each module keeping its own
     byte-identical copy of the same blanking loop.
     """
-    lines = [canonical_json(redact_value(dict(row)).value) for row in rows]
+    def redact_row(row):
+        redacted = redact_value(dict(row)).value
+        # Exact native numeric counters are measurements, not credential tokens.
+        # This archive recipe preserves no arbitrary field or nonnumeric value.
+        fields = {'input_tokens', 'output_tokens', 'cached_input_tokens',
+                  'cache_write_input_tokens', 'cache_read_input_tokens',
+                  'cache_creation_input_tokens', 'reasoning_output_tokens', 'total_tokens'}
+        paths = []
+        if row.get('type') == 'event_msg' and (row.get('payload') or {}).get('type') == 'token_count':
+            paths = [('payload', 'info', name) for name in ('total_token_usage', 'last_token_usage')]
+        elif row.get('type') == 'assistant':
+            paths = [('message', 'usage')]
+        for path in paths:
+            original = row
+            for key in path:
+                original = original.get(key) if isinstance(original, Mapping) else None
+            if not isinstance(original, Mapping):
+                continue
+            counters = {k:v for k,v in original.items() if k in fields and type(v) is int and v >= 0}
+            parent = redacted
+            for key in path[:-1]:
+                if not isinstance(parent.get(key), dict):
+                    parent[key] = {}
+                parent = parent[key]
+            parent[path[-1]] = counters
+        return redacted
+    lines = [canonical_json(redact_row(row)) for row in rows]
     body = redact_residual_secrets(
         ("\n".join(lines) + "\n" if lines else "").encode("utf-8")
     )

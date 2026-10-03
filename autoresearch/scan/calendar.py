@@ -38,8 +38,22 @@ def _last_quarter_end(date: str) -> str:
     return f"{dt.year - 1}1231"
 
 
+CALENDAR_DEFAULTS: dict = {"horizon_days": 35, "unlock_flag": {"within_days": 30, "min_ratio_pct": 2.0},
+                           "section": {"window_days": 14, "big_ratio_pct": 5.0}}
+
+
+def calendar_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.calendar.{horizon_days, unlock_flag, section}`(缺键 = CALENDAR_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    uf = knob("calendar", "unlock_flag", None, {}, cfg) or {}
+    sec = knob("calendar", "section", None, {}, cfg) or {}
+    return {"horizon_days": int(knob("calendar", "horizon_days", None, CALENDAR_DEFAULTS["horizon_days"], cfg)),
+            "unlock_flag": {**CALENDAR_DEFAULTS["unlock_flag"], **(uf if isinstance(uf, dict) else {})},
+            "section": {**CALENDAR_DEFAULTS["section"], **(sec if isinstance(sec, dict) else {})}}
+
+
 def harvest_calendar(date: str, codes, root: Path | None = None,
-                     horizon_days: int = 35, index_rebalance: bool | None = None) -> pd.DataFrame:
+                     horizon_days: int | None = None, index_rebalance: bool | None = None) -> pd.DataFrame:
     """拉解禁(≤14 天分块防 6000 行分页截断)+ 预约披露 + (旋钮开)指数调样,过滤 codes → calendar.csv。网络。
 
     第三腿(2026-09-25 §2.3):`index_rebalance=None` → 读旋钮 `calendar.index_rebalance`(默认 False =
@@ -51,6 +65,7 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
     撞上节假日时会**保留**解析/规则算出的日期字符串而不清空它(不猜该往哪边挪),于是「没有日期」
     不再是 `unknown_eff` 的可靠标记——必须直接判 phase,日期检查只是第二道防线。
     """
+    horizon_days = calendar_cfg()["horizon_days"] if horizon_days is None else horizon_days
     from autoresearch.data.tushare_source import _code6, _pro, _ts_call
     index_rebalance = knob("calendar", "index_rebalance", index_rebalance, False)
     root = root or ws.scan_root()
@@ -152,10 +167,13 @@ def _load(scan_dir: Path | str) -> pd.DataFrame | None:
         return None
 
 
-def calendar_flags(scan_dir: Path | str, code: str, within_days: int = 30,
-                   min_ratio: float = 2.0) -> list[str]:
+def calendar_flags(scan_dir: Path | str, code: str, within_days: int | None = None,
+                   min_ratio: float | None = None) -> list[str]:
     """该票的日历行(L4 简报注入):解禁窗内且占比≥阈 → ⚠️;预约披露 → 📅。缺文件 → []。
     指数调样 → 生效前夜 ⛔(唯一带方向词的日历行,方向是「禁止」),其它相位 📅 事实行。"""
+    _uf = calendar_cfg()["unlock_flag"]
+    within_days = int(_uf["within_days"]) if within_days is None else within_days
+    min_ratio = float(_uf["min_ratio_pct"]) if min_ratio is None else min_ratio
     df = _load(scan_dir)
     if df is None:
         return []
@@ -181,8 +199,8 @@ def calendar_flags(scan_dir: Path | str, code: str, within_days: int = 30,
     return out
 
 
-def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
-                     big_ratio: float = 5.0) -> str:
+def calendar_section(scan_dir: Path | str, horizon_days: int | None = None,
+                     big_ratio: float | None = None) -> str:
     """summary 的未来两周日历块:finalists 披露日 + 大解禁(占比≥big_ratio)+ 指数调样市场级计数。
 
     三段各自独立,不共用一次"缺文件就交白卷"的早退(fix round 1,2026-09-25):disclosure/unlock
@@ -201,6 +219,9 @@ def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
     都真的没有内容 → 交白卷。缺 `finalists.csv` → `fin` 空集,"finalist 涉及 N 只" 照样算得出
     (N 可能就是 0——一次市场级调样很可能一个本轮 finalist 都不涉及)。
     """
+    _sec = calendar_cfg()["section"]
+    horizon_days = int(_sec["window_days"]) if horizon_days is None else horizon_days
+    big_ratio = float(_sec["big_ratio_pct"]) if big_ratio is None else big_ratio
     scan_dir = Path(scan_dir)
     try:
         day0 = datetime.strptime(scan_dir.name[:10], "%Y-%m-%d")
@@ -265,7 +286,7 @@ def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="解禁+预约披露日历 harvest(L2∪finalists;网络)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
-    ap.add_argument("--horizon", type=int, default=35, help="解禁前瞻天数,默认 35")
+    ap.add_argument("--horizon", type=int, default=None, help="解禁前瞻天数,默认 35")
     ap.add_argument("--index-rebalance", action="store_true", default=None, help="强制开第三腿(缺省读旋钮)")
     args = ap.parse_args(argv)
     d = ws.scan_root() / args.date

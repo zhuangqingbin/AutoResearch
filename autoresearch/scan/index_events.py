@@ -47,6 +47,12 @@ EVENT_COLS = ["code", "index_code", "index_name", "side", "ann_date", "eff_close
               "phase", "source", "flow_adv_days"]
 PHASES = ("announced_runup", "passive_close_eve", "effective", "post", "unknown_eff")
 POST_WINDOW = 3          # 生效后仍展示 3 个交易日(事实,不作论点)
+
+
+def post_window(cfg: dict | None = None) -> int:
+    """`scan_config.calendar.index_post_window`(缺键 = POST_WINDOW)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("calendar", "index_post_window", None, POST_WINDOW, cfg))
 _LIST_EP = "csindex_rebalance_list"
 _DETAIL_EP = "csindex_rebalance_detail"
 
@@ -139,7 +145,8 @@ def phase_for(scan_date: str, ann_date: str, eff_close_date: str | None,
         return "unknown_eff"
     e_minus_1 = prev_trading_day(eff_close_date, trading_days)
     later = [d for d in trading_days if d > eff_close_date]
-    e_plus = later[POST_WINDOW - 1] if len(later) >= POST_WINDOW else (later[-1] if later else eff_close_date)
+    pw = post_window()
+    e_plus = later[pw - 1] if len(later) >= pw else (later[-1] if later else eff_close_date)
     # #2(c):窗口下界之内(或更早)找不到前一交易日——显式记账,不能靠 `day == None` 的哑比较
     # (day 永远是个日期字符串,永远不等于 None)悄悄地什么都不说。
     if e_minus_1 is None:

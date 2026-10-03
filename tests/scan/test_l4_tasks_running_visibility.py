@@ -25,7 +25,7 @@ def _book(tmp_path, tasks: dict, *, order: list[str] | None = None):
     path.write_text(json.dumps({
         "schema_version": 1,
         "analysis_date": "2026-07-28",
-        "caps": {"tushare": 4, "web_search": 4, "web_fetch": 4, "l4_stock": 4},
+        "caps": {"tushare": 4, "l4_stock": 4},
         "order": order or list(tasks),
         "tasks": tasks,
     }, ensure_ascii=False), encoding="utf-8")

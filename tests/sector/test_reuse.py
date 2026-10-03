@@ -47,6 +47,8 @@ def test_reuse_hit_and_apply(tmp_path):
     body = dst.read_text(encoding="utf-8")
     assert body.startswith("> ♻️ 复用自 2026-07-01")
     assert "失效条件" in body and "**行业方向**" in body     # 原 brief 契约随行
+    assert "重大行业级公告未由该复用判定器核验" in body
+    assert "≤ 3" not in body
 
 
 def test_reuse_miss_on_regime_flip(tmp_path):

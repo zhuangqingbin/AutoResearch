@@ -11,6 +11,8 @@ _SOURCE_REPLAY = frozenset({
     "macro.harvest",
     "macro.lite.frame",
     "sector.prepare",
+    "sector.terrain.render",
+    "scan.sector.render",
     "dossier.prefetch",
     "dossier.skeleton",
     "scan.frame",
@@ -29,10 +31,13 @@ _EFFECT_PLAN = frozenset({
 _TEST_ONLY = frozenset({"test.noop"})
 _COMPUTE = frozenset({
     "research.calculate",
+    "research.card.facts",
+    "stock.evidence_bundle",
     "stock.validate",
     "stock.publish",
     "stock.full.validate",
     "stock.full.assemble",
+    "macro.intel.prepare",
     "macro.lite.validate",
     "macro.full.validate",
     "macro.full.assemble",

@@ -89,6 +89,10 @@ class SyntheticRun:
         return self.handle.run_id
 
     def output_path(self, artifact_id: str) -> Path:
+        if (Path(self.handle.workspace) / 'session/tasks.json').exists():
+            task = next((row for row in self.tasks if artifact_id in row['output_artifact_ids']), None)
+            if task and task['kind'] == 'INFERENCE':
+                return Path(artifacts.output_paths(self.handle, task, 1)[artifact_id])
         return Path(self.handle.staging) / "out" / f"{artifact_id}.md"
 
     def operation_runner(self, handle, stage, argv, invocation_id, attempt, subject, *, task_id):

@@ -45,7 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     context = _Context(request)
     try:
         operation = context.unit["operation"]
-        if operation.startswith("stock."):
+        if operation == "research.card.facts":
+            from autoresearch.session_agent.card_facts import replay as execute
+        elif operation.startswith("stock."):
             from autoresearch.session_agent.replay_adapters.stock import execute
         elif operation.startswith("macro."):
             from autoresearch.session_agent.replay_adapters.macro import execute

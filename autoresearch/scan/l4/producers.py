@@ -28,14 +28,33 @@ def _tushare_pledge(code6: str) -> tuple[float, str] | None:
     r = pd.to_numeric(pd.Series([row["pledge_ratio"]]), errors="coerce").iloc[0]
     return None if pd.isna(r) else (float(r), str(row["end_date"]))
 
+PRODUCERS_DEFAULTS: dict = {"pledge_reuse_days": 7, "lhb_reuse_days": 7, "lhb_window_days": 20, "lhb_tail": 15,
+                            "consensus_window_days": 30, "consensus_min_days": 10}
+SLIM_MIN_BYTES = 4096
+
+
+def producers_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4.producers` → 卡片输入数据窗(缺键 = PRODUCERS_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l4", "producers", None, {}, cfg) or {}
+    return {**PRODUCERS_DEFAULTS, **(user if isinstance(user, dict) else {})}
+
+
+def slim_min_bytes(cfg: dict | None = None) -> int:
+    """`scan_config.l4.slim.min_bytes`:slim 合格地板(缺省 4096B;prompt 的可信句同源)。"""
+    from autoresearch.scan.user_config import knob
+    return int((knob("l4", "slim", None, {}, cfg) or {}).get("min_bytes", SLIM_MIN_BYTES))
+
+
 def fetch_pledge(scan_dir: Path | str, codes=None, fetch_fn=None,
-                 reuse_days: int = 7) -> pd.DataFrame:
+                 reuse_days: int | None = None) -> pd.DataFrame:
     """finalists 级质押取数 → `pledge.csv`(code,pledge_ratio,end_date)。零 LLM。
 
     近 reuse_days 内其他 scan 日已拉过的 code 直接复用(周频数据,不重拉);缺的走
     fetch_fn(默认 tushare pledge_stat,~30 calls/日远离限频),单票失败降级跳过。
     spec 2026-07-05 §5.2。
     """
+    reuse_days = int(producers_cfg()["pledge_reuse_days"]) if reuse_days is None else reuse_days
     from datetime import datetime
     scan_dir = Path(scan_dir)
     if codes is None:
@@ -100,13 +119,16 @@ def _tushare_seats_by_date(dates: list[str]) -> dict[str, pd.DataFrame]:
             out[d] = df
     return out
 
-def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int = 7,
-                window_days: int = 20) -> pd.DataFrame:
+def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int | None = None,
+                window_days: int | None = None) -> pd.DataFrame:
     """finalists 龙虎榜机构 vs 游资席位聚合 → `seats.csv`(code,inst_net_wan,retail_net_wan,n_appear)。
 
     成本控制:`top_inst` 按日 bulk **一次**再对全 finalists 过滤聚合(非 lhb_seats 逐票×15);
     近 reuse_days 内其他 scan 日已算的 code 直接复用。mirror `fetch_pledge`。零 LLM。
     """
+    _pc = producers_cfg()
+    reuse_days = int(_pc["lhb_reuse_days"]) if reuse_days is None else reuse_days
+    window_days = int(_pc["lhb_window_days"]) if window_days is None else window_days
     from datetime import datetime, timedelta
 
     from autoresearch.data.tushare_source import _code6, _pro, _trade_days, resolve_momentum_dates
@@ -152,7 +174,7 @@ def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int 
             pro = _pro()
             last = resolve_momentum_dates(pro, scan_dir.name)[0]
             start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=window_days)).strftime("%Y%m%d")
-            dates = _trade_days(pro, start, last)[-15:]
+            dates = _trade_days(pro, start, last)[-int(producers_cfg()["lhb_tail"]):]
         except Exception:  # noqa: BLE001
             dates = []
         frames = (bulk_fn or _tushare_seats_by_date)(dates) if dates else {}
@@ -181,7 +203,7 @@ def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int 
     out.to_csv(scan_dir / "seats.csv", index=False)
     return out
 
-def fetch_consensus(scan_dir: Path | str, codes=None, window: int = 30,
+def fetch_consensus(scan_dir: Path | str, codes=None, window: int | None = None,
                     cache_root: Path | None = None) -> pd.DataFrame:
     """finalists 卖方一致预期修正 → `consensus.csv`(code,n_reports,eps_delta_pct)。零 LLM。
 
@@ -189,12 +211,13 @@ def fetch_consensus(scan_dir: Path | str, codes=None, window: int = 30,
     前后对半为两窗,算 FY 一致 EPS 中位修正(research/consensus.consensus_delta)。
     缓存日 <10 → 空表不落盘(样本太薄禁注,presence-gated)。advisory:不进分、不设门。
     """
+    window = int(producers_cfg()["consensus_window_days"]) if window is None else window
     scan_dir = Path(scan_dir)
     date = scan_dir.name
     from autoresearch.research.consensus import _dir, _load_span, consensus_delta
     stems = sorted(p.stem for p in _dir(cache_root).glob("*.pkl")
                    if p.stem <= date.replace("-", ""))[-window:]
-    if len(stems) < 10:
+    if len(stems) < int(producers_cfg()["consensus_min_days"]):
         return pd.DataFrame(columns=["code", "n_reports", "eps_delta_pct"])
     half = len(stems) // 2
     old_span, new_span = (stems[0], stems[half - 1]), (stems[half], stems[-1])
@@ -333,9 +356,9 @@ def _slim_defect(path: Path | None, min_bytes: int) -> tuple[int, str | None]:
         return size, "结构齐但 OHLCV Close 无数值(NO_DATA 占位)"
     return size, None
 
-def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_096,
+def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int | None = None,   # noqa: E501
                        retries: int = 1, harvest_fn=None, ctx_root: Path | None = None,
-                       workers: int = 4) -> dict:
+                       workers: int | None = None) -> dict:
     """按 _harvest_list.txt 批量 harvest slim,**失败响亮**(修 603799 静默失败坑 = GATE 3)。
 
     合格判据见 `_slim_defect`:**结构+内容**决定能不能用,体积只兜真垃圾(地板 4KB)。
@@ -345,6 +368,10 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_0
     workers=4 默认并发(spec §P3);subprocess 取数为 I/O 密集,限频靠 per-ticker retries
     串行重试承担。workers<=1 退化原串行 for 循环(兼容旧行为/便于对串行时序敏感的测试)。
     """
+    min_bytes = slim_min_bytes() if min_bytes is None else min_bytes
+    if workers is None:
+        from autoresearch.scan.l4_tasks import tasks_cfg
+        workers = tasks_cfg()["slim_workers"]
     date = ws.validate_scan_date(date)
     base = Path(root) if root else ws.scan_root()
     scan_dir = base / date

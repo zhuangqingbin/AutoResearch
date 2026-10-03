@@ -69,24 +69,35 @@ def _registered_ids(handle) -> set[str]:
     return set(json.loads(path.read_text(encoding="utf-8"))["artifacts"])
 
 
+def _task_view(context) -> dict:
+    """Adapt the closed ReplayUnit using its separately frozen operation request."""
+    unit = context.unit
+    request = getattr(context, "operation_request", {})
+    return {**unit, "subject": request.get("subject", unit.get("subject")),
+            "output_artifact_ids": [ref["artifact_id"] for ref in unit["expected_outputs"]]}
+
+
 def _register(request: dict, handle, unit: dict) -> None:
     scan_workflow.register_scan_artifacts(request, handle, {})
     registered = _registered_ids(handle)
     produced = {ref["artifact_id"] for ref in unit["expected_outputs"]}
+    task = {**unit, "output_artifact_ids": sorted(produced)}
     for artifact_id in [
         *(ref["artifact_id"] for ref in unit["input_refs"]),
         *produced,
     ]:
-        if artifact_id in registered or artifact_id in {"session.request"} or artifact_id.startswith(
+        if artifact_id in registered or artifact_id in {"session.request", "research.frame", "claim.source_context"} or artifact_id.startswith(
             "operation.request:"
         ):
             continue
-        path, access = scan_workflow._paths_for_artifact(handle, unit, artifact_id)
+        path, _ = scan_workflow._paths_for_artifact(handle, task, artifact_id)
         artifacts.register_artifact(
             handle,
             artifact_id,
             path,
-            "WRITE" if artifact_id in produced else access,
+            # Inputs are staged and hash-bound by stage_inputs immediately after
+            # registration; candidate a1 copies need not exist in source bundles.
+            "WRITE",
         )
         registered.add(artifact_id)
 
@@ -107,7 +118,7 @@ def _restore_input_bundles(context, handle) -> None:
 def _prepare(context):
     request, handle = _scan_handle(context)
     _restore_input_bundles(context, handle)
-    _register(request, handle, context.unit)
+    _register(request, handle, _task_view(context))
     stage_inputs(context, handle, lambda: None)
     from autoresearch.scan import user_config
 
@@ -134,10 +145,7 @@ def _restore_config_paths(handle) -> None:
 
 
 def _write_bundle_artifact(handle, artifact_id: str, bundle: dict) -> None:
-    registry = json.loads(
-        (Path(handle.workspace) / "session/artifacts.json").read_text(encoding="utf-8")
-    )["artifacts"]
-    target = Path(handle.workspace) / registry[artifact_id]["relative_path"]
+    target = artifacts.declared_path(handle, artifact_id)
     atomic_write_json(target, bundle)
 
 
@@ -146,7 +154,7 @@ def _source_bundle(context, endpoint: str, phase: str, artifact_id: str, *, wrap
     snapshot = source_snapshot(context, endpoint)
     bundle = snapshot if wrapper is None else snapshot[wrapper]
     domain_ops.restore_scan_staging_bundle(bundle, handle.staging, expected_phase=phase)
-    _register(request, handle, context.unit)
+    _register(request, handle, _task_view(context))
     if wrapper == "bundle":
         if "sector_list" in snapshot:
             atomic_write_json(
@@ -249,7 +257,8 @@ def _materialize_ticket_files_from_context(context, handle) -> None:
 
 
 def _execute_compute(context):
-    operation = context.unit["operation"]
+    task = _task_view(context)
+    operation = task["operation"]
     _, handle = _prepare(context)
     try:
         if operation in {
@@ -258,8 +267,8 @@ def _execute_compute(context):
             "scan.review.none",
             "scan.l4.finalize",
         }:
-            _promote_retry_inputs(handle, context.unit)
-            _rebase_taskbook(handle, context.unit)
+            _promote_retry_inputs(handle, task)
+            _rebase_taskbook(handle, task)
         elif operation == "scan.review.plan":
             for ref in context.unit["input_refs"]:
                 match = re.fullmatch(
@@ -267,7 +276,7 @@ def _execute_compute(context):
                 )
                 if match:
                     synthetic = {
-                        **context.unit,
+                        **task,
                         "subject": match.group(1),
                         "task_id": f"x.a{match.group(2)}",
                     }
@@ -275,18 +284,22 @@ def _execute_compute(context):
                     _rebase_taskbook(handle, synthetic)
         elif operation == "scan.l4.complete":
             _materialize_ticket_files_from_context(context, handle)
-            _rebase_taskbook(handle, context.unit, complete=True)
+            _rebase_taskbook(handle, task, complete=True)
         subject_operations = {
+            "scan.review.plan", "scan.review.decide",
             "scan.l4.intel.status",
             "scan.l4.intel.disabled",
             "scan.review.none",
             "scan.l4.finalize",
         }
         kwargs = (
-            {"code": context.unit.get("subject")}
+            {"code": task.get("subject")}
             if operation in subject_operations
             else {}
         )
+        if operation == "scan.l4.intel.status" and any(ref["artifact_id"] == "claim.source_context" for ref in context.unit["input_refs"]):
+            from autoresearch.session_agent.source_fields import restore_replay_context
+            kwargs["claim_sources"] = restore_replay_context(context)
         _COMPUTE[operation](handle, **kwargs)
         export_outputs(context, handle)
         return []
@@ -296,6 +309,9 @@ def _execute_compute(context):
 
 def execute(unit: dict, context) -> list[dict]:
     operation = unit["operation"]
+    if operation == "scan.sector.render":
+        from autoresearch.session_agent.sector_terrain import replay_operation
+        return replay_operation(context)
     if operation == "scan.frame":
         snapshot = source_snapshot(context, "scan.frame.snapshot.v1")
         rendered = domain_ops.render_scan_frame_snapshot(snapshot, output_dir=context.work / "frame")
@@ -336,11 +352,14 @@ def execute(unit: dict, context) -> list[dict]:
             wrapper="bundle",
         )
     if operation == "scan.l4.slim":
-        snapshot = source_snapshot(context, "scan.l4.slim.snapshot.v1")
-        output = next(ref["artifact_id"] for ref in unit["expected_outputs"])
+        outputs = [ref["artifact_id"] for ref in unit["expected_outputs"]]
+        deep = next((item for item in outputs if item.endswith(".deep")), None)
+        snapshot = source_snapshot(context, f"scan.l4.slim.snapshot.v{2 if deep else 1}")
+        output = next(item for item in outputs if item.endswith(".slim"))
         domain_ops.render_scan_l4_slim_snapshot(
             snapshot,
             output_path=context.output_path(output),
+            deep_output_path=context.output_path(deep) if deep else None,
         )
         return []
     if operation == "scan.usage":

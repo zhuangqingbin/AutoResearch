@@ -41,12 +41,16 @@ def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
     df = df.merge(pd.DataFrame(drows), on="code", how="left")
     return df
 
-def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -> dict:
+def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None,
+                        lookback_days: int | None = None) -> dict:
     """对 L2 保留的 ~200 只补 L1 没有的真证据(龙虎榜/预告/快报)。bulk by date 一次拉、本地过滤;
 
     失败/无权限降级标注。产出 context/scan/<date>/L3_evidence/<code>.json,返回 {code: evidence}。
     2026-07-12 P2a:三端点改走 get_or_fetch(policy 早已注册)——已结算日湖命中零网络,预热(P1)可预拉。
     """
+    if lookback_days is None:                       # l3.lookback_days.evidence(缺省 10 交易日)
+        from autoresearch.scan.user_config import knob
+        lookback_days = int((knob("l3", "lookback_days", None, {}) or {}).get("evidence", 10))
 
     from autoresearch.data import cache as _cache  # 经模块属性调用,测试可 monkeypatch
     from autoresearch.data.tushare_source import _code6, _pro, resolve_momentum_dates
@@ -75,7 +79,7 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
 
     from autoresearch.data.tushare_source import _trade_days
     start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=30)).strftime("%Y%m%d")
-    for dd in _trade_days(pro, start, last)[-10:]:
+    for dd in _trade_days(pro, start, last)[-int(lookback_days):]:
         _bulk("forecast", lambda dd=dd: _cache.get_or_fetch("forecast", {"ann_date": dd}, today=date))   # 业绩预告
         _bulk("express", lambda dd=dd: _cache.get_or_fetch("express", {"ann_date": dd}, today=date))     # 快报
     for c in want:

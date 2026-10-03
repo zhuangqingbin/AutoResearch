@@ -2,7 +2,7 @@
 """A股单只增强 —— tushare 版(替代被封 push2 的 akshare 个股富化)。
 
 供 autoresearch.analyze.harvest 在 A股标的上**优先**调用(失败则回退 akshare):
-  * ashare_market_context_ts —— 主力资金流(10日)+ 技术(多头排列/RSI/MACD)+
+  * ashare_market_context_ts —— 主动买卖单资金流(10日)+ 技术(多头排列/RSI/MACD)+
     筹码(获利比例/套牢)+ 北向(沪深股通持股)。
   * ashare_shareholder_ts   —— 股东户数趋势 + 质押比例(爆雷红旗)。
   * ashare_calendar_ts      —— 业绩预告 / 业绩快报(前瞻成长催化)。
@@ -16,15 +16,16 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+# 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
+from autoresearch.data.contracts import record_degradation
+
 # 业绩快报字段语义单一事实源(yoy 自算 + 时效守卫;dossier/reconcile 同源引用)
 from autoresearch.data.express_fields import (
     EXPRESS_MAX_MONTHS,
     express_expired,
     express_yoy_pct,
 )
-
-# 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
-from autoresearch.data.contracts import record_degradation
+from autoresearch.data.metric_semantics import METRICS
 from autoresearch.data.tushare_source import _pro, _trade_days, _ts_call, resolve_momentum_dates
 from autoresearch.dataflows.symbol_utils import to_ts_code
 
@@ -92,7 +93,7 @@ def _lake_market_day(endpoint: str, trade_date: str, curr_date: str, tc: str) ->
 
 
 def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
-    """主力资金流(10日)+ 技术结构(多头排列/RSI/MACD)+ 筹码(获利比例)+ 北向。"""
+    """主动买卖单资金流(10日)+ 技术结构(多头排列/RSI/MACD)+ 筹码(获利比例)+ 北向。"""
     try:
         pro = _pro()
     except Exception:
@@ -101,7 +102,7 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
     last = _last_trade(pro, curr_date)
     out: list[str] = []
 
-    # 1) 主力资金流(近 10 交易日;D1.1 走湖 —— moneyflow 是全市场按日快照,逐个交易日
+    # 1) 主动买卖单资金流(近 10 交易日;D1.1 走湖 —— moneyflow 是全市场按日快照,逐个交易日
     #    `get_or_fetch` 取整市场帧再过滤本票,同一份湖文件与 scan 共享)
     try:
         start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=28)).strftime("%Y%m%d")
@@ -111,14 +112,17 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
         net = _num(mf["net_mf_amount"]) / 1e4 if len(mf) else pd.Series(dtype=float)  # 万元 → 亿
         if len(net):
             cum, lastd, pos = net.sum(), net.iloc[-1], int((net > 0).sum())
-            rows = ["| 日期 | 主力净流入(亿) |", "|---|---:|"]
+            name = METRICS["tushare.moneyflow.net_mf_amount"]["display_name"]
+            rows = [f"| 日期 | {name}(亿) |", "|---|---:|"]
             for dt, v in zip(mf["trade_date"].tail(5), net.tail(5), strict=True):
                 rows.append(f"| {dt} | {v:+.2f} |")
-            out.append(f"**主力资金流(个股,tushare moneyflow)**:近10日合计 **{cum:+.2f} 亿**"
-                       f"({pos}/10 日净流入),最新日 {lastd:+.2f} 亿。\n" + "\n".join(rows))
+            out.append(f"**{name}(个股,tushare moneyflow)**:近10日合计 **{cum:+.2f} 亿**"
+                       f"({pos}/10 日净流入),最新日 {lastd:+.2f} 亿。\n" + "\n".join(rows)
+                       + "\n_基于主动买卖单的统计净额，不能确认机构身份、持续吸筹或隔夜正收益；"
+                       "不由大小单金额简单加减重构。_")
     except Exception as e:  # noqa: BLE001
         record_degradation("moneyflow", f"{type(e).__name__}: {e}", key=sym)
-        out.append(f"_tushare 主力资金流取数失败: {e}_")
+        out.append(f"_tushare 主动买卖单资金流取数失败: {e}_")
 
     # 2) 技术结构(stk_factor_pro,前复权;D1.1 走湖 —— 单日全市场快照过滤本票)
     try:

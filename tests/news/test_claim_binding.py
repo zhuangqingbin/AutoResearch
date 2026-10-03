@@ -3,7 +3,7 @@ from hashlib import sha256
 
 import pytest
 
-from autoresearch.news.claim_binding import support_bound_claim
+from autoresearch.news.claim_binding import VerifiedFields, support_bound_claim
 from autoresearch.news.claim_extract import bundle_from_line
 
 TEXT = "公告:公司已完成回购 10 亿元。"
@@ -27,8 +27,9 @@ def observations(seen=DECISION.replace("14:45", "09:00")):
     return {"obs-1": {"available_at": seen}}
 
 
-ALL = {"subject_code", "event_id", "predicate", "lifecycle", "assertion_kind", "polarity",
+FIELDS = {"subject_code", "event_id", "predicate", "lifecycle", "assertion_kind", "polarity",
        "amount_value", "amount_unit", "amount_basis", "effective_at"}
+ALL = VerifiedFields.from_verified_source(FIELDS, claim(), sha256(TEXT.encode()).hexdigest(), "structured_source")
 
 
 def test_unbound_bundle_is_source_not_bound():
@@ -79,7 +80,9 @@ def test_same_event_refutation_fails():
     b = bound_bundle()
     b["event"] = dict(b["event"], lifecycle="terminated")
     got = support_bound_claim(claim(), b, observations=observations(),
-                              texts={"obs-1": TEXT}, trusted_fields=ALL, decision_at=DECISION)
+                              texts={"obs-1": TEXT}, trusted_fields=VerifiedFields.from_verified_source(
+                                  FIELDS, b["event"], sha256(TEXT.encode()).hexdigest(), "structured_source"),
+                              decision_at=DECISION)
     assert got["verdict"] == "FAIL"
 
 
@@ -96,3 +99,24 @@ def test_naive_decision_time_is_refused():
         support_bound_claim(claim(), bound_bundle(), observations=observations(),
                             texts={"obs-1": TEXT}, trusted_fields=ALL,
                             decision_at="2026-09-02T14:45:00")
+
+
+def test_model_extraction_cannot_grant_itself_trusted_fields():
+    got = support_bound_claim(claim(), bound_bundle(verification_basis="none",
+        extraction_origin="session_extraction"), observations=observations(),
+        texts={"obs-1": TEXT}, trusted_fields=ALL, decision_at=DECISION)
+    assert got["verdict"] == "UNKNOWN"
+
+
+def test_retracted_source_cannot_make_old_claim_current():
+    obs = observations()
+    obs["obs-1"].update(source_status="RETRACTED", superseded_at="2026-09-02T10:00:00+08:00")
+    got = support_bound_claim(claim(), bound_bundle(), observations=obs,
+        texts={"obs-1": TEXT}, trusted_fields=ALL, decision_at=DECISION)
+    assert got["verdict"] == "UNKNOWN" and got["reason"] == "SOURCE_NOT_CURRENT"
+
+
+def test_model_cannot_claim_structured_origin_to_authorize_its_own_fields():
+    got = support_bound_claim(claim(), bound_bundle(extraction_origin="session_extraction"),
+        observations=observations(), texts={"obs-1": TEXT}, trusted_fields=set(ALL), decision_at=DECISION)
+    assert got["verdict"] == "UNKNOWN"

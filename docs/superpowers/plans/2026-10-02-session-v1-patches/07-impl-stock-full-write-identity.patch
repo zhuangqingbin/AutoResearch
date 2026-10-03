@@ -1,0 +1,87 @@
+--- a/autoresearch/analyze/runctl.py
++++ b/autoresearch/analyze/runctl.py
+@@ -73,8 +73,12 @@
+     outputs=(),
+     metrics: dict | None = None,
+     error: str | None = None,
++    operation: str | None = None,
+ ) -> dict | None:
+     """把一个阶段的事实记进当前 run 的现场;没有 run 就什么都不做。
++
++    `operation` = 以哪个操作的身份过写守卫;缺省是旧 CLI 的 `stock.<stage>`。session_v1 的
++    计划只登记自己的操作名(FULL 的装配是 `stock.full.assemble`),由调用方显式传入。
+ 
+     返回 checkpoint 的 dict(便于测试断言),no-op / 取证失败时返回 None ——
+     **调用方不看返回值**,业务返回码永远不受取证影响。
+@@ -91,7 +95,7 @@
+         )
+ 
+         with run_write_lock(run_id):
+-            handle = assert_write_allowed(run_id, f"stock.{stage}", ws.ENGINE)
++            handle = assert_write_allowed(run_id, operation or f"stock.{stage}", ws.ENGINE)
+             if handle.contract.run_kind != "stock-research":
+                 raise ValueError(
+                     f"ambient run {run_id} is a {handle.contract.run_kind!r} run; "
+--- a/autoresearch/analyze/assemble.py
++++ b/autoresearch/analyze/assemble.py
+@@ -161,6 +161,7 @@
+     reports_root: Path | str | None = None,
+     context_root: Path | str | None = None,
+     decision_context: dict | None = None,
++    write_operation: str = "stock.assemble",
+ ) -> int:
+     argv = sys.argv[1:]
+     explicit_name = None
+@@ -316,6 +317,7 @@
+             "spine_sections": len(spine_present), "appendix_sections": len(appx_present),
+             "skipped_lenses": len(skipped), "report_dir": str(out_dir),
+         },
++        operation=write_operation,
+     )
+     return 0
+ 
+@@ -326,10 +328,13 @@
+     reports_root: Path | str | None = None,
+     context_root: Path | str | None = None,
+     decision_context: dict | None = None,
++    write_operation: str = "stock.assemble",
+ ) -> int:
++    """`write_operation`:本次装配以哪个操作的身份过写守卫。CLI 用缺省;session_v1 的 FULL
++    计划登记的是 `stock.full.assemble`,由 `domain_ops.stock_full_assemble` 传入。"""
+     from autoresearch.trace.write_guard import guarded_ambient_write
+ 
+-    with guarded_ambient_write("stock.assemble") as tracked:
++    with guarded_ambient_write(write_operation) as tracked:
+         if tracked is not None:
+             from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+             from autoresearch.trace.completeness import (
+@@ -363,6 +368,7 @@
+             reports_root=reports_root,
+             context_root=context_root,
+             decision_context=decision_context,
++            write_operation=write_operation,
+         )
+ 
+ 
+--- a/autoresearch/session_agent/domain_ops.py
++++ b/autoresearch/session_agent/domain_ops.py
+@@ -265,6 +265,11 @@
+     }
+     atomic_write_json(Path(current.staging) / "session_outputs/full.validation.json", value)
+     return value
++
++
++#: The operation the FULL plan registers for its assemble task (`workflows/stock.py`); the
++#: legacy assembler must guard and checkpoint under this identity inside a session run.
++FULL_ASSEMBLE_OPERATION = "stock.full.assemble"
+ 
+ 
+ def stock_full_assemble(handle=None) -> dict:
+@@ -307,6 +312,7 @@
+             reports_root=scratch,
+             context_root=Path(current.staging),
+             decision_context=decision_context,
++            write_operation=FULL_ASSEMBLE_OPERATION,
+         ) != 0:
+             raise RuntimeError("existing stock assembler rejected full products")
+     finally:

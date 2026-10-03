@@ -42,3 +42,35 @@ def test_parse_rating_strict_rejects_non_keyed_prose():
 
 def test_parse_rating_non_strict_default_is_hold_when_nothing_found():
     assert parse_rating("这段话完全没有评级信息。") == "Hold"
+
+
+def test_proposal_for_rating_is_strict():
+    import pytest
+    from autoresearch.agents.utils import rating
+
+    assert [rating.proposal_for_rating(value) for value in rating.RATINGS_5_TIER] == [
+        "BUY", "BUY", "HOLD", "SELL", "SELL",
+    ]
+    for value in ("Strong Buy", "", None, "hold"):
+        with pytest.raises(ValueError):
+            rating.proposal_for_rating(value)
+
+
+def test_strict_decision_rejects_conflicting_or_malformed_anchors():
+    import pytest
+    from autoresearch.agents.utils import rating
+
+    valid = "**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: **HOLD**"
+    assert rating.validate_rating_and_proposal(valid) == ("Hold", "HOLD")
+    for text in (
+        valid + "\n**Rating**: Buy",
+        valid + "\n**Rating**: NotARating",
+        valid + "\nFINAL TRANSACTION PROPOSAL: **SELL**",
+        valid + "\nFINAL TRANSACTION PROPOSAL: **UNKNOWN**",
+        valid.replace("Hold", "Buy"),
+        valid.replace("**HOLD**", "**HOLDING**"),
+        valid.replace("FINAL", "prose FINAL"),
+        valid.replace("Hold", "Hold/Buy"),
+    ):
+        with pytest.raises(ValueError):
+            rating.validate_rating_and_proposal(text)

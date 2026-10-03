@@ -65,12 +65,15 @@ def cat_label(row: dict) -> str:
     return "·".join(parts)
 
 
-def harvest_catalyst(date: str, codes, root: Path | None = None, lookback_days: int = 10,
+def harvest_catalyst(date: str, codes, root: Path | None = None, lookback_days: int | None = None,
                      days: list[str] | None = None, fetch_fn=None) -> pd.DataFrame:
     """近 lookback_days 交易日三端点按日拉(湖优先)→ 计数 → 落 `<root>/<date>/L3_catalyst.csv`。
 
     best-effort:单日/单端点失败跳过(降级);days/fetch_fn 注入供离线测(fetch_fn 时绕湖直调)。
     """
+    if lookback_days is None:                       # l3.lookback_days.catalyst(缺省 10 交易日)
+        from autoresearch.scan.user_config import knob
+        lookback_days = int((knob("l3", "lookback_days", None, {}) or {}).get("catalyst", 10))
     from autoresearch.data.cache import get_or_fetch
     from autoresearch.scan.agents.l3_news import _trade_days_for
     root = root or ws.scan_root()

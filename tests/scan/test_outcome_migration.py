@@ -666,3 +666,45 @@ def test_plan_outcome_migration_records_a_withdrawal_snapshot_via_the_shared_hel
     assert after_doc["previous"]["complete"] is True
     assert after_doc["previous"]["rows"]["000001"][outcome.MAIN] == 0.08
     assert after_doc["previous"]["t1"] == "20260826"
+
+
+def test_corrected_evaluation_migration_preserves_historical_bytes(tmp_path, monkeypatch):
+    run = _run(tmp_path, '20260901_2100', '2026-09-01')
+    root = run.parent
+    old = _old_doc(run.name, '2026-09-01', '000001')
+    target = outcome.outcome_path(run.name, root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps(old).encode()
+    target.write_bytes(original)
+    after = _new_doc(run.name, '2026-09-01', '000001')
+    after['rows']['000001']['rel_gap_sector'] = .03
+    after['benchmark_version'] = 'whole_market_sector.v1'
+    _fake_compute_outcome(monkeypatch, {run.name: after})
+    plan = outcome.plan_outcome_migration(reports_root=root, run_id=run.name, evaluation_only=True)
+    assert plan['rows'][0]['new_sector_excess'] == .03
+    directory = outcome.write_migration_plan(plan, reports_root=root)
+    result = outcome.apply_outcome_migration(plan['migration_id'], reports_root=root)
+    assert result['status'] == 'evaluation_applied'
+    assert target.read_bytes() == original
+    assert (directory / 'before' / (run.name+'.json')).read_bytes() == original
+    corrected = outcome.ledger_root(root) / 'evaluations/outcome_labels.v2/outcomes' / (run.name+'.json')
+    assert json.loads(corrected.read_text())['rows']['000001']['rel_gap_sector'] == .03
+
+
+def test_evaluation_mode_has_distinct_wrapper_id_and_cli(monkeypatch):
+    assert outcome._migration_id(run_id='run', rebuild=False, evaluation_only=True) != outcome._migration_id(run_id='run', rebuild=False)
+    called = []
+    monkeypatch.setattr(outcome, 'fill', lambda **kw: called.append(kw) or {})
+    monkeypatch.setattr(outcome, 'ledger_line', lambda: '')
+    assert outcome.main(['fill', '--evaluation-only', '--run-id', 'run']) == 0
+    assert called[0]['evaluation_only'] is True
+
+
+def test_evaluation_restore_cannot_rewrite_historical_ledger(tmp_path):
+    root = tmp_path / 'reports_codex/scan'
+    directory = outcome._migration_dir('evaluation-fixture', root)
+    directory.mkdir(parents=True)
+    (directory / outcome.MIGRATION_STATE_FILE).write_text(json.dumps({
+        'scope':{'evaluation_only':True}, 'runs':{}, 'status':'applied'}))
+    with pytest.raises(ValueError, match='evaluation.*restore'):
+        outcome.restore_outcome_migration('evaluation-fixture', reports_root=root)

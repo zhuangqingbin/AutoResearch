@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-def build_plan(request: dict, handle) -> dict:
+def _build_domain_plan(request: dict, handle) -> dict:
     if request["kind"] == "scan-market":
         from autoresearch.session_agent.workflows.scan import build_scan_plan
 
@@ -26,7 +26,21 @@ def build_plan(request: dict, handle) -> dict:
     raise ValueError(f"session workflow is not implemented: {request['kind']}")
 
 
+def build_plan(request: dict, handle) -> dict:
+    from autoresearch.session_agent.decision_frame import attach_plan
+
+    return attach_plan(_build_domain_plan(request, handle))
+
+
 def register_artifacts(request: dict, handle, plan: dict) -> None:
+    from autoresearch.session_agent.decision_frame import frame_in_plan, register_frame
+
+    if frame_in_plan(plan):
+        register_frame(request, handle)
+    _register_domain_artifacts(request, handle, plan)
+
+
+def _register_domain_artifacts(request: dict, handle, plan: dict) -> None:
     if request["kind"] == "scan-market":
         from autoresearch.session_agent.workflows.scan import register_scan_artifacts
 
@@ -100,11 +114,23 @@ def validate_operation_params(request: dict, task: dict, params: dict) -> None:
 
 
 def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list[dict]:
-    if request["kind"] != "scan-market":
+    if request["kind"] == "sector-research":
+        from autoresearch.session_agent.workflows.sector import expansions_after_task as expand
+    elif request["kind"] == "scan-market":
+        from autoresearch.session_agent.workflows.scan import expansions_after_task as expand
+    else:
         return []
-    from autoresearch.session_agent.workflows.scan import expansions_after_task as expand
 
-    return expand(request, handle, plan, task)
+    expansions = expand(request, handle, plan, task)
+    from autoresearch.session_agent import artifacts
+    from autoresearch.session_agent.decision_frame import (
+        FRAME_ID, attach_expansion, frame_in_plan,
+    )
+
+    if frame_in_plan(plan) and expansions:
+        snapshot = artifacts.snapshot_artifact(handle, FRAME_ID)
+        return [attach_expansion(value, snapshot) for value in expansions]
+    return expansions
 
 
 def inapplicable_templates(plan: dict, handle) -> frozenset[str]:
@@ -117,13 +143,28 @@ def inapplicable_templates(plan: dict, handle) -> frozenset[str]:
 
 
 def register_expansion_artifacts(request: dict, handle, expansion: dict) -> None:
+    if request["kind"] == "sector-research":
+        from autoresearch.session_agent.workflows.sector import register_sector_artifacts
+        register_sector_artifacts(request, handle, expansion)
+        return
     if request["kind"] != "scan-market":
         return
     from autoresearch.session_agent.workflows.scan import (
         register_scan_expansion_artifacts,
     )
 
-    register_scan_expansion_artifacts(request, handle, expansion)
+    from autoresearch.session_agent import artifacts
+    from autoresearch.session_agent.decision_frame import FRAME_ID
+
+    # Shared metadata has its own immutable registration; domain registries only own
+    # their domain artifacts and must not re-register the clock as a writable output.
+    if any(FRAME_ID in task["input_artifact_ids"] for task in expansion["tasks"]):
+        artifacts.snapshot_artifact(handle, FRAME_ID)
+    registration = dict(expansion, tasks=[
+        dict(task, input_artifact_ids=[item for item in task["input_artifact_ids"] if item != FRAME_ID])
+        for task in expansion["tasks"]
+    ])
+    register_scan_expansion_artifacts(request, handle, registration)
 
 
 __all__ = [

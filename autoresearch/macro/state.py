@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Collection, Mapping
 from datetime import date as _date
 from pathlib import Path
 
 from autoresearch.common import published_state, workspace as ws
+from autoresearch.common.atomic import atomic_write_json
 
 _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
@@ -142,12 +144,15 @@ def _write_macro_state_unlocked(
     report_path: Path | str | None = None,
     out_dir: Path | str | None = None,
     scan_root: Path | str = _WS_SCAN_ROOT,
+    expected_keys: Mapping[str, Collection[str]] | None = None,
 ) -> dict:
     """从 macro context 目录(`context/macro/<date>`)抽机读摘要 → `<out_dir>/macro_state.json`。
 
     out_dir 缺省 = `context/macro`(assemble 传 root.parent,测试传 tmp);返回写入的 dict。
     """
-    from autoresearch.macro.assemble import DECISION_REL, SECTOR_MAP_REL, parse_allocation
+    from autoresearch.macro.assemble import (
+        DECISION_REL, SECTOR_MAP_REL, parse_allocation, resolve_allocation_scope,
+    )
 
     root = Path(root)
     as_of = root.name
@@ -156,9 +161,20 @@ def _write_macro_state_unlocked(
         p = root / rel
         return p.read_text(encoding="utf-8") if p.exists() else None
 
-    decision = _txt(DECISION_REL) or ""
-    cross = parse_allocation(decision)
     sectors_txt = _txt(SECTOR_MAP_REL)
+    expected_keys = resolve_allocation_scope(
+        root, expected_keys, include_sectors=sectors_txt is not None,
+    )
+    decision = _txt(DECISION_REL) or ""
+    cross = parse_allocation(
+        decision, expected_keys=expected_keys.get(DECISION_REL) if expected_keys is not None else None,
+    )
+    if not cross:
+        raise ValueError("empty cross-asset allocation table")
+    sector_keys = expected_keys.get(SECTOR_MAP_REL) if expected_keys is not None else None
+    sectors = parse_allocation(sectors_txt or "", expected_keys=sector_keys)
+    if sectors_txt is not None and not sectors:
+        raise ValueError("empty sector allocation table")
     overall = next(
         (v for k, v in cross.items() if "风险档" in k or k.upper().startswith("OVERALL")), None
     )
@@ -170,7 +186,7 @@ def _write_macro_state_unlocked(
         "overall_rating": overall,
         "risk_stance": _RISK_MAP.get(overall or ""),
         "cross_asset": cross,
-        "ashare_sectors": parse_allocation(sectors_txt) if sectors_txt else {},
+        "ashare_sectors": sectors,
         "key_risks": _key_risks(_txt("1_spine/premortem.md")),
         # D-4:外源 tape 的 ≤8 个数 + 它自己的 as_of。**只写不读**(见 `_hide_write_only`)。
         **_global_tape_block(root),
@@ -178,7 +194,7 @@ def _write_macro_state_unlocked(
     }
     out = Path(out_dir) if out_dir else DEFAULT_ROOT
     out.mkdir(parents=True, exist_ok=True)
-    (out / STATE_NAME).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(out / STATE_NAME, state)
     return state
 
 
@@ -187,6 +203,7 @@ def write_macro_state(
     report_path: Path | str | None = None,
     out_dir: Path | str | None = None,
     scan_root: Path | str = _WS_SCAN_ROOT,
+    expected_keys: Mapping[str, Collection[str]] | None = None,
 ) -> dict:
     """Write the candidate state only while an ambient tracked run is active."""
     from autoresearch.trace.write_guard import guarded_ambient_write
@@ -197,6 +214,7 @@ def write_macro_state(
             report_path=report_path,
             out_dir=out_dir,
             scan_root=scan_root,
+            expected_keys=expected_keys,
         )
 
 
@@ -248,7 +266,11 @@ def main(argv: list[str] | None = None) -> int:
             f"其余分段可后补。"
         )
         return 1
-    st = write_macro_state(root, out_dir=a.out_dir or root.parent)
+    try:
+        st = write_macro_state(root, out_dir=a.out_dir or root.parent)
+    except ValueError as exc:
+        print(f"[CONTRACT] {exc}")
+        return 1
     print(
         f"[macro_state] {Path(a.out_dir or root.parent) / STATE_NAME}(as_of {st['as_of']} · "
         f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "

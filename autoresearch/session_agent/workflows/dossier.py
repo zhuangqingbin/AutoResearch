@@ -216,6 +216,24 @@ def build_pool_candidate(code: str, name: str | None, current: dict) -> dict:
     return value
 
 
+def publication_state_precondition(handle):
+    """Freeze the expected opening; inspect live state only under publication's lock."""
+    request = json.loads((Path(handle.workspace) / "session/request.json").read_bytes())
+    with artifacts.open_artifact(handle, "dossier.permissions") as stream:
+        permissions = json.load(stream)
+    code = request["subject"]
+    opening_hash = permissions["opening_target_sha256"]
+    base_hash = permissions.get("publication_base_sha256", opening_hash)
+
+    def check():
+        visible, current_base = schema.read_dossier_snapshot(code)
+        visible_hash = sha256_bytes(visible) if visible is not None else None
+        if visible_hash != opening_hash or current_base != base_hash:
+            raise RuntimeError("CONFLICT: dossier visible opening or publication base changed")
+
+    return check
+
+
 def _publish_dossier_active(
     handle,
     *,
@@ -225,11 +243,12 @@ def _publish_dossier_active(
     request = json.loads(
         (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
     )
-    output = Path(handle.staging) / "session_outputs"
-    bundle = json.loads((output / "dossier.publication.json").read_text(encoding="utf-8"))
-    permissions = json.loads((output / "dossier.permissions.json").read_text(encoding="utf-8"))
-    candidate = output / "dossier.candidate.md"
-    candidate_bytes = candidate.read_bytes()
+    with artifacts.open_artifact(handle, "dossier.publication.bundle") as stream:
+        bundle = json.load(stream)
+    with artifacts.open_artifact(handle, "dossier.permissions") as stream:
+        permissions = json.load(stream)
+    with artifacts.open_artifact(handle, "dossier.candidate") as stream:
+        candidate_bytes = stream.read()
     if sha256_bytes(candidate_bytes) != bundle["candidate_sha256"]:
         raise RuntimeError("dossier candidate changed after validation")
     target = (
@@ -243,9 +262,9 @@ def _publish_dossier_active(
         if current_hash != bundle["candidate_sha256"]:
             atomic_write_bytes(target, candidate_bytes)
     pool_target = Path(pool_path) if pool_path is not None else pool.POOL_PATH
-    pool_candidate = output / "dossier.pool.candidate.json"
-    if pool_candidate.is_file() and bundle.get("pool_after_sha256"):
-        candidate_pool_bytes = pool_candidate.read_bytes()
+    if bundle.get("pool_after_sha256"):
+        with artifacts.open_artifact(handle, "dossier.pool.candidate") as stream:
+            candidate_pool_bytes = stream.read()
         if sha256_bytes(candidate_pool_bytes) != bundle["pool_after_sha256"]:
             raise RuntimeError("dossier pool candidate changed after publication preparation")
         with _locked(pool_target):
@@ -298,12 +317,13 @@ def publish_dossier(
 
 def prepare_dossier_bundle(handle) -> dict:
     """Describe the dossier version; the live Markdown remains a committed view."""
-    output = Path(handle.staging) / "session_outputs"
-    permissions = json.loads((output / "dossier.permissions.json").read_text(encoding="utf-8"))
+    with artifacts.open_artifact(handle, "dossier.permissions") as stream:
+        permissions = json.load(stream)
     request = json.loads(
         (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
     )
-    publication = json.loads((output / "dossier.publication.json").read_text(encoding="utf-8"))
+    with artifacts.open_artifact(handle, "dossier.publication.bundle") as stream:
+        publication = json.load(stream)
     return {
         "business_files": [
             {
@@ -315,7 +335,7 @@ def prepare_dossier_bundle(handle) -> dict:
         "state_mutations": [
             {
                 "target_key": f"dossier.stock.{request['subject']}",
-                "expected_before_hash": permissions.get("opening_target_sha256"),
+                "expected_before_hash": permissions.get("publication_base_sha256", permissions.get("opening_target_sha256")),
                 "after_artifact_id": "dossier.candidate",
                 "apply_policy": "CAS_REPLACE",
             },

@@ -1,0 +1,73 @@
+--- a/autoresearch/session_agent/runner.py
++++ b/autoresearch/session_agent/runner.py
+@@ -121,11 +121,15 @@
+     return task_id.endswith((".review2", ".review3"))
+ 
+ 
+-def _params_for(task: dict) -> dict:
+-    """Parameters of a deterministic operation (scan operations take none)."""
++def _params_for(task: dict, request: dict | None = None) -> dict:
++    """Parameters of a deterministic operation; the frozen request is the only source."""
+     operation = task["operation"]
+     if operation == "test.noop":
+         return {"message": f"runner {task['task_id']}"[:200]}
++    if operation == "stock.harvest" and request is not None:
++        from autoresearch.session_agent.workflows.stock import harvest_params
++
++        return harvest_params(request)
+     from autoresearch.session_agent.operations import operation_catalog
+ 
+     if operation_catalog()[operation]["params"] == _NO_PARAMS:
+@@ -237,6 +241,10 @@
+ 
+     def _entry(self, task_id: str) -> dict:
+         return store.read_entry(service._store_path(self.handle), task_id)
++
++    def _request(self) -> dict:
++        path = service._session_dir(self.handle) / "request.json"
++        return json.loads(path.read_text(encoding="utf-8"))
+ 
+     def _event(self, event_name: str, /, **fields) -> None:
+         self._log({"ts": _now(), "event": event_name, "run_id": self.run_id, **fields})
+@@ -609,7 +617,7 @@
+         task_id = task["task_id"]
+         if task["kind"] == "DETERMINISTIC":
+             try:
+-                params = _params_for(task)
++                params = _params_for(task, self._request())
+             except (RunnerUnsupported, KeyError) as exc:
+                 self._skip[task_id] = str(exc)
+                 self._error(task_id, str(exc))
+--- a/autoresearch/session_agent/workflows/stock.py
++++ b/autoresearch/session_agent/workflows/stock.py
+@@ -432,18 +432,22 @@
+                               "stock.card.changes": output / "card.changes.json"})
+     for artifact_id, path in registrations.items():
+         artifacts.register_artifact(handle, artifact_id, path, "WRITE")
++
++
++def harvest_params(request: dict) -> dict:
++    """The only parameters ``stock.harvest`` may run with: a projection of the frozen request."""
++    return {
++        "ticker": request["subject"],
++        "analysis_date": request["analysis_date"],
++        "asset_type": request["asset_type"],
++        "peers": list(request["peers"]),
++        "slim": request["requested_mode"] == "LITE",
++    }
+ 
+ 
+ def validate_stock_operation_params(request: dict, task: dict, params: dict) -> None:
+     if task["operation"] == "stock.harvest":
+-        expected = {
+-            "ticker": request["subject"],
+-            "analysis_date": request["analysis_date"],
+-            "asset_type": request["asset_type"],
+-            "peers": request["peers"],
+-            "slim": request["requested_mode"] == "LITE",
+-        }
+-        if params != expected:
++        if params != harvest_params(request):
+             raise ValueError("stock.harvest params differ from frozen request")
+     elif params != {}:
+         raise ValueError(f"{task['operation']} accepts no parameters")

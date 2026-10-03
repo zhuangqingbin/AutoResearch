@@ -288,3 +288,16 @@ def test_dispatch_pack_wires_force_full_card(tmp_path):
     assert "强制满卡" in strong and "禁止早停" in strong      # conv 78 + 4 路共振
     assert "强制满卡" in pinned and "禁止早停" in pinned      # 📌 持仓票恒满卡
     assert "强制满卡" not in weak                             # 弱先验照常早停(parity)
+
+
+def test_dispatch_freezes_actual_force_full_inputs_before_research(tmp_path):
+    import json
+
+    from autoresearch.scan.run_contract import sha256_json
+    d=_mk_full(tmp_path)
+    write_dispatch_pack(d)
+    value=json.loads((d/'_l4_force_full/600584.json').read_text())
+    assert value['force_full'] is True
+    assert value['priors']['conviction']==78 and value['priors']['n_channels']==4
+    assert value['rule_hash']==sha256_json(value['rule'])
+    assert json.loads((d/'_l4_force_full/300001.json').read_text())['force_full'] is False

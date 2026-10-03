@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts import scan_config as _cfg_registry
 
 # ───────────────────────── 归一化 helpers ─────────────────────────
 
@@ -291,13 +292,15 @@ def lens_reversal_confirm(df: pd.DataFrame) -> pd.DataFrame:
 
 
 KNIFE_PCT_60D = -20.0
+HEALTHY_PCT60_RANGE = (0.0, 40.0)      # 健康上涨带:lo < pct_60d < hi
 
 
-def falling_knife_mask(frame: pd.DataFrame, thresh: float = KNIFE_PCT_60D) -> pd.Series | None:
+def falling_knife_mask(frame: pd.DataFrame, thresh: float | None = None) -> pd.Series | None:
     """落刀谓词(**单一事实源**,2026-09-24 §2.2):pct_60d < −20。菜单体检 `menu._knife_share`、
     `l2_knife_audit`、L2 落刀帽、两类席位剔刀、`market._breadth`(→ `market_pack.falling_knife`,
     2026-09-25 终审 M2 折入)全部改调本函数。缺列 → None(调用方降级);NaN 行 False。
     L3 的 B 条散文另含「无主力」,那是判断层的口径,不在此收口。"""
+    thresh = float(_cfg_registry.knob("signals", "knife_pct_60d", thresh, KNIFE_PCT_60D))
     if "pct_60d" not in frame.columns:
         return None
     return _num(frame["pct_60d"]) < thresh
@@ -313,12 +316,13 @@ def healthy_riser_mask(frame: pd.DataFrame) -> pd.Series | None:
     """
     if not all(c in frame.columns for c in ("pct_60d", "main_net_ratio", "cmf_20")):
         return None
+    lo, hi = _cfg_registry.knob("signals", "healthy_pct60_range", None, HEALTHY_PCT60_RANGE)
     p, m, c = _num(frame["pct_60d"]), _num(frame["main_net_ratio"]), _num(frame["cmf_20"])
-    return (p > 0) & (p < 40) & (m > 0) & (c > 0)
+    return (p > float(lo)) & (p < float(hi)) & (m > 0) & (c > 0)
 
 
-def main_net_distortion_label(ratio, inflow_yi, ratio_min: float = 0.02,
-                              abs_min_yi: float = 0.5) -> str:
+def main_net_distortion_label(ratio, inflow_yi, ratio_min: float | None = None,
+                              abs_min_yi: float | None = None) -> str:
     """主力占比失真判型(**单一事实源**:L3 表 dist_flag 列 = L4 简报标注同一定义)。
 
     2026-07-03 取证:两型精确命中 L4 逐卡辟谣的 ~18/30 finalist(重复深核的浪费源):
@@ -328,6 +332,9 @@ def main_net_distortion_label(ratio, inflow_yi, ratio_min: float = 0.02,
     规则:两型下「主力净流入」不得单独作核心多头论点,须绝对净额+cmf/obv 同向共振才算确认。
     占比≤0 无多头读数不标;缺值/非数容错返回 ""。
     """
+    _d = _cfg_registry.knob("signals", "main_flow_distortion", None, {}) or {}
+    ratio_min = float(_d.get("ratio", 0.02)) if ratio_min is None else ratio_min
+    abs_min_yi = float(_d.get("abs_yi", 0.5)) if abs_min_yi is None else abs_min_yi
     try:
         r, a = float(ratio), float(inflow_yi)
     except (TypeError, ValueError):
@@ -370,12 +377,15 @@ def l3_misread_flags(row) -> str:
     return "·".join(flags)
 
 
-def pledge_flag_label(ratio, high: float = 40.0, warn: float = 20.0) -> str:
+def pledge_flag_label(ratio, high: float | None = None, warn: float | None = None) -> str:
     """股权质押比例判型(**单一事实源**:L4 简报质押旗 = 深核 slim 质押段同一阈值)。
 
     >high(%)= 爆雷红旗(平仓线连锁风险);>warn = 偏高;低/缺值 → ""(不加噪)。
     spec: 2026-07-05 计量·校准四件套 §5.2。
     """
+    _d = _cfg_registry.knob("signals", "pledge_pct", None, {}) or {}
+    high = float(_d.get("high", 40.0)) if high is None else high
+    warn = float(_d.get("warn", 20.0)) if warn is None else warn
     try:
         r = float(ratio)
     except (TypeError, ValueError):
@@ -391,8 +401,7 @@ def pledge_flag_label(ratio, high: float = 40.0, warn: float = 20.0) -> str:
 # volprice = 多日量价资金流(CMF+OBV;序列指标,IC 实证 decile +40bps/t≈2,远胜已剔的单日 vol_ratio)。
 # rz = 融资买入强度(rz_buy_intensity;07-10 T7 六因子重审三条全过门,pr_20260710_001,唯一过线
 # 机构因子——见 _factor_groups 该组注释)。
-_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech", "growth", "value",
-          "volprice", "rz")
+_GROUPS = _cfg_registry.PREFERENCE_GROUPS   # 契约层单源(contracts/scan_config.PREFERENCE_GROUPS)
 
 # weights.json 缺失时的先验(仅 __global__;慢因子 growth/value 给小权重——T+1 近噪声但仍纳入)。
 _PRIOR_WEIGHTS = {"meta": {"source": "prior(无 weights.json)"}, "weights": {"__global__": {

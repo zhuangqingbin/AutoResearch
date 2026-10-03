@@ -1,0 +1,23 @@
+--- a/tests/scan/test_scan_run.py
++++ b/tests/scan/test_scan_run.py
+@@ -740,3 +740,20 @@
+ def test_main_refuses_a_codex_engine(roots, monkeypatch, capsys):
+     monkeypatch.setattr(ws, "ENGINE", "codex")
+     assert scan_run.main([]) == scan_run.EXIT_USAGE
++
++
++def test_headless_request_matches_the_documented_scan_request_contract():
++    """无人值守请求与文档样例必须是同一份契约(只有宿主与日期不同)。
++
++    2026-09-30 请求升到 schema v4(research_context / card_research_profile / 宏观与行业 profile),
++    交互样例跟着升了,这里的生成器还停在 v1 → 无人值守场的 DecisionFrame 没有日历来源证据。
++    """
++    example = json.loads(
++        (Path(__file__).resolve().parents[2] / "docs/session-agent/examples/scan.request.json")
++        .read_text(encoding="utf-8"))
++    request = scan_run.build_headless_request(DATE)
++    assert request["schema_version"] == example["schema_version"] == 4
++    assert set(request) == set(example)
++    varying = {"analysis_date", "host_profile", "force_full"}
++    assert {k: v for k, v in request.items() if k not in varying} == {
++        k: v for k, v in example.items() if k not in varying}

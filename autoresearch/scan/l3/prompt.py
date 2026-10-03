@@ -24,7 +24,48 @@ def _fmt(v) -> str:
         return (f"{v:.2f}".rstrip("0").rstrip(".")) if v == v else "—"
     return str(v)
 
-def row_profile(r) -> str:
+#: 画像词阈值的内建缺省;`scan_config.l3.profile` 逐键覆盖。
+PROFILE_DEFAULTS: dict = {
+    "pct60_high": 40, "pct60_mid": 10, "pct60_low": -10, "pct1_big": 9.5, "near_high": -2,
+    "vol_ratio_big": 2, "pe_low": 20, "pe_high": 60, "winner_full": 90, "winner_trapped": 25,
+    "rsi_overbought": 80, "rsi_oversold": 20,
+}
+#: 紧凑表开关的内建缺省;`scan_config.l3.table` 覆盖(两个子字典各深合并一层)。
+TABLE_DEFAULTS: dict = {
+    "delta": True,
+    "delta_tol": {"composite": 2.0, "pct_60d": 2.0},
+    "sections": {"dist": True, "reg": True, "cat": True, "sector_terrain": True, "misread": True,
+                 "pinned": True, "lane_blocks": True},
+}
+LOOKBACK_DEFAULTS: dict = {"evidence": 10, "news": 10, "catalyst": 10}
+
+
+def profile_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l3.profile` → 画像词阈值(缺键 = PROFILE_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l3", "profile", None, {}, cfg) or {}
+    return {**PROFILE_DEFAULTS, **(user if isinstance(user, dict) else {})}
+
+
+def table_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l3.table` → Δ 模式 / 容差 / 证据列开关(缺键 = TABLE_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l3", "table", None, {}, cfg) or {}
+    if not isinstance(user, dict):
+        user = {}
+    return {"delta": bool(user.get("delta", TABLE_DEFAULTS["delta"])),
+            "delta_tol": {**TABLE_DEFAULTS["delta_tol"], **(user.get("delta_tol") or {})},
+            "sections": {**TABLE_DEFAULTS["sections"], **(user.get("sections") or {})}}
+
+
+def lookback_days(kind: str, cfg: dict | None = None) -> int:
+    """`scan_config.l3.lookback_days.{evidence,news,catalyst}`(缺键 = 10 交易日)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l3", "lookback_days", None, {}, cfg) or {}
+    return int((user if isinstance(user, dict) else {}).get(kind, LOOKBACK_DEFAULTS[kind]))
+
+
+def row_profile(r, pf: dict | None = None) -> str:
     """行语义指纹(确定性纯函数,`pf` 列):把该票关键因子压成一句 `·` 连接的定性短语——
     L3 通看 ~200 行×22 列裸浮点易误读(07-08 诊断 22/31 证据纯表内可见,读词比读裸浮点更
     不容易漏读)。`r` 支持 dict / `pd.Series`(`.get` 语义);字段缺失/NaN → 该维度不出现
@@ -50,14 +91,15 @@ def row_profile(r) -> str:
         return None if v != v else v          # NaN 自比不等
 
     words: list[str] = []
+    pf = profile_cfg() if pf is None else pf
 
     pct60 = _f("pct_60d")
     if pct60 is not None:
-        if pct60 >= 40:
+        if pct60 >= pf["pct60_high"]:
             words.append("高位")
-        elif pct60 >= 10:
+        elif pct60 >= pf["pct60_mid"]:
             words.append("中位")
-        elif pct60 > -10:
+        elif pct60 > pf["pct60_low"]:
             words.append("低位")
         else:
             words.append("深跌")
@@ -65,13 +107,13 @@ def row_profile(r) -> str:
     # 今日大涨 / 贴顶(2026-08-22 批 B):守卫⑦ 会确定性剔掉「今日大涨」,pf 词让 L3 一眼看见
     # 而不是把一席浪费在必被 L4 否的票上;「贴顶」不是硬约束,是⑤脆弱维的输入。
     pct1 = _f("pct_1d")
-    if pct1 is not None and pct1 >= 9.5:
+    if pct1 is not None and pct1 >= pf["pct1_big"]:
         words.append("今日大涨")
     dist_hi = _f("dist_high_60")
-    if dist_hi is not None and dist_hi >= -2 and (pct60 is not None and pct60 > 0):
+    if dist_hi is not None and dist_hi >= pf["near_high"] and (pct60 is not None and pct60 > 0):
         words.append("贴顶")
     vol = _f("vol_ratio")
-    if vol is not None and vol >= 2:
+    if vol is not None and vol >= pf["vol_ratio_big"]:
         words.append("放量")
 
     main, cmf, obv = _f("main_net_ratio"), _f("cmf_20"), _f("obv_mom_20")
@@ -90,25 +132,25 @@ def row_profile(r) -> str:
     if pe is not None:
         if pe < 0:
             words.append("PE负")
-        elif pe < 20:
+        elif pe < pf["pe_low"]:
             words.append("PE低")
-        elif pe < 60:
+        elif pe < pf["pe_high"]:
             words.append("PE中")
         else:
             words.append("PE高")
 
     winner = _f("winner_rate")
     if winner is not None:
-        if winner >= 90:
+        if winner >= pf["winner_full"]:
             words.append("满盈利⚠")
-        elif winner < 25:
+        elif winner < pf["winner_trapped"]:
             words.append("深套牢")
 
     rsi = _f("rsi6")
     if rsi is not None:
-        if rsi >= 80:
+        if rsi >= pf["rsi_overbought"]:
             words.append("超买")
-        elif rsi <= 20:
+        elif rsi <= pf["rsi_oversold"]:
             words.append("超卖")
 
     return "·".join(words)
@@ -145,12 +187,15 @@ def _prev_l3_day(date: str, root: Path | None = None) -> Path | None:
     return cands[0] if cands else None
 
 def _delta_filter(df: pd.DataFrame, prev_dir: Path,
-                  comp_tol: float = 2.0, mom_tol: float = 2.0) -> tuple[pd.DataFrame, list[str]]:
+                  comp_tol: float | None = None, mom_tol: float | None = None) -> tuple[pd.DataFrame, list[str]]:
     """Δ模式过滤:略去「昨判弃 ∧ 今无变化」的行,保留行加 prev_l3 标记(选/弃)。
 
     变化 = |Δcomposite|>comp_tol ∨ |Δpct_60d|>mom_tol ∨ 今日有 lhb/预告/快报证据;
     prev 缺值 = 视为变(保守保留)。返回 (过滤后帧, 被略去 codes)。
     """
+    tol = table_cfg()["delta_tol"]
+    comp_tol = tol["composite"] if comp_tol is None else comp_tol
+    mom_tol = tol["pct_60d"] if mom_tol is None else mom_tol
     jd = pd.read_csv(prev_dir / "L3_judged_full.csv", dtype={"code": str})
     judged = set(jd["code"].astype(str).str.zfill(6)) if "code" in jd.columns else set()
     fp = prev_dir / "finalists.csv"
@@ -281,7 +326,19 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
         df = df[df["code"].astype(str).str.zfill(6).isin(keep_codes)].reset_index(drop=True)
     df["pf"] = df.apply(row_profile, axis=1)   # 行语义指纹(确定性,恒计算——非 flag 位,见 row_profile)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
-    header: list[str] = []
+    from autoresearch.contracts.agent_output import L3_RANK_CONTRACT_MARKER
+    header: list[str] = [
+        L3_RANK_CONTRACT_MARKER,
+        "输出仍为 JSON 数组，每行 schema_version=2，必含 veto_reasons 数组。"
+        "只登记已成立且原有例外/反证失败的 L3_CONSTRAINT_B、L3_CONSTRAINT_E；"
+        "每项为 reason_code/reason_text/evidence_refs，无拒绝写 []。"
+        "lowturn 原有 B 例外保留，misread 旗本身不等于 E 拒绝。",
+        "研究执行窗：D0=本分析日，D1/D2=随后两个交易日；D1 收盘买入→D2 开盘卖出。"
+        "conviction 是 0–100 序数确信度，不是概率或胜率。",
+        "资格优先：合法身份/可交易性→追高及 B/E 硬拒绝→非持仓候选→席位/cap→软配额与行业分散。"
+        "持仓只保证研究，不占新买席位，不获得 BUY 豁免。",
+        "",
+    ]
     # anns_d 已退役(2026-07-18,见 contracts.py):news_sent/news_head 列契约不变(冻结),
     # 但当日全票 news_n=0(端点断链/无权限)时不得留一整列 "—"/0.0 静默充数——恒检查(非
     # flag 位,同 pf 行语义指纹),整列全空才现身,避免真有公告的日子误报。
@@ -384,7 +441,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
             f"lowturn 低位转强(确定性旗):距 60 日高 ≥{abs(lt_cfg['max_dist_high_60']):g}% 且 60 日涨幅 "
             f"<{lt_cfg['max_pct_60d']:g} ∧ 站回 MA20 且 MA5>MA10 ∧ 近 5 日为正 ∧ vol_ratio_20≥"
             f"{lt_cfg['min_vol_ratio_20']:g} ∧ 主力或 CMF 转正,且非健康上涨。**旗亮票不算「下跌趋势票」,"
-            f"硬约束 B 不适用**;仍须过②资金真与⑥兑现机制,thesis 写明『低位转强』并答 D+1 买家。"
+            f"硬约束 B 不适用**;仍须过②资金真与⑥兑现机制,thesis 写明『低位转强』并答 D2 开盘兑现买家。"
             f"今日旗亮 {n_lt} 只。")
     if shuffle_seed is not None:
         df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
@@ -400,7 +457,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
             pass
     return body
 
-def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
+def prepare_l3_table(date: str, root: Path | None = None, delta: bool | None = None,
                      do_harvest: bool = True, pinned_path: Path | str | None = None,
                      two_pass: bool | None = None) -> dict:
     """L3 精排前的确定性件:harvest 证据/公告情感 + 构建紧凑表 → 写 _l3_table.md(l3-rank agent 读)。
@@ -426,10 +483,13 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     scan_dir = base / date
     l2 = pd.read_csv(scan_dir / "L2_gbdt_top200.csv", dtype={"code": str})
     codes = l2["code"].astype(str).str.zfill(6).tolist()
+    tbl = table_cfg()
+    if delta is None:
+        delta = tbl["delta"]
     if do_harvest:
-        harvest_l3_evidence(date, codes, root=base)
+        harvest_l3_evidence(date, codes, root=base, lookback_days=lookback_days("evidence"))
         from autoresearch.scan.agents.l3_news import harvest_l3_news
-        harvest_l3_news(date, codes, root=base)   # anns_d 退役 → 一次性 stderr 告警(不逐日重试)
+        harvest_l3_news(date, codes, root=base, lookback_days=lookback_days("news"))   # anns_d 退役 → 一次性 stderr 告警(不逐日重试)
 
     l3_cfg: dict = {}
     lt_cfg: dict = {}
@@ -474,10 +534,11 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     # root 而非 base:显式 root(测试注入)照旧透传;生产的 root=None 必须**保持 None**,
     # 否则 `_prev_l3_day` 收到 `ws.scan_root()` 这个显式目录 → 又回到 K4 的兄弟目录枚举。
     # 其余读点都是 `root or ws.scan_root()`,与传 base 逐字等价。
+    sec = tbl["sections"]
     md = l3_table_md(date, root=Path(root) if root else None,
-                     delta=delta, dist_flag=True, reg_flag=True,
-                     cat_flag=True, sector_terrain=True, misread_flag=True,
-                     pinned_flag=True, pinned_path=pinned_path, lane_blocks=True,
+                     delta=delta, dist_flag=sec["dist"], reg_flag=sec["reg"],
+                     cat_flag=sec["cat"], sector_terrain=sec["sector_terrain"], misread_flag=sec["misread"],
+                     pinned_flag=sec["pinned"], pinned_path=pinned_path, lane_blocks=sec["lane_blocks"],
                      restrict_codes=restrict_codes,
                      lowturn_flag=lowturn_on, lowturn_cfg=lt_cfg)
     lowturn_counts: dict = {}

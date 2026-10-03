@@ -200,7 +200,7 @@ def test_l4_tasks_cli_init_validates_date_before_dispatch_read(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     outside.joinpath("finalists.csv").write_bytes(b"\xff")
-    caps = json.dumps({"tushare": 1, "web_search": 1, "web_fetch": 1, "l4_stock": 1})
+    caps = json.dumps({"tushare": 1, "l4_stock": 1})
 
     with pytest.raises(ValueError, match="scan date"):
         l4_tasks.main([
@@ -1239,7 +1239,7 @@ def test_active_prepare_slim_cache_and_trusted_default_harvest(
 def test_dispatch_batches_effective_cap_is_l4_stock_and_ignores_rate_limit(tmp_path):
     """Wave11 C1:派发帽=caps.l4_stock,不再 min 四帽、不再被 rate_limit_failures 收窄。"""
     book = _book(tmp_path)
-    caps = {"tushare": 6, "web_search": 4, "web_fetch": 5, "l4_stock": 8}
+    caps = {"tushare": 6, "l4_stock": 8}
 
     first = dispatch_batches(book["path"], caps=caps)
     assert first["caps"] == caps

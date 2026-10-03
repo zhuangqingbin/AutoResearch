@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -120,7 +121,6 @@ def _case(tmp_path, *, include_waiting=False, retry=False, stale=False):
         )
     output = handle.staging / "output.txt"
     output.write_text("deterministic output", encoding="utf-8")
-    descriptor = artifacts.bind_artifact_hash(handle, "step.output")
     log_dir = handle.capsule / "logs/session"
     log_dir.mkdir(parents=True)
     stdout = log_dir / "session-step-one-a1.stdout.log.gz"
@@ -148,25 +148,20 @@ def _case(tmp_path, *, include_waiting=False, retry=False, stale=False):
         "exit_code": 0,
         "signal": None,
     }
-    (handle.capsule / "events/invocations.json").write_text(
-        json.dumps({invocation_id: invocation}),
-        encoding="utf-8",
-    )
-    store.complete_deterministic(
-        handle.workspace / "session/tasks.json",
+    def runner(*args, **kwargs):
+        (handle.capsule / "events/invocations.json").write_text(
+            json.dumps({invocation_id: invocation}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(exit_code=0, invocation=invocation)
+
+    service.execute(
+        handle.run_id,
         "step.one",
         attempt,
-        [{"artifact_id": "step.output", "sha256": descriptor["sha256"]}],
-        {
-            "schema_version": 1,
-            "operation": "test.noop",
-            "invocation_id": invocation_id,
-            "attempt": attempt,
-            "argv": ["python", "-c", "print('ok')"],
-            "status": "SUCCEEDED",
-            "exit_code": 0,
-            "capture_status": "COMPLETED",
-        },
+        {"message": "ok"},
+        handle_loader=lambda unused: handle,
+        runner=runner,
     )
     return handle
 
@@ -178,6 +173,9 @@ def test_complete_deterministic_task_materializes_a_closed_evidence_set(tmp_path
     closure = materialize_evidence(handle)
 
     assert closure["completeness_ok"] is True
+    accepted = artifacts.artifact_path(handle, "step.output")
+    assert accepted != artifacts.declared_path(handle, "step.output")
+    assert accepted.read_bytes() == b"deterministic output"
     assert closure["required_tasks"] == 1
     assert closure["present_tasks"] == 1
     plan = json.loads(

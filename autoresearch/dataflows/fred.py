@@ -10,13 +10,18 @@ the routing layer treats it as "unavailable" rather than a hard crash.
 """
 import logging
 import os
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
 from .errors import VendorNotConfiguredError
 
 logger = logging.getLogger(__name__)
+
+ADAPTER_VERSION = "fred.vintage.v1"
+FRED_TIMEZONE = ZoneInfo("America/Chicago")
 
 FRED_API_BASE = "https://api.stlouisfed.org/fred"
 
@@ -105,19 +110,91 @@ def _resolve_series_id(indicator: str) -> str:
 def _request(path: str, params: dict) -> dict:
     """GET a FRED endpoint, surfacing FRED's JSON error body on a bad request."""
     api_params = {**params, "api_key": get_api_key(), "file_type": "json"}
-    response = requests.get(
-        f"{FRED_API_BASE}/{path}", params=api_params, timeout=REQUEST_TIMEOUT
-    )
-    # FRED returns 400 with a JSON {"error_message": ...} for unknown series IDs
-    # or malformed params; turn that into a clear, actionable error.
-    if response.status_code == 400:
+    from autoresearch.common.source_capture import record_source_response
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    response = None
+    try:
+        response = requests.get(
+            f"{FRED_API_BASE}/{path}", params=api_params, timeout=REQUEST_TIMEOUT
+        )
+        if response.status_code == 400:
+            try:
+                message = response.json().get("error_message", response.text)
+            except ValueError:
+                message = response.text
+            raise ValueError(f"FRED request failed: {message}")
+        response.raise_for_status()
+        outcome = response.json()
+    except BaseException as exc:
+        outcome = exc
+        raise
+    finally:
+        ended_at = datetime.now(timezone.utc).isoformat()
         try:
-            message = response.json().get("error_message", response.text)
-        except ValueError:
-            message = response.text
-        raise ValueError(f"FRED request failed: {message}")
-    response.raise_for_status()
-    return response.json()
+            record_source_response(
+                provider="fred", endpoint=path,
+                params={**params, "adapter_version": ADAPTER_VERSION},
+                outcome=outcome,
+                raw_bytes=response.content if response is not None else None,
+                consumer_artifact_ids=[],
+                started_at=started_at, ended_at=ended_at,
+                source_timing={
+                    # Point-vintage realtime_start is clipped to the query period;
+                    # it is not evidence of the original publication timestamp.
+                    "published_at": None, "first_available_at": None,
+                    "received_at": ended_at,
+                    "timestamp_precision": {
+                        "published_at": None, "first_available_at": None,
+                        "received_at": "second",
+                    },
+                },
+            )
+        except BaseException:
+            # Receipt I/O must never turn cancellation into an ordinary vendor
+            # failure that the harvest/router would swallow and continue past.
+            if not isinstance(outcome, BaseException) or isinstance(outcome, Exception):
+                raise
+
+    return outcome
+
+
+def _iso_date(value: str, field: str) -> date:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError(f"{field} must be YYYY-MM-DD")
+    return date.fromisoformat(value)
+
+
+def _vintage_window(curr_date, vintage_date, knowledge_cutoff):
+    _iso_date(curr_date, "curr_date")
+    vintage_date = curr_date if vintage_date is None else vintage_date
+    vintage = _iso_date(vintage_date, "vintage_date")
+    cutoff = curr_date if knowledge_cutoff is None else knowledge_cutoff
+    intraday = None
+    if isinstance(cutoff, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
+        cutoff_date = _iso_date(cutoff, "knowledge_cutoff")
+    else:
+        if not isinstance(cutoff, str) or "T" not in cutoff:
+            raise ValueError("knowledge_cutoff must be a date or timezone-aware ISO timestamp")
+        intraday = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        if intraday.tzinfo is None or intraday.utcoffset() is None:
+            raise ValueError("knowledge_cutoff requires timezone")
+        cutoff_date = intraday.astimezone(FRED_TIMEZONE).date()
+    if vintage > cutoff_date:
+        raise ValueError("vintage_date exceeds knowledge_cutoff")
+    complete_day = datetime.combine(vintage + timedelta(days=1), time.min, FRED_TIMEZONE)
+    known_by_cutoff = intraday is None or complete_day <= intraday
+    return vintage_date, cutoff, known_by_cutoff
+
+
+def _contains_vintage(row, vintage_date):
+    """Reject incompatible response intervals without treating them as release times."""
+    start, end = row.get("realtime_start"), row.get("realtime_end")
+    if start is not None:
+        _iso_date(start, "response realtime_start")
+    if end is not None:
+        _iso_date(end, "response realtime_end")
+    return (start is None or start <= vintage_date) and (end is None or vintage_date <= end)
 
 
 def _series_unavailable_message(indicator: str, series_id: str, detail: str = "") -> str:
@@ -142,20 +219,34 @@ def get_macro_data(
     indicator: str,
     curr_date: str,
     look_back_days: int | None = None,
+    *,
+    vintage_date: str | None = None,
+    knowledge_cutoff: str | None = None,
 ) -> str:
     """Fetch a FRED macroeconomic series as a formatted markdown report.
 
     Args:
         indicator: A friendly alias (e.g. "cpi", "unemployment", "10y_treasury")
             or a raw FRED series ID (e.g. "CPIAUCSL", "DGS10").
-        curr_date: End of the window (yyyy-mm-dd); no later observations are
-            returned, so a past date never leaks future data.
+        curr_date: End of the observation window (yyyy-mm-dd). Observation dates
+            alone do not constrain subsequent releases or revisions.
         look_back_days: Trailing window length; ``None`` uses DEFAULT_LOOKBACK_DAYS.
+        vintage_date: Historical information date, defaulting to curr_date.
+        knowledge_cutoff: Research date or timezone-aware ISO timestamp. Defaults
+            to curr_date. A same-day vintage cannot establish intraday availability.
 
     Returns:
         A markdown report with the series title, units, frequency, the latest
         value, the change over the window, and a recent observation table.
     """
+    vintage_date, cutoff, known_by_cutoff = _vintage_window(
+        curr_date, vintage_date, knowledge_cutoff
+    )
+    if not known_by_cutoff:
+        return ("MACRO_DATA_UNAVAILABLE: intraday availability unknown for "
+                f"FRED vintage {vintage_date} (day precision), cutoff {cutoff}. "
+                "Use a completed earlier vintage day or timestamped release evidence.")
+    realtime = {"realtime_start": vintage_date, "realtime_end": vintage_date}
     if look_back_days is None:
         look_back_days = DEFAULT_LOOKBACK_DAYS
 
@@ -164,7 +255,11 @@ def get_macro_data(
     series_id = _resolve_series_id(indicator)
 
     try:
-        meta = _request("series", {"series_id": series_id}).get("seriess") or []
+        metadata = _request("series", {"series_id": series_id, **realtime})
+        meta = metadata.get("seriess") or []
+        if not _contains_vintage(metadata, vintage_date):
+            meta = []
+        meta = [row for row in meta if _contains_vintage(row, vintage_date)]
     except FredNotConfiguredError:
         # No API key: let the router treat FRED as "unavailable" (it subclasses
         # ValueError, so this must propagate, not be swallowed below).
@@ -181,21 +276,25 @@ def get_macro_data(
     frequency = info.get("frequency", "")
     seasonal = info.get("seasonal_adjustment_short", "")
 
-    observations = _request(
+    response = _request(
         "series/observations",
         {
             "series_id": series_id,
+            **realtime,
             "observation_start": start_date,
             "observation_end": curr_date,
             "sort_order": "asc",
         },
-    ).get("observations", [])
+    )
+    observations = response.get("observations", []) if _contains_vintage(response, vintage_date) else []
 
     # FRED encodes a missing observation as ".".
     points = [
         (o["date"], o["value"])
         for o in observations
         if o.get("value") not in (".", None, "")
+        and _contains_vintage(o, vintage_date)
+        and o.get("date", "") <= curr_date
     ]
 
     header = (
@@ -204,11 +303,13 @@ def get_macro_data(
         f"- Frequency: {frequency}"
         f"{f' ({seasonal})' if seasonal else ''}\n"
         f"- Window: {start_date} to {curr_date}\n"
+        f"- Vintage: {vintage_date} (day precision); intraday availability unknown\n"
+        f"- Knowledge cutoff: {cutoff}\n"
     )
 
     if not points:
         return header + (
-            f"\nNo observations for {series_id} in this window. The series may "
+            f"\nMACRO_DATA_UNAVAILABLE: No observations for {series_id} in this window. The series may "
             f"report less frequently than the window length; widen look_back_days."
         )
 

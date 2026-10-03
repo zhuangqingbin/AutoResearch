@@ -14,6 +14,7 @@ CALCULATOR_IDS = frozenset(
         "financial_period_ratios.v1",
         "ah_premium.v1",
         "conditional_base_rates.v1",
+        "conditional_gap.v1",
         "dcf_sensitivity.v1",
     }
 )

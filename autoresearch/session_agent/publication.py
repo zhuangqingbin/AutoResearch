@@ -215,6 +215,11 @@ def transactional_finish(handle) -> dict:
     bundle, reader = prepare_bundle(handle)
     report_root = ws.run_reports_root(handle.contract.run_kind)
     state_root = ws.context_root() / "_published_state"
+    state_precondition = None
+    if handle.contract.run_kind == "dossier-init":
+        from autoresearch.session_agent.workflows.dossier import publication_state_precondition
+
+        state_precondition = publication_state_precondition(handle)
     with run_write_lock(handle.run_id):
         receipt = execute_publication(
             handle,
@@ -222,6 +227,7 @@ def transactional_finish(handle) -> dict:
             artifact_reader=reader,
             reports_root=report_root,
             state_root=state_root,
+            state_precondition=state_precondition,
             finalizer=lambda canonical: capsule_mod._finalize_unlocked(
                 handle.run_id,
                 capsule_mod.BusinessStatus.SUCCEEDED,
@@ -265,15 +271,21 @@ def session_profile(handle, *, business_status: str = "SUCCEEDED"):
     roles = tuple(dict.fromkeys(task["role"] for task in tasks if task["kind"] == "INFERENCE"))
     mapping = {role: role_stage(role) for role in roles}
     from autoresearch.trace.capsule import _last_reliable_checkpoint, resolve_run_mode
+    from autoresearch.trace.completeness import (
+        card_research_profile_from_capsule,
+        card_rules_from_capsule,
+    )
 
     profile = profile_factory(handle.contract.run_kind)(
         mode=resolve_run_mode(handle),
+        card_rules_version=card_rules_from_capsule(handle.capsule),
         business_status=business_status,
         last_stage=_last_reliable_checkpoint(handle.capsule),
         agent_roles=roles,
         role_stages=mapping,
     )
-    return replace(profile, replayable_stages=replayable_plan_operations({**frozen_plan, "tasks": tasks}))
+    return replace(profile, card_research_profile=card_research_profile_from_capsule(handle.capsule),
+                   replayable_stages=replayable_plan_operations({**frozen_plan, "tasks": tasks}))
 
 
 __all__ = [

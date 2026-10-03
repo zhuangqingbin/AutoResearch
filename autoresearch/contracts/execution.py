@@ -20,8 +20,130 @@ contracts 在最底层,不能 import scan(那是向上的边)。字面量不漂�
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
+
+DECISION_FRAME_SCHEMA_VERSION = 1
+DECISION_FRAME_FIELDS = frozenset({
+    "schema_version", "analysis_session", "knowledge_cutoff", "venue", "timezone",
+    "ruler", "research_depth", "usage", "entry_session", "entry_phase",
+    "exit_session", "exit_phase", "return_basis", "calendar_quality",
+})
+VENUE_TIMEZONES = {
+    "XSHG": "Asia/Shanghai", "XSHE": "Asia/Shanghai", "XBSE": "Asia/Shanghai",
+    "XNYS": "America/New_York", "XNAS": "America/New_York",
+    "XHKG": "Asia/Hong_Kong", "UNSPECIFIED": "UTC", "CONTINUOUS": "UTC",
+}
+VERIFIED_CALENDARS = frozenset({"trade_cal", "exchange_calendar"})
+
+
+CALENDAR_SOURCE_FIELDS = frozenset({"schema_version", "venue", "timezone", "source_id", "published_at", "available_at", "sessions"})
+
+
+def validate_calendar_source(value: dict, *, venue: str, cutoff: str) -> dict:
+    if not isinstance(value, dict) or set(value) != CALENDAR_SOURCE_FIELDS:
+        raise ValueError("invalid exchange calendar source fields")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise ValueError("invalid exchange calendar source version")
+    if value["venue"] != venue or value["timezone"] != VENUE_TIMEZONES.get(venue):
+        raise ValueError("calendar venue/timezone differs from research request")
+    if not isinstance(value["source_id"], str) or not value["source_id"].strip():
+        raise ValueError("calendar source identity required")
+    published = parse_aware(value["published_at"])
+    available = parse_aware(value["available_at"])
+    if published is None or available is None or published > available or available > parse_aware(cutoff):
+        raise ValueError("calendar source unavailable at knowledge cutoff")
+    if not isinstance(value["sessions"], list):
+        raise ValueError("calendar sessions must be a list")
+    previous = ""
+    for row in value["sessions"]:
+        if not isinstance(row, dict) or set(row) != {"date", "open_at", "close_at"}:
+            raise ValueError("invalid exchange calendar session fields")
+        day = row["date"]
+        if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day or day <= previous:
+            raise ValueError("calendar sessions must be ordered unique ISO dates")
+        previous = day
+        times = [parse_aware(row[key]) for key in ("open_at", "close_at")]
+        if any(t is None or t.astimezone(ZoneInfo(value["timezone"])).date().isoformat() != day
+               or t.utcoffset() != t.astimezone(ZoneInfo(value["timezone"])).utcoffset() for t in times):
+            raise ValueError("calendar session timezone/date mismatch")
+        if times[0] >= times[1]:
+            raise ValueError("calendar open must precede close")
+    return value
+
+
+def validate_decision_frame(value: dict) -> dict:
+    """Validate a declared overnight clock; dates are supplied by a calendar owner."""
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    fields = DECISION_FRAME_FIELDS | ({"calendar_evidence", "predecessor_frame_hash"} if version == 2 else set())
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("invalid decision frame fields")
+    if type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2}:
+        raise ValueError("unsupported decision frame schema")
+    enum_fields = ("ruler", "entry_phase", "exit_phase", "return_basis", "research_depth",
+                   "usage", "venue", "timezone", "calendar_quality")
+    if any(not isinstance(value[key], str) for key in enum_fields):
+        raise ValueError("decision frame enums must be strings")
+    fixed = {"ruler": "gap_c1_o2", "entry_phase": "CLOSE", "exit_phase": "OPEN",
+             "return_basis": "ENTRY_PRICE"}
+    if any(value[key] != expected for key, expected in fixed.items()):
+        raise ValueError("decision frame must use close-to-open entry-price returns")
+    if value["research_depth"] not in {"FULL", "LITE"}:
+        raise ValueError("invalid research depth")
+    if value["usage"] not in {"standalone", "scan", "holding_review", "macro", "sector"}:
+        raise ValueError("invalid research usage")
+    if value["venue"] not in VENUE_TIMEZONES or value["timezone"] != VENUE_TIMEZONES[value["venue"]]:
+        raise ValueError("venue and timezone must agree")
+    if not isinstance(value["analysis_session"], str):
+        raise ValueError("analysis session must be an ISO date")
+    analysis = date.fromisoformat(value["analysis_session"])
+    if analysis.isoformat() != value["analysis_session"]:
+        raise ValueError("analysis session must be an ISO date")
+    cutoff = parse_aware(value["knowledge_cutoff"])
+    if cutoff is None or cutoff.astimezone(ZoneInfo(value["timezone"])).date() < analysis:
+        raise ValueError("knowledge cutoff precedes analysis session")
+    if version == 2:
+        predecessor = value["predecessor_frame_hash"]
+        if predecessor is not None and (not isinstance(predecessor, str) or not re.fullmatch(r"[0-9a-f]{64}", predecessor)):
+            raise ValueError("invalid predecessor frame hash")
+        evidence = value["calendar_evidence"]
+        if evidence is not None:
+            if not isinstance(evidence, dict) or set(evidence) != {"source_sha256", "source"}:
+                raise ValueError("invalid calendar evidence fields")
+            if not isinstance(evidence["source_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", evidence["source_sha256"]):
+                raise ValueError("invalid calendar source hash")
+            source = validate_calendar_source(evidence["source"], venue=value["venue"], cutoff=value["knowledge_cutoff"])
+            days = [row["date"] for row in source["sessions"]]
+            if value["calendar_quality"] != "UNKNOWN":
+                if value["analysis_session"] not in days:
+                    raise ValueError("analysis is not a verified trading session")
+                index = days.index(value["analysis_session"])
+                if days[index + 1:index + 3] != [value["entry_session"], value["exit_session"]]:
+                    raise ValueError("entry/exit must be consecutive calendar sessions")
+                if cutoff < parse_aware(source["sessions"][index]["close_at"]):
+                    raise ValueError("analysis session is not settled at knowledge_cutoff")
+        elif value["calendar_quality"] != "UNKNOWN":
+            raise ValueError("verified frame requires calendar source evidence")
+    quality = value["calendar_quality"]
+    if quality == "UNKNOWN":
+        if value["entry_session"] is not None or value["exit_session"] is not None:
+            raise ValueError("unverified calendar cannot declare trading sessions")
+        return value
+    if quality not in VERIFIED_CALENDARS or value["venue"] in {"CONTINUOUS", "UNSPECIFIED"}:
+        raise ValueError("unverified trading calendar")
+    if value["venue"] in {"XSHG", "XSHE", "XBSE"}:
+        # The A-share regular session ends at 15:00 local time. Foreign closes
+        # (including early-close sessions) must be supplied by their calendar owner.
+        analysis_close = datetime.combine(analysis, time(15), ZoneInfo(value["timezone"]))
+        if cutoff < analysis_close:
+            raise ValueError("analysis session is not settled at knowledge_cutoff")
+    for key in ("entry_session", "exit_session"):
+        if not isinstance(value[key], str) or date.fromisoformat(value[key]).isoformat() != value[key]:
+            raise ValueError("session must be an ISO date")
+    if not value["analysis_session"] < value["entry_session"] < value["exit_session"]:
+        raise ValueError("expected analysis < entry < exit sessions")
+    return value
 
 SNAPSHOT_SCHEMA_VERSION = 1
 
@@ -170,3 +292,89 @@ def validate_cost_model(policy: dict) -> dict:
     if policy["order_merge"] not in {"per_order", "per_day"}:
         raise ValueError("order_merge must be per_order or per_day")
     return policy
+
+
+def conditional_gap(exit_price: str | None, entry_price: str | None) -> str | None:
+    """Scenario return relative to the declared entry, never today's quote."""
+    exit_value = parse_amount(exit_price, field="exit_price")
+    entry_value = parse_amount(entry_price, field="entry_price")
+    if exit_value is None or entry_value is None:
+        return None
+    if exit_value <= 0 or entry_value <= 0:
+        raise ValueError("scenario prices must be positive")
+    return format(exit_value / entry_value - 1, "f")
+
+
+def validate_scenario_estimate(value: dict) -> dict:
+    """Validate declared conditional returns; interval bounds use high/low entry respectively."""
+    fields = {'schema_version', 'entry', 'probability_basis', 'scenarios', 'ev_range', 'rr'}
+    if not isinstance(value, dict) or set(value) != fields or type(value['schema_version']) is not int or value['schema_version'] != 1:
+        raise ValueError('invalid conditional-scenarios-v1 fields')
+
+    def number(raw, *, positive=False):
+        from decimal import InvalidOperation
+        if not isinstance(raw, str):
+            raise ValueError('scenario number must be a decimal string')
+        try:
+            result = Decimal(raw)
+        except InvalidOperation as exc:
+            raise ValueError('invalid scenario number') from exc
+        if not result.is_finite() or (positive and result <= 0):
+            raise ValueError('scenario prices must be finite and positive')
+        return result
+
+    def bounds(raw, *, positive=False):
+        if not isinstance(raw, dict) or set(raw) != {'low', 'high'}:
+            raise ValueError('scenario range must declare low/high')
+        low, high = (number(raw[key], positive=positive) for key in ('low', 'high'))
+        if low > high:
+            raise ValueError('scenario range is reversed')
+        return low, high
+
+    entry = None if value['entry'] is None else bounds(value['entry'], positive=True)
+    rows = value['scenarios']
+    if not isinstance(rows, list) or not rows:
+        raise ValueError('scenario prices required')
+    names = []
+    returns, probabilities = [], []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {'name', 'exit_price', 'return_range', 'probability'}:
+            raise ValueError('invalid scenario fields')
+        if row['name'] not in {'bull', 'base', 'bear'} or row['name'] in names:
+            raise ValueError('invalid or repeated scenario name')
+        names.append(row['name'])
+        number(row['exit_price'], positive=True)
+        if entry is None:
+            if row['return_range'] is not None:
+                raise ValueError('scenario return needs declared entry')
+        else:
+            actual = bounds(row['return_range'])
+            expected = tuple(Decimal(conditional_gap(row['exit_price'], str(point))) for point in reversed(entry))
+            if any(abs(a-b) > Decimal('0.000000001') for a, b in zip(actual, expected, strict=True)):
+                raise ValueError('scenario return contradicts declared entry/exit')
+            returns.append(actual)
+        probability = row['probability']
+        probabilities.append(None if probability is None else number(probability))
+    if any(p is not None for p in probabilities):
+        if (set(names) != {'bull', 'base', 'bear'} or any(p is None or not 0 <= p <= 1 for p in probabilities)
+                or sum(probabilities) != 1 or value['probability_basis'] != 'subjective'):
+            raise ValueError('three subjective scenario probabilities must sum to one')
+    elif value['probability_basis'] != 'not_provided':
+        raise ValueError('probability basis without probabilities')
+    ev = value['ev_range']
+    if ev is not None:
+        if entry is None or any(p is None for p in probabilities):
+            raise ValueError('EV needs declared entry and subjective probabilities')
+        actual = bounds(ev)
+        expected = tuple(sum(row[i]*p for row, p in zip(returns, probabilities, strict=True)) for i in (0, 1))
+        if any(abs(a-b) > Decimal('0.000000001') for a, b in zip(actual, expected, strict=True)):
+            raise ValueError('EV contradicts scenario returns')
+    if value['rr'] is not None:
+        if entry is None or entry[0] != entry[1] or set(names) != {'bull', 'base', 'bear'}:
+            raise ValueError('R:R requires point entry and three scenarios')
+        by_name = dict(zip(names, returns, strict=True))
+        gain, loss = by_name['bull'][0], by_name['bear'][0]
+        if gain <= 0 or loss >= 0 or abs(number(value['rr'], positive=True) - gain / -loss) > Decimal('0.000000001'):
+            raise ValueError('R:R contradicts bull/bear returns')
+    return value
+

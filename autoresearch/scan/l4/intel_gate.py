@@ -48,6 +48,17 @@ DEAD_CMF_MAX = 0.0               # cmf_20 < 0
 DEAD_OBV_MAX = 0.0               # obv_mom_20 < 0
 FACTORS = (("main_inflow_yi", DEAD_MAIN_INFLOW_YI_MAX), ("cmf_20", DEAD_CMF_MAX),
            ("obv_mom_20", DEAD_OBV_MAX))
+
+
+def dead_gate_factors(cfg: dict | None = None) -> tuple[tuple[str, float], ...]:
+    """三线阈 = `scan_config.l4_intel.dead_gate.{main_inflow_max, cmf_max, obv_max}`(缺键 = FACTORS 常量)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l4_intel", "dead_gate", None, {}, cfg) or {}
+    if not isinstance(user, dict):
+        user = {}
+    return (("main_inflow_yi", float(user.get("main_inflow_max", DEAD_MAIN_INFLOW_YI_MAX))),
+            ("cmf_20", float(user.get("cmf_max", DEAD_CMF_MAX))),
+            ("obv_mom_20", float(user.get("obv_max", DEAD_OBV_MAX))))
 #: `L3_catalyst.csv` 的事件计数列(`scan/agents/l3_catalyst._COLS` 去掉 code)。
 EVENT_COLUMNS = ("rep_impl", "rep_plan", "holder_in", "holder_de", "surv_n")
 #: 指数调样里**不是**催化的相位:生效前夜是「禁止」事实(L4 简报印 ⛔),不是 📅。
@@ -66,7 +77,7 @@ def decide_row(row: dict) -> Verdict:
         return Verdict(False, "📌/证据席恒派 intel")
     if bool(row.get("has_catalyst")):
         return Verdict(False, str(row.get("catalyst_note") or "带日期催化,派 intel"))
-    for key, _cap in FACTORS:
+    for key, _cap in dead_gate_factors():
         value = row.get(key)
         try:
             number = float(value)
@@ -74,7 +85,7 @@ def decide_row(row: dict) -> Verdict:
             return Verdict(False, f"因子缺列 {key},不判死")
         if math.isnan(number):
             return Verdict(False, f"因子缺列 {key},不判死")
-    dead = all(float(row[key]) < cap for key, cap in FACTORS)
+    dead = all(float(row[key]) < cap for key, cap in dead_gate_factors())
     return Verdict(dead, "三线同负且无催化" if dead else "有一线不为负")
 
 
@@ -129,7 +140,7 @@ def gate_rows(scan_dir: Path | str) -> list[dict]:
     l1 = _read(scan / "L1_scored_full.csv")
     factors: dict[str, dict] = {}
     if not l1.empty and "code" in l1.columns:
-        keep = [k for k, _cap in FACTORS if k in l1.columns]
+        keep = [k for k, _cap in dead_gate_factors() if k in l1.columns]
         for code, rec in zip(_codes(l1), l1[keep].to_dict("records"), strict=True):
             factors.setdefault(code, rec)
     dated, events = dated_catalyst_codes(scan), event_catalyst_codes(scan)

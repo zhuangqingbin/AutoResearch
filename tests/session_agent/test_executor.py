@@ -71,3 +71,11 @@ def test_live_record_blocks_duplicate_execution(tmp_path, monkeypatch):
         executor.execute_operation(
             _handle(tmp_path), _task(), 1, {"message": "ok"}, runner=lambda *a, **k: None
         )
+
+
+def test_owner_execution_preserves_interrupt_even_for_exclusive_operations(tmp_path):
+    def captured(*args, **kwargs):
+        return SimpleNamespace(exit_code=-15, invocation={"status": "FAILED", "forwarded_signals": [15]})
+
+    with pytest.raises(KeyboardInterrupt):
+        executor.execute_operation(_handle(tmp_path), _task(), 1, {"message": "ok"}, runner=captured)

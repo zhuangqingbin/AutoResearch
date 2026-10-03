@@ -1129,6 +1129,10 @@ def test_checkpoint_rejects_unsafe_stage_status_and_artifact(
 def test_capsule_cli_emits_one_canonical_json_and_inspect_is_read_only(
     tmp_path, monkeypatch, capsys
 ):
+    # Exercise historical CLI serialization after an explicitly simulated entry gate.
+    from autoresearch.contracts import research_access
+    monkeypatch.setattr(research_access, 'require_legacy_access',
+                        lambda *args: {'status': 'SIMULATED_LEGACY_BODY'})
     _redirect_roots(monkeypatch, tmp_path)
     config = tmp_path / "scan_config.jsonc"
     config.write_text("{}\n", encoding="utf-8")
@@ -1663,3 +1667,13 @@ def test_load_run_rejects_state_created_at_different_from_contract(
     state_path.write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(RuntimeError, match="created_at"):
         load_run(handle.run_id)
+
+
+def test_begin_freezes_current_card_rules_before_research(tmp_path, monkeypatch):
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+    from autoresearch.trace.completeness import card_rules_from_capsule
+
+    handle = _begin(tmp_path, monkeypatch)
+    assert card_rules_from_capsule(handle.capsule) == CURRENT_CARD_RULES
+    profile = json.loads((handle.capsule / "verification/profile.json").read_text())
+    assert profile["card_source"] == "legacy_md"

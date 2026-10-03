@@ -29,6 +29,12 @@ THROUGHPUT_WINDOW_DAYS = 7
 NIGHTLY_CAP = 3  # 帽 ≤3/晚不变(§A10)
 
 
+def _slo():
+    """`scan_config.dossier.{init_per_night, max_pending_age_days, throughput_window_days}`(缺键 = 上面常量)。"""
+    from autoresearch.dossier.config import dossier_cfg
+    return dossier_cfg()
+
+
 def _days_between(earlier: str, later: str) -> int | None:
     try:
         return (_date.fromisoformat(str(later)) - _date.fromisoformat(str(earlier))).days
@@ -98,17 +104,17 @@ def compute(today: str, *, pool_path=None) -> dict:
         c
         for c, st in stocks.items()
         if (d := _days_between(st.get("entered", ""), today)) is not None
-        and 0 <= d < THROUGHPUT_WINDOW_DAYS
+        and 0 <= d < _slo()["throughput_window_days"]
     ]
     digested = [
         c
         for c in stocks
         if (built := _built_on(c))
         and (d := _days_between(built, today)) is not None
-        and 0 <= d < THROUGHPUT_WINDOW_DAYS
+        and 0 <= d < _slo()["throughput_window_days"]
     ]
 
-    meets_age = None if oldest_age is None else oldest_age <= MAX_PENDING_AGE_DAYS
+    meets_age = None if oldest_age is None else oldest_age <= _slo()["max_pending_age_days"]
     meets_overdue = len(overdue) == 0
     meets_throughput = len(digested) >= len(added)
     checks = (meets_age if pending else True, meets_overdue, meets_throughput)
@@ -117,12 +123,12 @@ def compute(today: str, *, pool_path=None) -> dict:
         "pending_n": len(pending),
         "oldest_pending_code": oldest_code,
         "oldest_pending_age_days": oldest_age,
-        "max_pending_age_days": MAX_PENDING_AGE_DAYS,
+        "max_pending_age_days": _slo()["max_pending_age_days"],
         "reconcile_overdue_n": len(overdue),
         "reconcile_overdue": overdue,
         "added_7d": len(added),
         "digested_7d": len(digested),
-        "nightly_cap": NIGHTLY_CAP,
+        "nightly_cap": _slo()["init_per_night"],
         "meets_age": meets_age,
         "meets_overdue": meets_overdue,
         "meets_throughput": meets_throughput,

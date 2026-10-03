@@ -268,15 +268,320 @@ def _readout(metrics: list[dict], coverage: dict) -> str:
     return "\n".join(lines)
 
 
+
+def study_simulated_fills(frozen, snapshots, cost):
+    """snapshot_last.v1: plan-window observations only, never daily auction proxies."""
+    from zoneinfo import ZoneInfo
+
+    from autoresearch.contracts.execution import parse_aware
+
+    legs, coverage = [], []
+    args = {
+        key: cost[key]
+        for key in (
+            "slippage_bps",
+            "commission_rate",
+            "minimum_commission",
+            "tax_rate",
+            "tax_sides",
+            "transfer_fee_rate",
+        )
+    }
+    for day in frozen["days"]:
+        for candidate in day["candidates"]:
+            plan = candidate["plan"]
+            if plan["execution_mode"] != "SNAPSHOT_SIMULATED":
+                coverage.append({"code": plan["code"], "reason": "PLAN_MODE_MISMATCH"})
+                continue
+            from autoresearch.research.execution_ledger import _aware_time, _calendar_window_valid
+
+            windows = [
+                _aware_time(plan.get(key))
+                for key in (
+                    "entry_window_start",
+                    "entry_window_end",
+                    "exit_window_start",
+                    "exit_window_end",
+                )
+            ]
+            if not _calendar_window_valid(plan, windows):
+                coverage.append({"code": plan["code"], "reason": "INVALID_FROZEN_CALENDAR"})
+                continue
+            for side, prefix in (("BUY", "entry"), ("SELL", "exit")):
+                low, high = [
+                    parse_aware(plan[prefix + "_window_" + key]) for key in ("start", "end")
+                ]
+                options = [
+                    dict(row, decision_at=high.isoformat())
+                    for row in snapshots
+                    if row["code"] == plan["code"]
+                    and row["run_id"] == candidate["run_id"]
+                    and low <= parse_aware(row["market_event_at"]) <= high
+                ]
+                options = [
+                    row
+                    for row in options
+                    if row.get("timestamp_precision") == "second"
+                    and em.snapshot_visibility(row) == "AVAILABLE"
+                ]
+                if len(options) != 1:
+                    coverage.append(
+                        {
+                            "code": plan["code"],
+                            "side": side,
+                            "reason": "MISSING_WINDOW_SNAPSHOT"
+                            if not options
+                            else "AMBIGUOUS_WINDOW_SNAPSHOT",
+                        }
+                    )
+                    break
+                row = options[0]
+                if (
+                    row["suspended"] is not False
+                    or row["last"] is None
+                    or row["limit_down_price"] is None
+                    or row["limit_up_price"] is None
+                    or not Decimal(row["limit_down_price"])
+                    < Decimal(row["last"])
+                    < Decimal(row["limit_up_price"])
+                ):
+                    coverage.append(
+                        {"code": plan["code"], "side": side, "reason": "LIQUIDITY_UNKNOWN"}
+                    )
+                    break
+                leg = em.simulated_leg(price=row["last"], qty=candidate["qty"], side=side, **args)
+                if side == "BUY" and leg["notional"] + leg["commission"] + leg["tax"] + leg[
+                    "transfer_fee"
+                ] > Decimal(frozen["policy"]["initial_cash"]) * Decimal(candidate["weight"]):
+                    coverage.append({"code": plan["code"], "reason": "FROZEN_ALLOCATION_EXCEEDED"})
+                    break
+                local = high.astimezone(ZoneInfo("Asia/Shanghai"))
+                legs.append(
+                    {
+                        "evidence_mode": "SNAPSHOT_SIMULATED",
+                        "account_hash": frozen["policy"]["account_hash"],
+                        "code": plan["code"],
+                        "fill_id": "sim:" + row["snapshot_id"] + ":" + side,
+                        "side": side,
+                        "trade_date": local.date().isoformat(),
+                        "trade_time": local.timetz().isoformat(),
+                        "qty": candidate["qty"],
+                        "amount": str(leg["notional"]),
+                        "commission": str(leg["commission"]),
+                        "stamp_tax": str(leg["tax"]),
+                        "transfer_fee": str(leg["transfer_fee"]),
+                        "other_fee": "0",
+                        "source_observation_id": row["source_observation_id"],
+                    }
+                )
+    return legs, coverage
+
+
+def execution_study_readout(
+    directory, *, fills, snapshots, cost, trade_evidence=None, order_status=None, import_errors=None
+):
+    """Consume prospective study freezes; all modes retain every analysis date."""
+    from zoneinfo import ZoneInfo
+
+    from autoresearch.research import forward_study, probability_eval as pe
+    from autoresearch.research.execution_ledger import _aware_time, execution_plan_hash
+
+    frozen = forward_study.execution_inputs(directory)
+    policy = frozen["policy"]
+    from autoresearch.common.atomic import canonical_json, sha256_bytes
+
+    frozen_cost = frozen.get("cost_model")
+    if frozen_cost is None or canonical_json(cost) != canonical_json(frozen_cost):
+        raise ValueError("runtime parameters differ from frozen cost model")
+    if policy["cost_model_version"] != cost["cost_model_version"]:
+        raise ValueError("cost model differs from preregistered policy")
+    if fills and not trade_evidence:
+        raise ValueError("explicit authorized trades import required")
+    sessions = [d["date"] for d in frozen["days"]]
+    simulated, sim_coverage = study_simulated_fills(frozen, snapshots, cost)
+    result = {
+        "schema_version": 1,
+        "protocol_sha256": frozen["protocol_sha256"],
+        "cost_model_sha256": sha256_bytes(canonical_json(frozen_cost).encode()),
+        "modes": {},
+        "trade_import": trade_evidence,
+        "simulation_coverage": sim_coverage,
+        "probability_rows": [],
+        "import_errors": import_errors or [],
+        "limitations": [
+            "EOD_PROXY does not create executions or net NAV from daily prices",
+            "Human authorization is the explicit file import; no broker access or identity attestation is implied",
+        ],
+    }
+    # Market observations only value inventory at the final minute of a session.
+    marks = {}
+    for row in snapshots:
+        observed = _aware_time(row["market_event_at"])
+        close = datetime.fromisoformat(row["session_date"] + "T15:00:00+08:00")
+        if (
+            observed
+            and 0 <= (close - observed).total_seconds() <= 60
+            and em.snapshot_visibility(dict(row, decision_at=close.isoformat())) == "AVAILABLE"
+        ):
+            key = (row["session_date"], row["code"])
+            if key in marks:
+                marks[key] = None
+            else:
+                marks[key] = row["last"]
+    candidates = [c for d in frozen["days"] for c in d["candidates"]]
+    for c in candidates:
+        if Decimal(c["weight"]) > Decimal(policy["max_weight"]):
+            raise ValueError("candidate exceeds frozen weight limit")
+    for day in frozen["days"]:
+        if (
+            len(day["candidates"]) > policy["max_positions"]
+            or sum((Decimal(c["weight"]) for c in day["candidates"]), Decimal(0)) > 1
+        ):
+            raise ValueError("candidate allocation exceeds frozen portfolio limits")
+    episodes, _ = execution_ledger.build_episodes(fills)
+    for mode, legs in (
+        ("EOD_PROXY", []),
+        ("SNAPSHOT_SIMULATED", simulated),
+        ("OBSERVED_FILL", fills),
+    ):
+        decisions = {
+            d["date"]: {
+                "status": d["status"],
+                "research_status": d["status"],
+                "execution_status": "NOT_DUE",
+            }
+            for d in frozen["days"]
+        }
+        for c in candidates:
+            plan = c["plan"]
+            entry = _aware_time(plan["entry_window_start"])
+            entry_day = entry.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            if entry_day in decisions:
+                # A plan in another evidence mode cannot create a counterfactual fill.
+                decision = decisions[entry_day]
+                decision["status"] = "SELECTED"
+                decision.pop("execution_status", None)
+                matched = [
+                    r
+                    for r in (order_status or [])
+                    if r["session"] == entry_day
+                    and r["code"] == plan["code"]
+                    and r["evidence_mode"] == mode
+                ]
+                order = {
+                    "code": plan["code"],
+                    "requested_qty": c["qty"],
+                    "plan_hash": execution_plan_hash(plan),
+                    "state": "EXECUTION_UNKNOWN",
+                    "source_observation_id": None,
+                }
+                if len(matched) == 1 and matched[0]["state"] == "NO_FILL":
+                    order.update(
+                        state="NO_FILL", source_observation_id=matched[0]["source_observation_id"]
+                    )
+                decision.setdefault("orders", []).append(order)
+        windows = [
+            {
+                "code": c["plan"]["code"],
+                "entry_date": _aware_time(c["plan"]["entry_window_start"])
+                .astimezone(ZoneInfo("Asia/Shanghai"))
+                .date()
+                .isoformat(),
+                "exit_date": _aware_time(c["plan"]["exit_window_end"])
+                .astimezone(ZoneInfo("Asia/Shanghai"))
+                .date()
+                .isoformat(),
+            }
+            for c in candidates
+        ]
+        for session, declaration in decisions.items():
+            sectors = {
+                c["plan"]["code"]: c.get("sector")
+                for source_day in frozen["days"]
+                if source_day["date"] <= session
+                for c in source_day["candidates"]
+            }
+            declaration.update(plan_windows=windows, sectors=sectors)
+            if import_errors and mode == "OBSERVED_FILL":
+                declaration["status"] = "DATA_UNKNOWN"
+        panel_legs = [r for r in legs if r["trade_date"] in sessions]
+        panel = execution_ledger.execution_day_panel(
+            sessions,
+            decisions=decisions,
+            fills=panel_legs,
+            marks=marks,
+            policy=policy,
+            evidence_mode=mode,
+        )
+        panel["outside_panel_fills"] = [
+            r["fill_id"] for r in legs if r["trade_date"] not in sessions
+        ]
+        panel["planned_window_returns"] = []
+        result["modes"][mode] = panel
+    for day in frozen["days"]:
+        for c in day["candidates"]:
+            plan = c["plan"]
+            entry_day = (
+                _aware_time(plan["entry_window_start"])
+                .astimezone(ZoneInfo("Asia/Shanghai"))
+                .date()
+                .isoformat()
+            )
+            eligible = [
+                ep for ep in episodes if ep["code"] == plan["code"] and ep["session"] == entry_day
+            ]
+            ids = set(eligible[0]["fill_ids"]) if len(eligible) == 1 else set()
+            rows = [r for r in fills if r["fill_id"] in ids]
+            initial_values = [pos.get("market_value") for pos in policy["initial_positions"]]
+            initial_capital = (
+                Decimal(policy["initial_cash"])
+                + sum((Decimal(value) for value in initial_values), Decimal(0))
+                if all(value is not None for value in initial_values)
+                else None
+            )
+            row = pe.execution_probability_row(
+                c["declaration"],
+                plan=plan,
+                fills=rows,
+                sizing={"qty": c["qty"], "weight": c["weight"], "initial_capital": initial_capital},
+            )
+            row["candidate_sha256"] = sha256_bytes(canonical_json(c).encode())
+            row["candidate_artifact_sha256"] = day.get("candidate_artifact_sha256")
+            row.update(analysis_date=day["date"], case_id=execution_plan_hash(plan))
+            if import_errors:
+                row["y"] = None
+                row["missing_reasons"].append("IMPORT_ERRORS")
+            result["probability_rows"].append(row)
+            result["modes"]["OBSERVED_FILL"]["planned_window_returns"].append(
+                {
+                    "plan_hash": row["plan_hash"],
+                    "net_return": row["execution"]["net_return_realized"]
+                    if not row["missing_reasons"]
+                    else None,
+                    "missing_reasons": row["missing_reasons"],
+                }
+            )
+    # Training observations must be separately frozen; no test labels feed the baseline.
+    result["probability"] = pe.clustered_probability_metrics(
+        result["probability_rows"],
+        event_id=pe.PLANNED_OVERNIGHT_EVENT,
+        training_rows=frozen.get("probability_training", []),
+        split=frozen["protocol"]["template"]["split"],
+    )
+    return result
 def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, policy: Path,
         runs_root: Path | None, lake_daily: Path | None, max_age_seconds: float,
         parent: Path | None = None, engine: str | None = None,
-        simulation_qty: str | None = None) -> Path:
+        simulation_qty: str | None = None, forward_study: Path | None = None,
+        order_status: Path | None = None) -> Path:
     engine = engine or ws.detect_engine()
     cost = imp.load_policy(policy)
     snap_rows, snap_errors = imp.load_snapshots(snapshots, engine=engine) if snapshots else ([], [])
     fills, fill_errors = imp.load_trades(trades) if trades else ([], [])
     blocks = _execution_blocks(runs_root)
+    study = execution_study_readout(forward_study, fills=fills, snapshots=snap_rows, cost=cost,
+        trade_evidence={"path":str(trades),"sha256":_sha256(trades),"import_basis":"EXPLICIT_IMPORT"} if trades else None,
+        order_status=imp.load_order_status(order_status) if order_status else [], import_errors=fill_errors) if forward_study else None
     # 先验证输入、再创建输出(中断目录保留失败 manifest,不自动覆盖重跑)
     output = create_output_dir(experiment_id, parent=parent)
     sim_rows, sim_coverage = _snapshot_rows(snap_rows, blocks=blocks, policy=cost,
@@ -310,6 +615,8 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
     (output / "coverage.json").write_text(json.dumps(coverage, ensure_ascii=False, indent=1) + "\n",
                                           encoding="utf-8")
     (output / "readout.md").write_text(_readout(metrics, coverage), encoding="utf-8")
+    if study is not None:
+        (output / "execution_day_panel.json").write_text(json.dumps(study,ensure_ascii=False,indent=2,default=str)+"\n")
     manifest = {
         "schema_version": 1, "experiment_id": experiment_id, "engine": engine,
         "as_of": datetime.now(timezone.utc).isoformat(),
@@ -326,6 +633,10 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
         "n_rows": len(rows), "n_coverage_excluded": (len(sim_excluded) + len(snap_errors)
                                                        + len(fill_errors) + len(obs_coverage)),
     }
+    if study is not None:
+        manifest["outputs"]["execution_day_panel.json"] = _sha256(output / "execution_day_panel.json")
+        manifest["forward_protocol_sha256"] = study["protocol_sha256"]
+        manifest["inputs"]["order_status"] = _sha256(order_status)
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n",
                                           encoding="utf-8")
     return output
@@ -343,6 +654,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="快照新鲜度(显式研究参数,不冒充项目缺省)")
     ap.add_argument("--simulation-qty", default=None,
                     help="快照模拟的显式参考数量;缺省只报毛收益,成本后收益未知")
+    ap.add_argument("--forward-study", help="冻结分析日与execution_portfolio配置的前向研究目录")
+    ap.add_argument("--order-status", help="显式授权的订单状态JSON;缺记录不代表未成交")
     a = ap.parse_args(argv)
     try:
         out = run(experiment_id=a.experiment_id,
@@ -350,7 +663,9 @@ def main(argv: list[str] | None = None) -> int:
                   trades=Path(a.trades) if a.trades else None, policy=Path(a.policy),
                   runs_root=Path(a.runs_root) if a.runs_root else None,
                   lake_daily=Path(a.lake_daily) if a.lake_daily else None,
-                  max_age_seconds=a.max_age_seconds, simulation_qty=a.simulation_qty)
+                  max_age_seconds=a.max_age_seconds, simulation_qty=a.simulation_qty,
+                  forward_study=Path(a.forward_study) if a.forward_study else None,
+                  order_status=Path(a.order_status) if a.order_status else None)
     except FileExistsError as exc:
         print(f"[execution_audit] 落点已存在,拒绝覆盖:{exc}", file=sys.stderr)
         return 2
@@ -360,3 +675,32 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def execution_funnel(rows: list[dict]) -> list[dict]:
+    """Report each execution stage against its own explicitly known denominator.
+
+    Inputs declare nullable boolean candidate/orderable/submitted/filled/
+    exit_complete/window_breached independently, grouped by evidence_mode. Actual
+    fills do not prove an order submission record exists; daily open prices do not
+    establish fills. Unknown states never count as false or enter a denominator.
+    """
+    stages = ("candidate", "orderable", "submitted", "filled", "exit_complete", "window_breached")
+    groups = defaultdict(list)
+    for row in rows:
+        if not row.get("evidence_mode"):
+            raise ValueError("evidence_mode is required")
+        for stage in stages:
+            if row.get(stage) is not None and type(row[stage]) is not bool:
+                raise ValueError(f"{stage} must be boolean or null")
+        groups[row["evidence_mode"]].append(row)
+    result = []
+    for mode, members in sorted(groups.items()):
+        counts = {}
+        for stage in stages:
+            values = [row[stage] for row in members if row.get(stage) is not None]
+            counts[stage] = {"n": sum(values), "denominator": len(values),
+                             "missing": len(members) - len(values),
+                             "rate": sum(values) / len(values) if values else None}
+        result.append({"evidence_mode": mode, "n": len(members), "stages": counts})
+    return result

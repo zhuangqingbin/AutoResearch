@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,12 +101,17 @@ class _FakeScanOperations:
                                            meta={CODE: {"ticker": "600519.SS"}})
         for artifact_id in task["output_artifact_ids"]:
             try:
-                path = artifacts.artifact_path(self.handle, artifact_id)
+                path = artifacts.declared_path(self.handle, artifact_id)
             except KeyError:
                 continue   # the service binds every declared output; unregistered ones fail there
             if artifact_id.startswith("scan.l4.") and artifact_id.endswith(".prompt"):
                 continue   # written above, before the taskbook fingerprints it
-            _write(path, self._content(task["operation"], artifact_id))
+            content_id = re.sub(r"^(scan\.review\.(?:plan|decision))\.[0-9]{6}$", r"\1", artifact_id)
+            value = self._content(task["operation"], content_id)
+            if content_id != artifact_id:
+                field = "reviews" if ".plan." in artifact_id else "decisions"
+                value = {**value, field: [row for row in value[field] if row["code"] == task["subject"]]}
+            _write(path, value)
         if task["operation"] == "scan.l4.finalize":
             book = staging / "_l4_tasks.json"
             payload = json.loads(book.read_text(encoding="utf-8"))
@@ -118,6 +122,8 @@ class _FakeScanOperations:
 
 class _FakeScanModels:
     name = "fake-models"
+    from autoresearch.session_agent.roles import EXECUTOR_CAPABILITIES
+    capabilities = EXECUTOR_CAPABILITIES["mailbox"]
 
     def __init__(self, *, branchy: bool = False, transcripts: Path | None = None):
         self.requests = []
@@ -126,13 +132,25 @@ class _FakeScanModels:
 
     def dispatch(self, request):
         self.requests.append(request)
-        card = (f"# {CODE}\n**Rating**: Sell\nFINAL TRANSACTION PROPOSAL: **SELL**\n"
+        # Synthetic rubric facts: branchy is a fully reviewed pinned Sell;
+        # the ordinary path is a valid Hold early stop and never reads deep.
+        card = (f"# {CODE}\n**评分卡**:基本面 弱 ｜ 估值 弱 ｜ 技术·资金 弱 ｜ "
+                "盈利质量 弱 ｜ 偿付(爆雷) 弱 ｜ 催化 弱\n"
+                "OW三门:主力真在 ✗ ｜ 业绩真兑现 ✗ ｜ 估值不透支 ✗\n"
+                "**Rating**: Sell\nFINAL TRANSACTION PROPOSAL: **SELL**\n"
                 if self.branchy else
-                f"# {CODE}\n**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: **HOLD**\n")
+                f"# {CODE}\n**Rating**: Hold\n**早停**:停于 P3 ｜ 停因:其他\n"
+                "FINAL TRANSACTION PROPOSAL: **HOLD**\n")
         text = {
             "macro.brief": TEMPLATE_MARKET_VIEW,
             "sector.brief": "## 地形段\n行业成交温和,估值处于近一年中位附近。\n",
-            "scan.l3": json.dumps([{"code": CODE, "finalist": True, "thesis": "t"}]),
+            "scan.l3": json.dumps([{
+                "schema_version": 2, "veto_reasons": [], "code": CODE, "name": "贵州茅台",
+                "sector": SECTOR, "lenses": "估值", "conviction": 60, "fragility": "需求",
+                "thesis": "t", "mechanism": "隔夜未定价催化", "risk": "未兑现", "catalyst": "无",
+                "triage_lean": "Hold", "lane": "value", "pct_60d": 0, "sentiment": "中性",
+                "finalist": True,
+            }]),
             "scan.l3.repair": json.dumps([{"code": CODE, "thesis": "fixed"}]),
             # Real intel differs between attempts (live web search).
             "scan.l4.intel": f"## 事件段\n- 无新增事件({request.task_id})\n## 声明行\n网查 3 条\n",
@@ -146,17 +164,36 @@ class _FakeScanModels:
         evidence = (("host-binding:" + "1" * 64,)
                     if request.independent_context and self.transcripts is None else ())
         transcript = None
-        if self.transcripts is not None:
-            transcript = self.transcripts / f"{request.task_id}.a{request.attempt}.jsonl"
+        transcript_root = self.transcripts
+        if self.branchy and transcript_root is None:
+            # Explicitly synthetic host observation, outside the run workspace.
+            output = Path(next(iter(request.output_paths.values())))
+            test_root = next(parent.parent for parent in output.parents if parent.name == "context_codex")
+            transcript_root = test_root / "synthetic_transcripts"
+        if transcript_root is not None:
+            transcript = transcript_root / f"{request.task_id}.a{request.attempt}.jsonl"
             transcript.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(CODEX_TRANSCRIPT, transcript)
+            rows = [json.loads(line) for line in CODEX_TRANSCRIPT.read_text().splitlines()]
+            if self.branchy and request.role in {"scan.l4.card", "scan.l4.review"}:
+                deep = Path(next(path for key, path in request.input_paths.items() if key.endswith(".deep")))
+                content = deep.read_text(encoding="utf-8")
+                ordinal = max(row["ordinal"] for row in rows) + 1
+                rows.extend([
+                    {"timestamp": "2026-09-13T01:02:03Z", "ordinal": ordinal, "type": "response_item",
+                     "payload": {"type": "function_call", "name": "read_file", "call_id": "synthetic-deep-read",
+                                 "arguments": json.dumps({"path": str(deep)})}},
+                    {"timestamp": "2026-09-13T01:02:04Z", "ordinal": ordinal + 1, "type": "response_item",
+                     "payload": {"type": "function_call_output", "call_id": "synthetic-deep-read", "output": content}},
+                ])
+            transcript.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            evidence = ()
         return DispatchResult(ok=True, session_ref="session-main",
                               context_ref=f"agent-{request.task_id}",
                               parent_context_ref="session-main", evidence_refs=evidence,
                               transcript_path=str(transcript) if transcript else None)
 
 
-def _scan_run(tmp_path, monkeypatch, *, host=None, user_config=None):
+def _scan_run(tmp_path, monkeypatch, *, host=None, user_config=None, card_rules_version="skills-gap-v2"):
     monkeypatch.setattr(ws, "ENGINE", "codex")
     monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
     workspace = tmp_path / "context_codex/scan_runs" / RUN_ID
@@ -172,9 +209,12 @@ def _scan_run(tmp_path, monkeypatch, *, host=None, user_config=None):
     request = {
         "schema_version": 1, "kind": "scan-market", "requested_mode": "AUTO",
         "analysis_date": "2026-09-13", "subject": None, "peers": [], "asset_type": None,
-        "name": None, "force_full": False, "host_profile": host or profile(),
+        "name": None, "force_full": False, "host_profile": host or profile(independent_context=True, web_search=True, web_fetch=True),
         "predecessor_run_id": None,
     }
+    # C5 scheduling/recovery fixtures retain their historical card contract.
+    # New runs use v3; these legacy Markdown cards must explicitly freeze v2.
+    _write(handle.capsule / "verification/profile.json", {"card_rules_version": card_rules_version})
     service.begin(request, begin_capsule=lambda value: handle)
     return handle
 
@@ -207,14 +247,15 @@ def test_synthetic_full_scan_runs_through_the_runner_to_finish(tmp_path, monkeyp
     l3 = next(request for request in models.requests if request.role == "scan.l3")
     assert "按质 7~10 只" in l3.prompt
     card = next(request for request in models.requests if request.role == "scan.l4.card")
-    assert card.prompt.startswith("执行 ") and f"details/{CODE}.md" in card.prompt
+    assert "执行 " in card.prompt and f"attempts/l4.{CODE}.a1.card/a0001/outputs/" in card.prompt
+    assert card.prompt.startswith("## 冻结决策时间窗")
 
 
 def test_synthetic_scan_with_intel_repair_and_independent_review(tmp_path, monkeypatch):
     from autoresearch.session_agent import host_evidence
 
     handle = _scan_run(tmp_path, monkeypatch,
-                       host=profile(independent_context=True, web_search=True),
+                       host=profile(independent_context=True, web_search=True, web_fetch=True),
                        user_config={"l4_intel": {"enabled": True}})
     monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
                         lambda current, task, receipt: [receipt])
@@ -234,7 +275,7 @@ def test_synthetic_scan_with_intel_repair_and_independent_review(tmp_path, monke
         operations.calls)
     assert "scan.review.none" not in operations.calls
     review = next(request for request in models.requests if request.role == "scan.l4.review")
-    assert review.prompt.startswith("独立复核 run2(不知道其它 run 结论)")
+    assert "独立复核 run2(不知道其它 run 结论)" in review.prompt
     assert review.independent_context is True
     intel = next(request for request in models.requests if request.role == "scan.l4.intel")
     assert "已知底" in intel.prompt and "≤20 条" in intel.prompt
@@ -428,7 +469,7 @@ def test_l4_card_timeout_with_intel_keeps_the_bound_a1_intel_intact(tmp_path, mo
     from autoresearch.session_agent import host_evidence
     from autoresearch.session_agent.executors.base import ExecutorTimeout
 
-    host = profile(independent_context=True, web_search=True)
+    host = profile(independent_context=True, web_search=True, web_fetch=True)
     config = {"l4_intel": {"enabled": True}}
     baseline = _baseline_missing(tmp_path, monkeypatch, branchy=True, host=host,
                                  user_config=config)
@@ -478,7 +519,7 @@ class _RealIntelOperations(_FakeScanOperations):
             result = super().__call__(handle, stage, argv, invocation_id, attempt, subject,
                                       task_id=task_id)
             if task["operation"] == "scan.l4.slim":        # the taskbook's success check
-                slim = artifacts.artifact_path(self.handle, task["output_artifact_ids"][0])
+                slim = artifacts.declared_path(self.handle, task["output_artifact_ids"][0])
                 _write(slim, "\n".join(["## Verified market snapshot",
                                         "### Latest verified OHLCV row", "| Close | 12.34 |",
                                         "## Market context", "## Fundamentals overview",
@@ -498,7 +539,7 @@ def test_real_intel_ops_keep_the_bound_a1_intel_and_the_card_input(tmp_path, mon
     from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
     from autoresearch.session_agent import domain_ops, host_evidence
 
-    host = profile(independent_context=True, web_search=True)
+    host = profile(independent_context=True, web_search=True, web_fetch=True)
     handle = _scan_run(tmp_path, monkeypatch, host=host,
                        user_config={"l4_intel": {"enabled": True}})
     monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
@@ -549,7 +590,7 @@ def test_real_intel_ops_across_an_l4_retry_keep_both_bound_intels(tmp_path, monk
     from autoresearch.session_agent import domain_ops, host_evidence
     from autoresearch.session_agent.executors.base import ExecutorTimeout
 
-    host = profile(independent_context=True, web_search=True)
+    host = profile(independent_context=True, web_search=True, web_fetch=True)
     handle = _scan_run(tmp_path, monkeypatch, host=host,
                        user_config={"l4_intel": {"enabled": True}})
     monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
@@ -626,7 +667,7 @@ def test_full_scan_evidence_closure_has_only_harness_gaps(tmp_path, monkeypatch,
     resolver) and the real intel_status/finalize ops, the closure's ``missing`` list is
     exactly the harness-only gaps — no TRANSCRIPT_MISSING for sector briefs (N1), no
     OUTPUTS/INPUT_SNAPSHOT_MISSING for intel (N2), no ticket capture/receipt legs (N3)."""
-    host = profile(independent_context=True, web_search=True) if branchy else None
+    host = profile(independent_context=True, web_search=True, web_fetch=True) if branchy else None
     handle = _scan_run(tmp_path, monkeypatch, host=host,
                        user_config={"l4_intel": {"enabled": True}} if branchy else None)
     models = _FakeScanModels(branchy=branchy, transcripts=tmp_path / "host_transcripts")
@@ -676,7 +717,7 @@ def test_failed_l3_repair_degrades_to_the_original_judged_and_finishes(tmp_path,
     """legacy scan-market.js:519–535: a repair that does not land → continue with the
     unrepaired judged set.  session_v1 supersedes repair/apply; GATE2 must still claim."""
     handle = _scan_run(tmp_path, monkeypatch,
-                       host=profile(independent_context=True, web_search=True),
+                       host=profile(independent_context=True, web_search=True, web_fetch=True),
                        user_config={"l4_intel": {"enabled": True}})
     from autoresearch.session_agent import host_evidence
 
@@ -708,15 +749,13 @@ def test_failed_l3_repair_degrades_to_the_original_judged_and_finishes(tmp_path,
     assert repair["status"] == "DEGRADED" and repair["preserved_original"] is True
 
 
-def test_review_timeout_stops_blocked_without_respending_intel_and_card(tmp_path, monkeypatch):
-    """Review I2: retry-l4 rebuilds ticket/slim/intel/card only, never the review —
-    a review TASK_ATTEMPT failure must stop the run BLOCKED with REVIEW_FAILED, not
-    spend another intel + card and then stall on a missing ensemble file."""
+def test_review_timeout_exhausts_only_review_session_attempts(tmp_path, monkeypatch):
+    """A mandatory review retries alone, then blocks publication when exhausted."""
     from autoresearch.session_agent import host_evidence
     from autoresearch.session_agent.executors.base import ExecutorTimeout
 
     handle = _scan_run(tmp_path, monkeypatch,
-                       host=profile(independent_context=True, web_search=True),
+                       host=profile(independent_context=True, web_search=True, web_fetch=True),
                        user_config={"l4_intel": {"enabled": True}})
     monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
                         lambda current, task, receipt: [receipt])
@@ -739,10 +778,19 @@ def test_review_timeout_stops_blocked_without_respending_intel_and_card(tmp_path
     assert final["stop_reason"] == "BLOCKED", (final["stop_reason"], final["errors"])
     l4 = [request.task_id for request in models.requests
           if request.role in {"scan.l4.intel", "scan.l4.card", "scan.l4.review"}]
-    assert l4 == [f"l4.{CODE}.a1.intel", f"l4.{CODE}.a1.card", f"l4.{CODE}.a1.review2"]
-    assert any(error.get("code") == "REVIEW_FAILED:TIMEOUT" and error.get("subject") == CODE
+    assert l4 == [f"l4.{CODE}.a1.intel", f"l4.{CODE}.a1.card",
+                  f"l4.{CODE}.a1.review2", f"l4.{CODE}.a1.review2"]
+    assert [r.attempt for r in models.requests if r.role == "scan.l4.review"] == [1, 2]
+    assert legacy_scan._payload(handle)["tasks"][CODE]["status"] == "RUNNING"
+    assert any(error.get("code") == "REVIEW_UNAVAILABLE" and error.get("subject") == CODE
                for error in final["errors"]), final["errors"]
     assert final["skipped"] == []
+    coverage = service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"]
+    assert coverage["successful_cards"]["completed"] == 1
+    assert coverage["deep_research"]["completed"] == 1
+    assert coverage["reviews"]["required"] == 1
+    assert coverage["reviews"]["completed"] == 0
+    assert coverage["report_completeness"]["complete"] is False
 
 
 class _RunnerCrash(BaseException):
@@ -796,7 +844,7 @@ def test_restart_does_not_turn_a_review_failure_into_an_l4_retry(tmp_path, monke
     from autoresearch.session_agent.executors.base import ExecutorTimeout
 
     handle = _scan_run(tmp_path, monkeypatch,
-                       host=profile(independent_context=True, web_search=True),
+                       host=profile(independent_context=True, web_search=True, web_fetch=True),
                        user_config={"l4_intel": {"enabled": True}})
     monkeypatch.setattr(host_evidence, "resolve_receipt_evidence",
                         lambda current, task, receipt: [receipt])
@@ -818,7 +866,7 @@ def test_restart_does_not_turn_a_review_failure_into_an_l4_retry(tmp_path, monke
                              max_rounds=3000, hooks=_plain_hooks(handle, operations))
     assert second["stop_reason"] == "BLOCKED"
     assert len(models.requests) == before                       # nothing re-spent
-    assert any(error.get("code") == "REVIEW_FAILED:TIMEOUT" for error in second["errors"])
+    assert any(error.get("code") == "REVIEW_UNAVAILABLE" for error in second["errors"])
 
 
 def test_unresolvable_l4_retry_stops_the_run_instead_of_spinning(tmp_path, monkeypatch):
@@ -849,3 +897,272 @@ def test_unresolvable_l4_retry_stops_the_run_instead_of_spinning(tmp_path, monke
                             max_rounds=400, hooks=hooks)
     assert final["stop_reason"] == "BLOCKED"
     assert any("quiescent" in str(error.get("message")) for error in final["errors"])
+
+
+@pytest.mark.parametrize("failed_review", ["review2", "review3"])
+def test_review_recovers_its_session_attempt_without_replaying_the_card(tmp_path, monkeypatch, failed_review):
+    from autoresearch.session_agent import host_evidence
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence", lambda *args: ["synthetic"])
+    models = _FakeScanModels(branchy=True)
+    operations = _FakeScanOperations(handle, branchy=True)
+    original_content = operations._content
+
+    def content(operation, artifact_id):
+        result = original_content(operation, artifact_id)
+        if artifact_id == "scan.review.decision" and failed_review == "review3":
+            result["decisions"][0].update(same_tier=False, review3_required=True, review2_rating="Hold")
+        return result
+
+    operations._content = content
+    dispatch_original = models.dispatch
+    snapshots = []
+
+    def dispatch(request):
+        if request.task_id.endswith(failed_review) and request.attempt == 1:
+            models.requests.append(request)
+            snapshots.append(service.status(RUN_ID, handle_loader=lambda _: handle))
+            raise ExecutorTimeout("synthetic review timeout")
+        return dispatch_original(request)
+
+    models.dispatch = dispatch
+    final = runner.run_loop(RUN_ID, models, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, operations))
+    assert final["finished"] is True, final["errors"]
+    assert all(value["state"] != "DONE" for value in snapshots)
+    assert len([r for r in models.requests if r.role == "scan.l4.card"]) == 1
+    reviews = [r for r in models.requests if r.task_id.endswith(failed_review)]
+    assert [r.attempt for r in reviews] == [1, 2]
+    assert reviews[0].output_paths != reviews[1].output_paths
+    assert reviews[0].input_paths == reviews[1].input_paths
+    assert legacy_scan._payload(handle)["tasks"][CODE]["attempt"] == 1
+    coverage = service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"]
+    assert coverage["report_completeness"]["complete"] is True
+    assert coverage["reviews"]["completed"] == 1
+    if failed_review == "review3":
+        assert len([r for r in models.requests if r.task_id.endswith("review2")]) == 1
+    # A late first-attempt writer cannot alter the accepted second review.
+    accepted_id = next(iter(reviews[1].output_paths))
+    accepted_hash = artifacts.snapshot_artifact(handle, accepted_id)["sha256"]
+    Path(next(iter(reviews[0].output_paths.values()))).write_text("late invalid review")
+    assert artifacts.snapshot_artifact(handle, accepted_id)["sha256"] == accepted_hash
+
+
+class _ThreeStockOperations(_FakeScanOperations):
+    codes = (CODE, "000001", "000002")
+
+    def _content(self, operation, artifact_id):
+        if artifact_id == "scan.finalists":
+            return "code,name,sector,lane\n" + "".join(
+                f"{code},Synthetic,{SECTOR},{'pinned' if code == '000002' else ''}\n" for code in self.codes)
+        if artifact_id == "scan.l4.plan":
+            return {"codes": list(self.codes), "intel_enabled": False,
+                    "meta": {code: {"pinned": code == "000002"} for code in self.codes}}
+        if artifact_id in {"scan.review.plan", "scan.review.decision"}:
+            book = legacy_scan._payload(self.handle)["tasks"]
+            rows = [{"code": code, "attempt": book[code]["attempt"],
+                     "rating": "Sell" if code == "000002" else "Hold",
+                     "pinned": code == "000002", "trigger": "sell_review" if code == "000002" else None}
+                    for code in self.codes]
+            if artifact_id == "scan.review.decision":
+                for row in rows:
+                    row.update(review2_rating="Sell" if row["pinned"] else None,
+                               same_tier=True if row["pinned"] else None, review3_required=False)
+            return {"schema_version": 1, "reviews" if artifact_id == "scan.review.plan" else "decisions": rows}
+        return super()._content(operation, artifact_id)
+
+    def __call__(self, handle, stage, argv, invocation_id, attempt, subject, *, task_id):
+        task = service._task(handle, task_id)
+        if task["operation"] not in {"scan.l4.prepare", "scan.l4.finalize"}:
+            return super().__call__(handle, stage, argv, invocation_id, attempt, subject, task_id=task_id)
+        self.calls.append(task["operation"])
+        if task["operation"] == "scan.l4.prepare":
+            for code in self.codes:
+                _write(handle.staging / f"_l4_prompt_{code}.md", f"任务包 {code}\n")
+            legacy_scan.initialize_tickets(handle, list(self.codes),
+                                           meta={code: {"pinned": code == "000002"} for code in self.codes})
+        for artifact_id in task["output_artifact_ids"]:
+            if not artifact_id.endswith(".prompt"):
+                _write(artifacts.declared_path(handle, artifact_id), self._content(task["operation"], artifact_id))
+        if task["operation"] == "scan.l4.finalize":
+            book = legacy_scan._payload(handle)
+            book["tasks"][subject]["status"] = "SUCCEEDED"
+            _write(legacy_scan.taskbook_path(handle), book)
+        return SimpleNamespace(exit_code=0, invocation={"status": "COMPLETED"})
+
+
+def test_three_stock_recovery_preserves_success_and_reports_each_gap(tmp_path, monkeypatch):
+    from autoresearch.session_agent import host_evidence
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(host_evidence, "resolve_receipt_evidence", lambda *args: ["synthetic"])
+    models = _FakeScanModels()
+    operations = _ThreeStockOperations(handle)
+    seen = []
+
+    def dispatch(request):
+        models.requests.append(request)
+        if request.task_id == "l4.000001.a1.card" or (
+                request.task_id == "l4.000002.a1.review2" and request.attempt == 1):
+            seen.append(service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"])
+            raise ExecutorTimeout("synthetic chain-local timeout")
+        worker = _FakeScanModels(branchy=request.subject == "000002")
+        result = worker.dispatch(request)
+        if request.subject in operations.codes:
+            for path in request.output_paths.values():
+                output = Path(path)
+                output.write_text(output.read_text().replace(CODE, request.subject))
+        return result
+
+    models.dispatch = dispatch
+    final = runner.run_loop(RUN_ID, models, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, operations))
+    assert final["finished"] is True, final["errors"]
+    cards = [r.task_id for r in models.requests if r.role == "scan.l4.card"]
+    assert cards.count(f"l4.{CODE}.a1.card") == 1
+    assert cards.count("l4.000002.a1.card") == 1
+    assert cards.count("l4.000001.a1.card") == cards.count("l4.000001.a2.card") == 1
+    assert [r.attempt for r in models.requests if r.role == "scan.l4.review"] == [1, 2]
+    assert len(seen) == 2
+    assert all(not item["report_completeness"]["complete"] for item in seen)
+    assert seen[0]["successful_cards"]["required"] == 3
+    assert "000001" in seen[0]["deep_research"]["unresolved_conditions"]
+    assert 1 <= seen[1]["successful_cards"]["completed"] <= 3
+    assert seen[1]["reviews"]["completed"] == 0
+    coverage = service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"]
+    assert coverage["successful_cards"]["completed"] == 3
+    assert coverage["deep_research"]["required"] == coverage["deep_research"]["completed"] == 1
+    assert coverage["reviews"]["required"] == coverage["reviews"]["completed"] == 1
+    assert coverage["report_completeness"]["complete"] is True  # all Hold/Sell, zero BUY is legal
+    # Loss of the accepted finalist source cannot fall back to mutable ticket metadata.
+    frozen_finalists = artifacts.artifact_path(handle, "scan.finalists")
+    frozen_finalists.chmod(0o600)  # deliberate disk-corruption fault injection
+    frozen_finalists.write_text("corrupted frozen finalists")
+    damaged = service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"]
+    assert damaged["report_completeness"]["complete"] is False
+    assert "FINALISTS_UNAVAILABLE" in damaged["population"]["errors"]
+
+
+def test_historical_review_parent_failure_is_explicitly_blocked_without_rerunning_cards(tmp_path, monkeypatch):
+    from autoresearch.session_agent.executors.base import ExecutorTimeout
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    models = _FakeScanModels(branchy=True)
+    operations = _FakeScanOperations(handle, branchy=True)
+    original = models.dispatch
+
+    def dispatch(request):
+        if request.role == "scan.l4.review":
+            models.requests.append(request)
+            raise ExecutorTimeout("historical failure")
+        return original(request)
+
+    models.dispatch = dispatch
+    real_fail = service.fail
+
+    def historical_fail(run_id, task_id, attempt, error_class, message, **kwargs):
+        result = real_fail(run_id, task_id, attempt, error_class, message, **kwargs)
+        if task_id.endswith(".review2"):
+            legacy_scan.fail_ticket(handle, CODE, 1, error_class, message)
+            raise _RunnerCrash()
+        return result
+
+    monkeypatch.setattr(service, "fail", historical_fail)
+    with pytest.raises(_RunnerCrash):
+        runner.run_loop(RUN_ID, models, poll_seconds=0.01, hooks=_plain_hooks(handle, operations))
+    monkeypatch.setattr(service, "fail", real_fail)
+    before = len(models.requests)
+    result = runner.run_loop(RUN_ID, models, poll_seconds=0.01, hooks=_plain_hooks(handle, operations))
+    assert result["stop_reason"] == "BLOCKED"
+    assert len(models.requests) == before
+    assert any(row.get("code") == "REVIEW_UNAVAILABLE" and row.get("reason") == "PARENT_NOT_RUNNING"
+               for row in result["errors"])
+    assert legacy_scan._payload(handle)["tasks"][CODE]["status"] == "FAILED"
+
+
+@pytest.mark.parametrize("failure", ["required_deep_missing", "invalid_structure"])
+def test_invalid_or_unverified_pinned_card_blocks_report_but_other_cards_finish(tmp_path, monkeypatch, failure):
+    from autoresearch.session_agent import store
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    models = _FakeScanModels()
+    operations = _ThreeStockOperations(handle)
+    original_content = operations._content
+
+    def content(operation, artifact_id):
+        if failure == "required_deep_missing" and artifact_id == "scan.l4.000002.a1.deep":
+            return "DEEP_EVIDENCE_UNAVAILABLE: synthetic outage"
+        return original_content(operation, artifact_id)
+
+    operations._content = content
+
+    def dispatch(request):
+        models.requests.append(request)
+        result = _FakeScanModels(branchy=request.subject == "000002").dispatch(request)
+        if request.subject in operations.codes:
+            for path in request.output_paths.values():
+                output = Path(path)
+                output.write_text(output.read_text().replace(CODE, request.subject))
+                if request.subject == "000002" and request.role == "scan.l4.card" and failure == "invalid_structure":
+                    output.write_text("unstructured research response")
+        return result
+
+    models.dispatch = dispatch
+    final = runner.run_loop(RUN_ID, models, poll_seconds=0.01, max_rounds=3000,
+                            hooks=_plain_hooks(handle, operations))
+    assert final["stop_reason"] == "BLOCKED"
+    assert final["finished"] is False
+    entries = store.read_entries(service._store_path(handle))
+    assert entries[f"l4.{CODE}.a1.card"]["state"] == "SUCCEEDED"
+    assert entries["l4.000001.a1.card"]["state"] == "SUCCEEDED"
+    assert entries["l4.000002.a1.card"]["state"] == "BLOCKED"
+    assert entries["l4.000002.a1.card"]["error"]["code"] == "CONTRACT_ERROR"
+    assert not entries["l4.000002.a1.card"]["outputs"]
+    assert len([r for r in models.requests if r.subject == "000002" and r.role == "scan.l4.card"]) == 1
+    coverage = service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"]
+    assert coverage["successful_cards"]["required"] == 3
+    assert coverage["successful_cards"]["completed"] == 2
+    assert coverage["deep_research"]["required"] == 1
+    assert coverage["deep_research"]["completed"] == 0
+    assert coverage["report_completeness"]["complete"] is False
+    with pytest.raises(RuntimeError, match="incomplete"):
+        service.finish(RUN_ID, handle_loader=lambda _: handle)
+
+
+def test_current_v3_card_runs_through_real_runner_and_submission_gates(tmp_path, monkeypatch):
+    """Keep a current-protocol success path beside the frozen C5 legacy fixtures."""
+    from autoresearch.contracts.agent_output import OW_GATES, RUBRIC_DIMENSIONS
+    from autoresearch.trace.completeness import card_rules_from_capsule
+    from tests.common.test_card_decision_v3 import decision_text
+
+    handle = _scan_run(tmp_path, monkeypatch, card_rules_version="skills-gap-v3")
+    text = decision_text(subject=CODE, venue="XSHG", rating="Hold",
+        dimensions=dict.fromkeys(RUBRIC_DIMENSIONS, "中"), gates=dict.fromkeys(OW_GATES, "FAIL"))
+    text += '\n```decision-claim-uses-v1\n' + json.dumps({
+        "schema_version": 1, "declarations": [], "uses": []}) + '\n```\n'
+
+    class Models(_FakeScanModels):
+        def dispatch(self, request):
+            result = super().dispatch(request)
+            if request.role == "scan.l4.card":
+                for path in request.output_paths.values():
+                    _write(Path(path), text)
+            return result
+
+    models = Models()
+    final = runner.run_loop(RUN_ID, models, hooks=_plain_hooks(handle, _FakeScanOperations(handle)),
+        max_parallel=4, poll_seconds=0.01, max_rounds=3000)
+    assert final["finished"], final["errors"]
+    assert card_rules_from_capsule(handle.capsule) == "skills-gap-v3"
+    card_request = next(request for request in models.requests if request.role == "scan.l4.card")
+    artifact_id = next(iter(card_request.output_paths))
+    assert artifacts.read_bytes(handle, artifact_id).decode() == text
+    usages = list((handle.capsule / "evidence/card_claim_uses").glob("*.json"))
+    assert len(usages) == 1
+    usage = json.loads(usages[0].read_text())
+    assert usage["coverage"]["known_claims"] == 0
+    assert usage["semantic_completeness"] == "UNKNOWN"
+    assert usage["frame_sha256"] == artifacts.snapshot_artifact(handle, "research.frame")["sha256"]

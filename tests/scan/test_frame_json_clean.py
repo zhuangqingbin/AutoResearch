@@ -113,14 +113,14 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
     assert contract["stage_budgets"] == {
         "baseline_run": "20260727_2140",
         "cache_hit_min": 0.85,
-        "concurrency": {
-            "l4_stock": 4,
+        "concurrency": {          # 注册表缺省(contracts/scan_config.DEFAULT_CONCURRENCY)
+            "l4_stock": 64,
             "tushare": 4,
-            "web_fetch": 4,
-            "web_search": 4,
         },
         # 2026-09-26:l3.finalist_max 退役 → 卡数只由 l4.max_cards 决定(scan/l4/card_count)。
         "l4_max_cards": 13,
+        "maturity": {"phase1": {"cost_reduction": 0.15, "p50": 75, "p90": 100},   # budgets.maturity 缺省
+                     "phase2": {"cost_reduction": 0.25, "p50": 65, "p90": 90}},
         "min_real_scans": 10,
         "pinned_cap": 5,
         "pinned_ttl_days": 10,

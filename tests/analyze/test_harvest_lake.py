@@ -60,7 +60,7 @@ def test_moneyflow_goes_through_lake(monkeypatch):
     assert len(mf_calls) == 3                              # 逐日(3 个交易日)各取一次全市场帧
     assert all(c[1] == {"trade_date": d} for c, d in
               zip(mf_calls, ("20260826", "20260827", "20260828"), strict=True))
-    assert "主力资金流" in (out or "") and "+0.12 亿" in out
+    assert "主动买卖单净流入" in (out or "") and "+0.12 亿" in out
 
 
 @pytest.mark.unit
@@ -379,6 +379,14 @@ def test_ashare_corporate_calendar_stays_deterministic_when_lake_has_membership_
 
 @pytest.mark.unit
 def test_stock_lhb_stock_statistic_em_goes_through_lake(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    # Only the lake route is under test; the two other branches must not use live akshare.
+    monkeypatch.setitem(sys.modules, "akshare", SimpleNamespace(
+        stock_individual_fund_flow=lambda **_: pd.DataFrame(),
+        stock_zt_pool_em=lambda **_: pd.DataFrame(),
+    ))
     calls: list[tuple[str, dict]] = []
     stat = pd.DataFrame({"代码": ["300308"], "上榜次数": [3], "最近上榜日": ["2026-08-20"],
                          "龙虎榜净买额": [5.0e7], "买方机构次数": [1], "卖方机构次数": [0]})

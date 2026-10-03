@@ -18,19 +18,20 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 **两层角色分工**:确定性层(L0/L1/L2/L5 + 全部度量,零 LLM 纯 pandas 不编数)/ AI 判断层(L3/L4/策略师/行业 brief,全 subagent 只回传紧凑结果)。
 
-## 二、核心世界观(实证结论,决定功夫花在哪)
+## 二、研究分工与证据边界
 
-- **确定性层没有 alpha。** L2 全部 zoo 模型 OOS rank-IC 为负;4 年回测 composite-top200 收益 ≈ 0。→ L2 不做预测,只做"菜单"(多样性采样)。
-- **判断层已证的 edge 在「拒绝」,不在「挑选」。** L3 真选无正 alpha 证据;拒绝侧:L4 评级 rank-IC +0.55 分档单调、门价值 +4.35pp,L4 推翻 L3 高确信两次全对。
-- **0 买的根因在召回线。** 413 只 T+1 赢家 91% 落在打分池、仅 4.8% 越过 top1000 召回线。
-- **0 买不等于失灵。** 历史 0 买日市场 fwd_1 −0.48% / fwd_5 −0.60%;哪天 0 买日市场却涨,才是失明预警。
+- **L2 负责多样性采样。** 原模型/旧持有尺的负结果解释当时退役模型的选择,不能推广为所有确定性信号都无效。[证据:historical_l2_model_value](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_l2_model_value)
+- **当前隔夜拒绝优势尚未建立。** 历史旧尺 `fwd_2_oc` 的评级 rank-IC +0.55 缺完整样本窗口;门价值 +4.35pp 限于 2026-06-18→07-08 的旧 NAV。两者不能迁为 `gap_c1_o2` 效果。[证据:historical_l4_rating_ic](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_l4_rating_ic) [证据:historical_l4_rejection_value](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_l4_rejection_value)
+- **同尺证据保持局限。** 08-22 普查的评级 IC 为 +0.118(t=1.68),≥OW 仅 4 日;支持继续核验,不能断言当前 L4 拒绝有效或无效。[证据:overnight_l4_rejection_unproven](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#overnight_l4_rejection_unproven)
+- **召回需要按版本诊断。** 历史 4.8% 过线率来自旧 retro 引用,赢家期限与分母仍待复核,不能当作当前零买的原因。[证据:historical_recall_capture](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_recall_capture)
+- **0 买不等于失灵,也不自动证明有效。** 按菜单、卡片、门与执行条件归因;旧零买日市场收益存在分组身份疑点,单日涨跌不裁定系统效果。[证据:historical_zero_buy_market](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_zero_buy_market)
 
 ---
 
 ## L0 · 选集 —— `autoresearch.scan.universe`(确定性)
 
 - **硬门**:剔 ST/退市/停牌/次新;市值地板(默认 30 亿)+ 北交所默认纳入(旋钮在 `scan_config.jsonc` 的 `l0` 块)。
-- **哲学**:只剔"确定不可交易/不可研究"的——**每加一条硬门就是一块永久盲区**(missed_l0 ≈ 赢家 9%,以小盘/次新/北交所为主)。
+- **哲学**:只剔"确定不可交易/不可研究"的——每加一条硬门都会改变覆盖范围;历史赢家覆盖摘要不能代替当前版本的漏召回诊断。
 
 ## L1 · 召回 —— `autoresearch.scan.recall`(确定性,→1000)
 
@@ -43,13 +44,13 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | reversal | 200/50 | 困境反转(旧路,与 reversal_confirm 并存) |
 | reversal_confirm | 150/50 | 反转确认四段:低位 + 企稳(D−1 截止缩量、RSI 20~85)+ **放量起爆硬门**(`vol_ratio_20`≥1.5 ∧ 站回 MA20 ∧ MA5>MA10)+ 可交易 |
 | lowturn | 120/40 | **低位转强**:门 = `common/turnup.lowturn_mask`(与 L3 旗同一谓词同一阈值,阈值住 `l3.lowturn`),排序 = `reversal_confirm_score`;画像门比 reversal_confirm 宽 |
-| value | 312/50 | 行业内低估(胜率 57.6%/+0.9% 全路最优) |
+| value | 312/50 | 行业内低估;旧优势摘要待复核,不作当前效果保证。[证据:historical_value_channel](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_value_channel) |
 | main_fund | 150/50 | 主力净流入 |
 | heat | 112/50 | 成交额量级(捞巨额龙头) |
 | growth | 112/40 | 成长加速 |
 | healthy | 112/40 | 质量上涨(0<pct60<40 且主力净流入>0 且 cmf>0) |
 
-- **配额覆盖**:`funnel.channel_quotas` 8 键全写(value 312 / momentum 188 / heat 112 / healthy 112 / growth 112 / main_fund 150 / reversal_confirm 150 / lowturn 120);兜底读取在 `universe.run` 本体(`_funnel_overlay`),显式参数/CLI flag 恒优先,任一键缺省回落注册表默认而非维持覆盖值。
+- **配额覆盖**:`funnel.channel_quotas` 八键全写(值只住 scan_config.jsonc);兜底读取在 `universe.run` 本体(`_funnel_overlay`),显式参数/CLI flag 恒优先,任一键缺省回落注册表默认而非维持覆盖值。
 - **rz 因子组**:融资买入强度 `rz_buy_intensity` 独立第 10 因子组(情绪接力资金代理,非基本面确认)。
 - **权重档**(`funnel.weight_profile`,唯一入口 `common.scoring.resolve_weights`):`"calibrated"` 读 `weights.json` 的 IC 校准权重并按当日 regime 取块(`common/regime.py`:breadth≥0.55 且 pct_60d>0 → trend;breadth≤0.30 且 pct_60d<0 → risk_off;其余 range;缺块回退 flat);**生产现档 `"preference"`**:固定符号「上涨趋势 + 有支撑 + 主力真在 + 散户不拥挤」,量级是产品裁定不是拟合,`regime_aware` 无操作(meta 记 `regime_applied=None`),`weights.json` 自此仅供研究。`weights_used.json`/`meta.json.weights_source` 记 profile + `config_sha256`。
 
@@ -58,7 +59,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 **不用机器学习**:① sector-neutral composite 排 merit;② 8 风格桶固定 floor(明细 = `l2_stratify.DEFAULT_FLOORS`;生产 `l2.floors` 覆盖健康 25 / 反转 6 / 低位转强 6),**未启用通道的桶 floor 运行时归零**(`effective_floors`)——新通道的回滚杆只剩一根:从 `recall_channels` 摘掉它;③ 任一 `industry` 标签 ≤20%(`l2.sector_cap`)。产物 `L2_gbdt_top200.csv`:`l2_rank`=选择序、`gbdt_score`=composite、`l2_lane_reserved`=被 floor 救回。
 - ⚠️ **「行业」= 东财所处行业(129 个细标签),不是申万一级**——sector-neutral 去均值与 `sector_cap` 用同一列 `industry`;20% 帽在这种粒度下几乎从不触发,真正拦同板块扎堆的是 L3 守卫⑧的 3 席帽。本条只把口径说对,不改判据。
 - **落刀帽**(`l2.knife_cap`,生产已开):merit 核/floor 桶/回填三步各自的落刀份额 ≤ 当日 L0 全市场帧的落刀面(`falling_knife_mask`);反转/低位转强两桶豁免;被帽跳过的行由下一个非落刀候选顶上,顶替行打布尔列 **`knife_cap_swap`**(复盘数这一列,不要数 `selection_detail == "knife_cap"`,floor 桶顶替行恒写桶名)。
-- **行业席位**(`l2.sector_seats`,生产 `{enabled:true, per_sector:2, max_sectors:3}`):`universe.run` 在 `scored` 就绪后、召回前用 `sector_healthy_top3` 选入围行业,行业内取非落刀健康上涨成员按当日 composite 降序各取 `per_sector` 只(剔 📌/ST/当日涨幅≥9.5%),`selection_reason="sector_seat"` 全程直通(镜像 `pinned`,不占 l2_n 名额、不进 `recall_n`),不净增 L4 卡数。
+- **行业席位**(`l2.sector_seats`,值只住 scan_config.jsonc):`universe.run` 在 `scored` 就绪后、召回前用 `sector_healthy_top3` 选入围行业,行业内取非落刀健康上涨成员按当日 composite 降序各取 `per_sector` 只(剔 📌/ST/当日涨幅≥9.5%),`selection_reason="sector_seat"` 全程直通(镜像 `pinned`,不占 l2_n 名额、不进 `recall_n`),不净增 L4 卡数。
 - **菜单体检**(`scan/menu.py`):行业集中度/落刀面/健康上涨/估值四项,自动嵌 L5;健康上涨=0 打 ⚠️菜单病。
 - **哨兵建议**(`menu.sentinel_advice`,按全市场健康占比):<3% 建议哨兵档(跳 L3+L4);3–5% 仅 consider;≥5% 全扫。**由人拍板不自动**。
 
@@ -138,7 +139,7 @@ P0 简报(市场地形+档案+解禁/披露/调样旗+行业备忘+误读预警)
 评级由 `rubric_rating` 派生;早停只向下;≥OW 必走完 P4+P5。契约全文在 `.claude/agents/l4-card.md`。
 - **防污染**:简报的 L3 论点是**中性前提清单**,conviction 在"L3 元数据"行注明"读完 P1 数字后再看";l4-card 铁律「先读数据后读论点」(P1 盲读:先写 3 行独立初判)。
 - **买单 ensemble**:≥OW 新派卡各追加 2 独立 `l4-card` run(复核卡落 `ensemble/`),取中位、**只向下折回**;run2 与 run1 同档即早止跳过 run3;spread≥2 档 → 🎭 badge + 组合视角人裁行;`_ensemble.json` 缺 = parity。📌 持仓的 SELL 卡同样双复核(只向温和折回)。
-- **阶段效能**:早停率随 regime 波动大(20%~100%),弱市高早停是纪律不是失灵;早停 238/239 停在 P3,停因是实质判断不是取数失败。**别为凑买单放宽资金/估值门。**
+- **阶段效能**:早停位置与比例用于流程诊断,不能单独证明拒绝正确或排除取数失败;历史 P3 分布缺完整样本窗口,须按同版卡集合连同数据状态核验。**别为凑买单放宽资金/估值门。** [证据:historical_p3_stop_distribution](../../../docs/research/2026-09-30-agent-skills-evidence-register.md#historical_p3_stop_distribution)
 
 ---
 
@@ -173,7 +174,7 @@ P0 简报(市场地形+档案+解禁/披露/调样旗+行业备忘+误读预警)
 | 分级 | `relative_buy.tiering` | A 级 = eligible ∧ ¬pinned ∧ `entry_stance=="ALLOWED"`;A 空退 R 级(CONDITIONAL/UNKNOWN);两级皆空 → 诚实 `blocked`;`buys[0]` 带 `tier`/`basis`,顶层 `tier_counts` |
 | 执行线 | 卡片两行 | `[执行线] pct_chg <= 3.0` / `pos_in_range < 0.7`(T+1 尾盘入场条件;`tripwire_watch` 解析不报警;事后计量 `outcome.exec_ok`) |
 | 盲卡 | — | task-book `status!="SUCCEEDED"` 或 slim 缺席的票不写 `_final_ratings.json`,落 `_blind_cards.json` |
-| 记录 | `stage_rulers.csv` | `E6/e6_a_tier_day_share` 只记录不设门(A 级结构性为 0:早停卡不得写「允许」而 70% 是早停卡) |
+| 记录 | `stage_rulers.csv` | `E6/e6_a_tier_day_share` 只记录不设门;早停卡不得写「允许」会限制 A 级覆盖,当前占比按本版本真实运行计量 |
 
 用户裁定「成功交易日 ≥1 BUY」由 R 级照常满足。沿革与证据见 negative-results。
 

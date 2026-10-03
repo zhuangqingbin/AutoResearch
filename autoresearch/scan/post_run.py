@@ -856,7 +856,7 @@ def _publish_run_observation_unlocked(
     # 这种半开状态,那是本波要防的分家的另一种形状。
     from autoresearch.scan.relative_buy import configured_rebalance_gate, configured_relative_buy
 
-    _rb_mode, _rb_exclude_pinned, _, _rb_pool, _rb_tiering = configured_relative_buy()
+    _rb_mode, _rb_exclude_pinned, _rb_pool, _rb_tiering = configured_relative_buy()
     _rb_gate = configured_rebalance_gate()            # v4.1:两个写者同一个开关(同 tiering 纪律)
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision

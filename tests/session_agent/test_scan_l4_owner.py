@@ -26,7 +26,7 @@ def test_ticket_claim_is_owned_by_the_existing_l4_taskbook(tmp_path):
         handle,
         ["600519"],
         meta={"600519": {"ticker": "600519.SS", "pinned": True}},
-        caps={"tushare": 1, "web_search": 1, "web_fetch": 1, "l4_stock": 2},
+        caps={"tushare": 1, "l4_stock": 2},
     )
     assert initialized["ok"] is True
     receipt = legacy_scan.claim_ticket(handle, "600519", 1)

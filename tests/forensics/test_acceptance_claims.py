@@ -13,6 +13,15 @@ from tests.contracts.test_publication_contracts import _bundle, _receipt
 from tests.contracts.test_replay_contracts import _plan, _result
 
 
+@pytest.fixture(autouse=True)
+def _isolated_audit_root(tmp_path, monkeypatch):
+    """Every test here states a rule about records and proofs; none is about whatever real
+    boundary proofs this engine root happens to hold. Without this, the gate reads
+    ``reports_<engine>/_acceptance`` on the developer's machine: the day real proofs were
+    first imported (2026-10-01) one test went red under codex and another under claude."""
+    monkeypatch.setattr(evaluation.ws, "reports_root", lambda: tmp_path / "isolated-reports")
+
+
 def _record(
     engine: str,
     workflow: str,
@@ -94,8 +103,9 @@ def test_dual_host_real_records_enable_only_when_every_proof_verifies(monkeypatc
 
     result = evaluation.accept_workflow(records)
 
-    assert result["default_enabled"] is True
-    assert result["status"] == "ENABLED"
+    assert result["default_enabled"] is False
+    assert result["status"] == "INCOMPLETE"
+    assert result["research_boundary_gate"]["status"] == "PENDING_REAL_HOST_VALIDATION"
     assert result["missing_real_sessions"] == []
     assert result["invalid_records"] == []
 
@@ -127,7 +137,8 @@ def test_drills_are_allowed_only_for_declared_control_scenarios(monkeypatch):
         "_verify_acceptance_proof",
         lambda record, evidence_root=None: {"verified": True, "missing": []},
     )
-    assert evaluation.accept_workflow(scan)["default_enabled"] is True
+    assert evaluation.accept_workflow(scan)["accepted_records"] == sorted(f"{row['engine']}:{row['scenario']}" for row in scan)
+    assert evaluation.accept_workflow(scan)["default_enabled"] is False
 
     stock = _matrix("stock-research", evidence_kind="REAL_SESSION")
     stock[0]["evidence_kind"] = "REAL_SESSION_DRILL"
@@ -234,3 +245,14 @@ def test_portable_proof_revalidates_all_identity_links(tmp_path, monkeypatch):
             execution_origin=origin,
             evidence_root=tmp_path,
         )
+
+
+def test_old_complete_proofs_cannot_bypass_c4_loaded_host_gate(monkeypatch):
+    records = _matrix('macro-research', evidence_kind='REAL_SESSION')
+    monkeypatch.setattr(evaluation, '_verify_acceptance_proof',
+                        lambda *args: {'verified': True, 'missing': []})
+    result = evaluation.accept_workflow(records)
+    assert result['default_enabled'] is False
+    assert result['research_boundary_gate']['schema_version'] == 1
+    assert result['research_boundary_gate']['acceptance_satisfied'] is False
+    assert result['research_boundary_gate']['loaded_host_evidence'] == []

@@ -125,6 +125,16 @@ def score(m: dict) -> float | None:
     return round(100 * sum(p * w for p, w in parts), 1)
 
 
+TEMPERATURE_BANDS_DEFAULT: dict = {"cold": 20, "warm": 40, "hot": 65, "hysteresis": 3}
+
+
+def temperature_bands(cfg: dict | None = None) -> dict:
+    """`scan_config.signals.temperature_bands`(缺键 = TEMPERATURE_BANDS_DEFAULT)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("signals", "temperature_bands", None, {}, cfg) or {}
+    return {**TEMPERATURE_BANDS_DEFAULT, **(user if isinstance(user, dict) else {})}
+
+
 def phase(s: float | None, prev_s: float | None, prev_phase: str | None) -> str:
     """五相位:冰点(<20)/修复/发酵/高潮(≥65)/退潮,±3 分滞回(带内小幅回落不切)。
 
@@ -133,14 +143,15 @@ def phase(s: float | None, prev_s: float | None, prev_phase: str | None) -> str:
     """
     if s is None:
         return prev_phase or "未知"
-    if prev_s is not None and abs(s - prev_s) < 3 and prev_phase:
+    b = temperature_bands()
+    if prev_s is not None and abs(s - prev_s) < b["hysteresis"] and prev_phase:
         return prev_phase
     rising = prev_s is None or s >= prev_s
-    if s < 20:
+    if s < b["cold"]:
         return "冰点"
-    if s >= 65:
+    if s >= b["hot"]:
         return "高潮"
-    if s >= 40:
+    if s >= b["warm"]:
         return "发酵" if rising else "退潮"
     return "修复" if rising else "退潮"
 

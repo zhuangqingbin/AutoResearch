@@ -66,3 +66,50 @@ def parse_rating(text: str, default: str = "Hold", *, strict: bool = False) -> s
                 return clean.capitalize()
 
     return default
+
+
+_PROPOSALS = dict(zip(RATINGS_5_TIER, ("BUY", "BUY", "HOLD", "SELL", "SELL")))
+
+
+def proposal_for_rating(rating: str) -> str:
+    """Map a canonical five-tier rating to its action; invalid input never defaults."""
+    if not isinstance(rating, str) or rating not in _PROPOSALS:
+        raise ValueError(f"invalid five-tier Rating: {rating!r}")
+    return _PROPOSALS[rating]
+
+
+def _anchor_value(text: str, label: str, allowed: tuple[str, ...]) -> str:
+    # Inspect every anchor, including malformed later anchors, before accepting one.
+    anchors = re.findall(
+        rf"(?im)^[ \t]*\**[ \t]*{re.escape(label)}\b[^\r\n]*", text,
+    )
+    if not anchors:
+        raise ValueError(f"missing strict {label} line")
+    values = []
+    for line in anchors:
+        match = re.fullmatch(
+            rf"[ \t]*\**[ \t]*{re.escape(label)}[ \t]*\**[ \t]*[:：-][ \t]*"
+            r"(?:\*\*)?([A-Za-z]+)(?:\*\*)?[ \t]*(?:[—–-][ \t]+.+)?",
+            line, re.IGNORECASE,
+        )
+        value = next((item for item in allowed
+                      if match and item.lower() == match.group(1).lower()), None)
+        if value is None:
+            raise ValueError(f"invalid strict {label} line: {line}")
+        values.append(value)
+    if len(set(values)) != 1:
+        raise ValueError(f"conflicting {label} lines")
+    return values[0]
+
+
+def validate_rating_and_proposal(text: str) -> tuple[str, str]:
+    """Validate all decision anchors and require the action implied by the rating.
+
+    Legacy ``parse_rating`` remains available for historical prose readers.
+    New FULL/LITE decision validation uses this fail-closed contract.
+    """
+    rating = _anchor_value(text, "Rating", RATINGS_5_TIER)
+    proposal = _anchor_value(text, "FINAL TRANSACTION PROPOSAL", ("BUY", "HOLD", "SELL"))
+    if proposal != proposal_for_rating(rating):
+        raise ValueError("Rating and FINAL TRANSACTION PROPOSAL disagree")
+    return rating, proposal

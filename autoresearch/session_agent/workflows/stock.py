@@ -66,7 +66,7 @@ def _lite_tasks(ticker: str) -> list[dict]:
             "stock.card",
             "INFERENCE",
             dependencies=["stock.harvest"],
-            inputs=["stock.slim"],
+            inputs=["stock.slim", "stock.deep"],
             outputs=["stock.card.output"],
             contract="stock.lite.v1",
             subject=ticker,
@@ -76,7 +76,7 @@ def _lite_tasks(ticker: str) -> list[dict]:
             "stock.validate",
             "DETERMINISTIC",
             dependencies=["stock.card"],
-            inputs=["stock.card.output", "stock.slim"],
+            inputs=["stock.card.output", "stock.slim", "stock.deep"],
             outputs=["stock.card.validation"],
             contract="stock.validation.v1",
             subject=ticker,
@@ -94,6 +94,23 @@ def _lite_tasks(ticker: str) -> list[dict]:
         ),
     ]
 
+
+
+def _two_stage_lite_tasks(ticker: str) -> list[dict]:
+    tasks = _lite_tasks(ticker)
+    facts = _task("stock.card.facts", "DETERMINISTIC", dependencies=["stock.harvest"],
+                  inputs=["stock.slim", "stock.deep"], outputs=["stock.card.facts"],
+                  contract="research.card.facts.v1", subject=ticker, operation="research.card.facts")
+    initial = _task("stock.initial", "INFERENCE", dependencies=["stock.card.facts"],
+                    inputs=["stock.card.facts"], outputs=["stock.card.initial"],
+                    contract="research.card.initial.v1", subject=ticker, role="stock.card")
+    initial["independent_context"] = True
+    final = tasks[1]
+    final.update(dependencies=["stock.initial"],
+                 input_artifact_ids=["stock.card.facts", "stock.card.initial", "stock.slim", "stock.deep"],
+                 output_artifact_ids=["stock.card.output", "stock.card.changes"],
+                 expected_output_contract="research.card.decision.v1", independent_context=True)
+    return [tasks[0], facts, initial, *tasks[1:]]
 
 def _artifact_id(relative: str) -> str:
     stem = relative[:-3] if relative.endswith(".md") else relative
@@ -151,6 +168,10 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
         inputs = ["stock.context"]
         if name == "news":
             inputs.append("stock.full.intel")
+        if name in {"quality", "valuation", "solvency"}:
+            inputs.append(products["1_analysts/fundamentals.md"])
+        if name == "market":
+            inputs.append("stock.indicators")
         tasks.append(
             _task(
                 f"stock.{name}",
@@ -169,7 +190,7 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
                 "stock.peer",
                 "INFERENCE",
                 dependencies=["stock.fundamentals"],
-                inputs=["stock.context"],
+                inputs=["stock.context", products["1_analysts/fundamentals.md"]],
                 outputs=[products["1_analysts/peer.md"]],
                 contract="stock.section.v1",
                 subject=ticker,
@@ -182,12 +203,23 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
         if task["task_id"].startswith("stock.")
         and task["task_id"] not in {"stock.harvest", "stock.intel"}
     ]
+    evidence_inputs = [
+        "research.frame", "stock.context", "stock.indicators", "stock.full.intel",
+        *(task["output_artifact_ids"][0] for task in tasks
+          if task["task_id"] in analyst_dependencies),
+    ]
+    tasks.append(_task(
+        "stock.evidence_bundle", "DETERMINISTIC",
+        dependencies=[*analyst_dependencies, "stock.intel"], inputs=evidence_inputs,
+        outputs=["stock.evidence_bundle"], contract="stock.evidence_bundle.v1",
+        subject=ticker, operation="stock.evidence_bundle",
+    ))
     tasks.extend(
         [
             _task(
                 "stock.reality_check",
                 "INFERENCE",
-                dependencies=analyst_dependencies,
+                dependencies=["stock.evidence_bundle"],
                 inputs=[
                     products["1_analysts/market.md"],
                     products["1_analysts/news.md"],
@@ -289,6 +321,25 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
             ),
         ]
     )
+    # A bundle is an index, never a capability to open undeclared paths. Every
+    # downstream reasoning task receives the exact original inputs as well.
+    extra_sections = {
+        "bear": ["2_research/reality_check.md"],
+        "manager": ["2_research/reality_check.md"],
+        "risk": ["2_research/reality_check.md", "2_research/bull.md", "2_research/bear.md"],
+        "premortem": ["2_research/reality_check.md", "2_research/bull.md", "2_research/bear.md"],
+        "pm": ["3_risk/debate.md", "2_research/reality_check.md", "2_research/bull.md", "2_research/bear.md"],
+    }
+    downstream = {"reality_check", "bull", "bear", "manager", "risk", "premortem", "pm"}
+    for task in tasks:
+        if task["kind"] == "INFERENCE":
+            task["independent_context"] = True
+        name = task["task_id"].removeprefix("stock.")
+        if name in downstream:
+            task["input_artifact_ids"] = list(dict.fromkeys([
+                "stock.evidence_bundle", *evidence_inputs, *task["input_artifact_ids"],
+                *(products[rel] for rel in extra_sections.get(name, [])),
+            ]))
     # The assembler reads the section tree directly.  Its forensic input contract must
     # therefore name every section it can render, not merely the validation hash list.
     assembled_products = [
@@ -325,7 +376,9 @@ def build_stock_plan(request: dict, handle) -> dict:
         "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
         "tasks": (
-            _lite_tasks(request["subject"])
+            (_two_stage_lite_tasks(request["subject"])
+             if request.get("card_research_profile") == "two-stage-v1"
+             else _lite_tasks(request["subject"]))
             if request["requested_mode"] == "LITE"
             else _full_tasks(
                 request["subject"],
@@ -341,7 +394,6 @@ def build_stock_plan(request: dict, handle) -> dict:
 
 
 def register_stock_artifacts(request: dict, handle, plan: dict) -> None:
-    del plan
     ticker = normalize_symbol(request["subject"])
     analysis_date = request["analysis_date"]
     staging = Path(handle.staging)
@@ -365,25 +417,37 @@ def register_stock_artifacts(request: dict, handle, plan: dict) -> None:
                 artifact_id: root / relative
                 for relative, artifact_id in full_product_artifacts().items()
             },
+            "stock.evidence_bundle": output / "evidence_bundle.json",
             "stock.full.validation": output / "full.validation.json",
             "stock.full.report": output / "full_report.md",
             "stock.full.manifest": output / "full_manifest.json",
             "stock.publication.bundle": output / "publication.json",
         }
+    # Replay has the frozen request but no live profile or plan.
+    if (any(task.get("expected_output_contract") == "research.card.initial.v1"
+            for task in plan.get("tasks", []))
+            or (not plan and request.get("card_research_profile") == "two-stage-v1")):
+        registrations.update({"stock.card.facts": output / "card.facts.json",
+                              "stock.card.initial": output / "card.initial.json",
+                              "stock.card.changes": output / "card.changes.json"})
     for artifact_id, path in registrations.items():
         artifacts.register_artifact(handle, artifact_id, path, "WRITE")
 
 
+def harvest_params(request: dict) -> dict:
+    """The only parameters ``stock.harvest`` may run with: a projection of the frozen request."""
+    return {
+        "ticker": request["subject"],
+        "analysis_date": request["analysis_date"],
+        "asset_type": request["asset_type"],
+        "peers": list(request["peers"]),
+        "slim": request["requested_mode"] == "LITE",
+    }
+
+
 def validate_stock_operation_params(request: dict, task: dict, params: dict) -> None:
     if task["operation"] == "stock.harvest":
-        expected = {
-            "ticker": request["subject"],
-            "analysis_date": request["analysis_date"],
-            "asset_type": request["asset_type"],
-            "peers": request["peers"],
-            "slim": request["requested_mode"] == "LITE",
-        }
-        if params != expected:
+        if params != harvest_params(request):
             raise ValueError("stock.harvest params differ from frozen request")
     elif params != {}:
         raise ValueError(f"{task['operation']} accepts no parameters")
@@ -422,6 +486,18 @@ def _publish_stock_active(handle, *, reports_root: Path | None = None) -> Path:
             "proposal": bundle["proposal"],
             "card_sha256": bundle["card_sha256"],
         }
+        from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+        from autoresearch.trace.completeness import card_rules_from_capsule
+        if getattr(handle, "capsule", None) is not None and card_rules_from_capsule(handle.capsule) == CURRENT_CARD_RULES:
+            from autoresearch.news.card_claims import registered_card_semantics
+            from autoresearch.trace.completeness import card_rating_bands_from_capsule
+            with artifacts.open_artifact(handle, "research.frame") as stream:
+                frame = json.loads(stream.read())
+            semantics = registered_card_semantics(handle, report_bytes.decode("utf-8"), subject=bundle["ticker"], frame=frame,
+                                               artifact_id="stock.card.output",
+                                               frame_hash=artifacts.snapshot_artifact(handle, "research.frame")["sha256"],
+                                               bands=card_rating_bands_from_capsule(handle.capsule))
+            manifest.update({key: semantics[key] for key in ("machine_suggestion", "machine_reason", "execution", "claim_usage")})
     elif bundle["mode"] == "FULL":
         with artifacts.open_artifact(handle, "stock.full.report") as stream:
             report_bytes = stream.read()
@@ -431,6 +507,20 @@ def _publish_stock_active(handle, *, reports_root: Path | None = None) -> Path:
             manifest = json.loads(stream.read().decode("utf-8"))
         if manifest.get("run_id") != handle.run_id:
             raise RuntimeError("stock full manifest run identity mismatch")
+        from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+        from autoresearch.trace.completeness import (
+            card_rating_bands_from_capsule,
+            card_rules_from_capsule,
+        )
+        if getattr(handle, "capsule", None) is not None and card_rules_from_capsule(handle.capsule) == CURRENT_CARD_RULES:
+            from autoresearch.news.card_claims import registered_card_semantics
+            frame = json.loads(artifacts.read_bytes(handle, "research.frame"))
+            semantics = registered_card_semantics(handle,
+                artifacts.read_bytes(handle, "stock.full.4_decision.decision").decode(), subject=bundle["ticker"],
+                frame=frame, frame_hash=artifacts.snapshot_artifact(handle, "research.frame")["sha256"],
+                artifact_id="stock.full.4_decision.decision", bands=card_rating_bands_from_capsule(handle.capsule))
+            if manifest.get("claim_usage") != semantics["claim_usage"]:
+                raise RuntimeError("full report claim usage changed since assembly")
     else:
         raise RuntimeError(f"unknown stock publication mode: {bundle['mode']}")
     root = Path(reports_root) if reports_root is not None else ws.run_reports_root("stock-research")
@@ -447,6 +537,10 @@ def _publish_stock_active(handle, *, reports_root: Path | None = None) -> Path:
                 raise RuntimeError("stock report manifest conflicts with this run")
         atomic_write_bytes(report, report_bytes)
         atomic_write_json(manifest_path, manifest)
+        if "claim_usage" in manifest:
+            from autoresearch.news.card_claims import usage_note
+            atomic_write_json(report_dir / "claim_usage.json", manifest["claim_usage"])
+            atomic_write_bytes(report_dir / "claim_usage.md", usage_note(manifest["claim_usage"]).encode())
     return report_dir
 
 

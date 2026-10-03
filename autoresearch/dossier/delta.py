@@ -22,6 +22,31 @@ _ANCHOR_BAND = schema.SUMMARY_ANCHORS[2]   # "带位:"(SUMMARY_ANCHORS=业务/�
 _ANCHOR_PREC = schema.SUMMARY_ANCHORS[5]   # "判例:"
 
 
+def apply_fact_delta(text: str, updates: list[dict], *, analysis_date: str,
+                     knowledge_cutoff: str, changed_at: str, evidence: dict,
+                     corrected_claim_ids=(), timezone="Asia/Shanghai") -> tuple[str, dict]:
+    """Preserve all old values/sources, and leave unsupported replacements pending."""
+    from autoresearch.dossier.facts import (
+        apply_updates,
+        empty_ledger,
+        parse_ledger,
+        replace_ledger,
+        reusable_view,
+    )
+    subject = schema.parse_frontmatter(text).get('code')
+    if not subject:
+        raise ValueError('dossier subject required for fact delta')
+    old = parse_ledger(text) or empty_ledger(subject)
+    if old["subject"] != subject:
+        raise ValueError("dossier fact ledger subject mismatch")
+    new = apply_updates(old, updates, changed_at=changed_at, analysis_date=analysis_date,
+                        knowledge_cutoff=knowledge_cutoff, evidence=evidence,
+                        corrected_claim_ids=corrected_claim_ids, timezone=timezone)
+    view = reusable_view(new, analysis_date=analysis_date, knowledge_cutoff=knowledge_cutoff,
+                         evidence=evidence, corrected_claim_ids=corrected_claim_ids)
+    return replace_ledger(text, new), {'changes': new['history'][len(old['history']):], 'reuse': view}
+
+
 def _section_span(text: str, idx: int) -> tuple[int, int]:
     """§idx 正文区间 [start, end)(不含节头行);节锚缺 → (-1, -1)。
 
@@ -205,7 +230,7 @@ def _refresh_section6(text: str, staging: Path | None, code6: str,
     return replace_section(text, 5, f"_素材 as-of {staging.name}_\n\n{body}"), []
 
 
-def intel_dossier_gaps(staging: Path | None, code6: str, max_lines: int = 2) -> list[str]:
+def intel_dossier_gaps(staging: Path | None, code6: str, max_lines: int | None = None) -> list[str]:
     """当期情报稿里的 `档案缺口:` 行(Wave7 P4;确定性,零 LLM)。
 
     由来:2026-07-27 实跑,300857 的情报查到「2026-04 以 5.1 亿增资控股光为科技 51% 切入
@@ -216,6 +241,9 @@ def intel_dossier_gaps(staging: Path | None, code6: str, max_lines: int = 2) -> 
     只捡**结构性事实缺口**(契约规定当期新闻事件不写这里,它们进事件段);合并进 §1
     业务模型叙事仍是 LLM 的活(首覆/季度对账时),本函数只负责让它**留下痕迹**。
     """
+    if max_lines is None:
+        from autoresearch.dossier.config import dossier_cfg
+        max_lines = dossier_cfg()["intel_gap_max_lines"]
     if staging is None:
         return []
     p = Path(staging) / f"_l4_intel_{code6}.md"
@@ -240,7 +268,7 @@ def intel_dossier_gaps(staging: Path | None, code6: str, max_lines: int = 2) -> 
 
 
 def _refresh_staging_sections(text: str, code6: str, date: str,
-                              scan_root: str | Path) -> tuple[str, list[str]]:
+                              scan_root: str | Path, *, max_gap_lines=None) -> tuple[str, list[str]]:
     """§4 筹码资金史(腿级)/ §6 催化剂日历(节级)就地刷新(spec ① 表:每次 δ)。
 
     返回 (新文本, 跳过的节/腿标签列表)。跳过不静默(Wave3.5 review I-2):调用方
@@ -250,38 +278,23 @@ def _refresh_staging_sections(text: str, code6: str, date: str,
     staging = _staging_dir_for(scan_root, date)
     text, skip4 = _refresh_section4_legs(text, staging, code6)
     text, skip6 = _refresh_section6(text, staging, code6, date)
-    for gap in intel_dossier_gaps(staging, code6):    # Wave7 P4:情报侧发现的档案缺口留痕
+    for gap in intel_dossier_gaps(staging, code6, max_lines=max_gap_lines):    # Wave7 P4:情报侧发现的档案缺口留痕
         text = append_delta_line(text, date, f"档案缺口(情报侧发现,待首覆/对账吸收):{gap}",
                                  key=f"档案缺口:{gap[:24]}")
     return text, skip4 + skip6
 
 
-def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
-                      scan_root: str | Path = _WS_SCAN_ROOT) -> dict:
-    """单票 δ 回写:§8 入围行 + §3 带位刷新 + §2 快照 + §4/§6 staging 刷新 + 摘要机算行 + last_delta。
-
-    返回 dict 的 `sections_skipped`(Wave3.5 review I-2):本次因素材缺而跳过刷新的
-    §4 腿/§6 节标签(如 `["§4.seats", "§6"]`),健康路径为 `[]`(不是缺键)——降级
-    留痕不静默;`record_scan_deltas` 批量层同款收进 `out["sections_skipped"][code]`
-    (非空才收,镜像 `issues` 记账口径)。
-    """
-    code6 = str(code6).split(".")[0].zfill(6)
-    path = schema.dossier_path(code6)
-    text = schema.read_dossier_text(code6)
-    if text is None:
-        return {"code": code6, "skipped": "no_dossier"}
-    if not schema.parse_frontmatter(text).get("initiated"):
-        return {"code": code6, "skipped": "not_initiated"}
-
+def _render_scan_delta(text: str, code6: str, date: str, *, rating: str, conviction,
+                       pf: dict | None, scan_root: Path, max_gap_lines: int) -> tuple[str, dict]:
+    """Run the existing deterministic patch logic against captured inputs only."""
     bad_conv = conviction is None or conviction == "" or (
         isinstance(conviction, float) and conviction != conviction)
     conv = "" if bad_conv else f"(conv {conviction})"
     text = append_delta_line(text, date, f"入围:评级 {rating}{conv}", key="入围")
 
-    pf = builder._load_prefetch(code6)
     text = _refresh_band(text, pf)
     text = _append_eps_snapshot(text, pf)
-    text, sections_skipped = _refresh_staging_sections(text, code6, date, scan_root)
+    text, sections_skipped = _refresh_staging_sections(text, code6, date, scan_root, max_gap_lines=max_gap_lines)
 
     from autoresearch.scan import dossier as scan_dossier  # lazy 防环(scan↔dossier,builder 同款)
     entries = scan_dossier.stock_dossier(code6, scan_root=scan_root,
@@ -301,9 +314,107 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
     text = refresh_summary_line(text, _ANCHOR_PREC, calc["判例"])
 
     text = set_frontmatter_key(text, "last_delta", date)
-    path.write_text(text, encoding="utf-8")
-    return {"code": code6, "updated": True, "issues": schema.lint_dossier(text),
+    return text, {"code": code6, "updated": True, "issues": schema.lint_dossier(text),
             "sections_skipped": sections_skipped}
+
+
+
+def capture_scan_delta_inputs(code6: str, date: str, scan_root: Path | str) -> dict:
+    import base64
+    import re
+
+    from autoresearch.dossier.config import dossier_cfg
+
+    root = Path(scan_root)
+    days = sorted((p for p in root.iterdir() if p.is_dir() and re.fullmatch(r'20\d{2}-\d{2}-\d{2}', p.name)
+                   and p.name <= date), reverse=True) if root.is_dir() else []
+    selected_days = set(days[:builder._PRECEDENT_WINDOW])
+    staging = _staging_dir_for(root, date)
+    if staging is not None:
+        selected_days.add(staging)
+    files = {}
+    for day in sorted(selected_days):
+        paths = [day / name for name in ('finalists.csv', 'verify.csv', *builder._STAGING_FILES, f'_l4_intel_{code6}.md')]
+        paths.extend((day / 'details').glob(f'{code6}*.md'))
+        for path in sorted(set(paths)):
+            if not path.is_file():
+                continue
+            if any(item.is_symlink() for item in (path, *path.parents) if item != root.parent):
+                raise ValueError('dossier delta source symlink')
+            path.resolve(strict=True).relative_to(root.resolve(strict=True))
+            files[path.relative_to(root).as_posix()] = base64.b64encode(path.read_bytes()).decode('ascii')
+    return {'schema_version': 1, 'prefetch': builder._load_prefetch(code6),
+            'days': [day.name for day in sorted(selected_days)], 'files': files,
+            'max_gap_lines': dossier_cfg()['intel_gap_max_lines']}
+
+
+def render_scan_delta_snapshot(opening: str, parameters: dict, snapshot: dict, *, scratch_root: Path):
+    import base64
+    import re
+
+    from autoresearch.common.atomic import atomic_write_bytes
+
+    if (set(snapshot) != {'schema_version', 'prefetch', 'days', 'files', 'max_gap_lines'}
+            or type(snapshot['schema_version']) is not int or snapshot['schema_version'] != 1):
+        raise ValueError('invalid dossier delta source snapshot')
+    code = parameters['code']
+    scan_root = Path(scratch_root) / 'scan'
+    for day in snapshot['days']:
+        if not re.fullmatch(r'20\d{2}-\d{2}-\d{2}', day) or day > parameters['date']:
+            raise ValueError('invalid dossier delta source day')
+        (scan_root / day).mkdir(parents=True, exist_ok=True)
+    for relative, encoded in snapshot['files'].items():
+        path = Path(relative)
+        if path.is_absolute() or '..' in path.parts or len(path.parts) not in {2, 3} or path.parts[0] not in snapshot['days']:
+            raise ValueError('unsafe dossier delta source path')
+        allowed = (len(path.parts) == 2 and path.name in {'finalists.csv', 'verify.csv', *builder._STAGING_FILES, f'_l4_intel_{code}.md'}) or (
+            len(path.parts) == 3 and path.parts[1] == 'details' and path.name.startswith(code) and path.suffix == '.md')
+        if not allowed:
+            raise ValueError('unregistered dossier delta source path')
+        atomic_write_bytes(scan_root / path, base64.b64decode(encoded, validate=True))
+    return _render_scan_delta(opening, code, parameters['date'], rating=parameters['rating'],
+                              conviction=parameters['conviction'], pf=snapshot['prefetch'],
+                              scan_root=scan_root, max_gap_lines=snapshot['max_gap_lines'])
+
+
+def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
+                      scan_root: str | Path = _WS_SCAN_ROOT,
+                      fact_updates: list[dict] | None = None, knowledge_cutoff: str | None = None) -> dict:
+    """Capture inputs, compute a patch, then CAS a verified maintenance operation."""
+    import tempfile
+
+    from autoresearch.common.atomic import sha256_bytes
+    from autoresearch.dossier import facts, maintenance
+    from autoresearch.trace.operation_evidence import record_operation_evidence
+
+    code6 = str(code6).split('.')[0].zfill(6)
+    opening, base_hash = schema.read_dossier_snapshot(code6)
+    if opening is None:
+        return {'code': code6, 'skipped': 'no_dossier'}
+    text = opening.decode('utf-8')
+    if not schema.parse_frontmatter(text).get('initiated'):
+        return {'code': code6, 'skipped': 'not_initiated'}
+    if isinstance(conviction, float) and conviction != conviction:
+        conviction = None
+    parameters = {'code': code6, 'date': date, 'rating': rating, 'conviction': conviction}
+    snapshot = capture_scan_delta_inputs(code6, date, scan_root)
+    context = facts.capture_fact_context(text, fact_updates, analysis_date=date, knowledge_cutoff=knowledge_cutoff)
+    with tempfile.TemporaryDirectory(prefix='dossier-delta-') as scratch:
+        candidate, result = render_scan_delta_snapshot(text, parameters, snapshot, scratch_root=Path(scratch))
+        if context is not None:
+            candidate, result['fact_delta'] = facts.apply_fact_context(candidate, context, scratch_root=Path(scratch))
+            result['issues'] = schema.lint_dossier(candidate)
+    inputs = {'dossier.opening': opening, 'dossier.scan_inputs': snapshot}
+    if context is not None:
+        inputs['dossier.fact_context'] = context
+    evidence = record_operation_evidence('dossier.delta', parameters=parameters, inputs=inputs,
+        outputs={'dossier.candidate': candidate, 'dossier.result': result},
+        effects=[{'kind': 'DOSSIER_PATCH', 'code': code6, 'before_sha256': sha256_bytes(opening),
+                  'after_sha256': sha256_bytes(candidate.encode('utf-8'))}],
+        code_paths=[Path(__file__), Path(facts.__file__), Path(builder.__file__)],
+        evidence_root=schema.DOSSIER_DIR / '_operation_evidence')
+    maintenance.commit(code6, opening, base_hash, evidence['operation_id'])
+    return {**result, 'operation_id': evidence['operation_id']}
 
 
 def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:

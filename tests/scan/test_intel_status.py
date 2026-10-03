@@ -278,3 +278,11 @@ def test_mark_resumed_roundtrip_and_backward_compat(tmp_path):
     (tmp_path / "_l4_intel_status_600000.json").write_text(json.dumps(raw))
     st2 = load_status(tmp_path, "600000")
     assert st2 is not None and st2.resumed is False
+
+
+def test_claim_unknown_diagnostics_reach_card_without_changing_intel_state(tmp_path):
+    result = {"action": "KEPT", "claimed": 3, "claim_events": {
+        "diagnostic_note": "材料断言 UNKNOWN 1/2；来源 UNKNOWN 1；语义 UNKNOWN 1；时效 UNKNOWN 0；冲突 UNKNOWN 0"}}
+    status = from_guard(result, code="600000", scan_dir=tmp_path)
+    assert "材料断言 UNKNOWN 1/2" in status.note
+    assert status.acquisition == "FULL" and status.availability_for_card == "INTEL"

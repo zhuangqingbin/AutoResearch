@@ -257,6 +257,7 @@ def execute_publication(
     state_root: Path | str,
     finalizer: Callable[[Path], object],
     compatibility: Callable[[Path, dict[str, Any]], None] | None = None,
+    state_precondition: Callable[[], None] | None = None,
     now: datetime | None = None,
     fault_after: str | None = None,
 ) -> dict[str, Any]:
@@ -373,6 +374,10 @@ def execute_publication(
         _verify_sealed(canonical, bundle)
     target_keys = [item["target_key"] for item in bundle["state_mutations"]]
     with target_locks(state_base, target_keys):
+        # Domain checks run inside the same CAS lock, including recovery from
+        # pending views. A committed retry returned above and must not rerun them.
+        if state_precondition is not None:
+            state_precondition()
         if _phase_index(journal["state"]) < _phase_index("VIEWS_APPLIED"):
             publication_identity = {
                 "engine": bundle["engine"],

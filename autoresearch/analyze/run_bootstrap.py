@@ -11,6 +11,7 @@ task: `.superpowers/sdd/2026-08-31-stock-research-p0-p1/task-13-brief.md`。
 单票研究的全部可变量就是**档 + 标的**(外加同业/资产类型/中文简称三个取数参数),
 所以这里的 config echo 是一个小白名单 dict,直接冻进 `RunContract.user_config` ——
 `capsule.resolve_run_mode` 就是从这个 echo 读 `mode` 的(它没有 `run_mode.json`)。
+session_v1 另传已校验的 orchestration_config,嵌套冻结调度配置,不与上述业务键混用。
 """
 from __future__ import annotations
 
@@ -105,6 +106,7 @@ def prepare_analyze_run(
     now: datetime | None = None,
     repo_root: Path | str = ".",
     git_sha: str | None = None,
+    orchestration_config: Mapping | None = None,
 ) -> RunContract:
     """Build one complete v3 `stock-research` contract.
 
@@ -118,6 +120,10 @@ def prepare_analyze_run(
         )
     resolved_engine = engine or ws.ENGINE
     user_config = _resolved_config(config, engine=resolved_engine)
+    if orchestration_config is not None:
+        import json
+
+        user_config["orchestration_config"] = json.loads(canonical_json(dict(orchestration_config)))
     return RunContract.build(
         analysis_date=resolved_date,
         user_config=user_config,

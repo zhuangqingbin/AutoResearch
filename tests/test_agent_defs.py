@@ -454,42 +454,17 @@ def test_usage_harvest_wired_in_skill():
     assert "加权" in md, "SKILL 未说明按计价倍率加权(原始 token 会把「贵在哪」排反)"
 
 
-def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
-    """Wave 3 不是只把代码接上：未来编排者必须知道批次、重放、回滚和计量回填。
-
-    ⚠️ **锚更新(final-review 2026-08-08 D1)**:原锚 `滑窗` 第三次踩进同一个失效模式——
-    Wave11-C3 把派发协议由「滑窗补派」改回「一次性全派」,`滑窗` 这个词此后在 SKILL.md 里
-    唯一的命中变成 :103「回滚杆**不能**恢复旧滑窗节奏」,又是一句**否定**该词所指契约的话,
-    不是契约本身在场。改锚为 `一次性全派`(SKILL.md:36/63/102 三处都在陈述当前真实派发
-    行为,不是历史注或否定句)。
-
-    这不是第一次:W8-8 时原锚是 `批次内并行`,换成 `滑窗` + `task_book 全 SUCCEEDED` 时就
-    已经记录过同一个坑——派发契约由「批次间顺序 + 批次内并行」改为滑窗补派(每完成一只
-    补派一只)后,`批次内并行` 仍然绿,因为新文本里有一句「旧契约是「按 dispatch_batches
-    批次间顺序、批次内并行」——每批要等最慢者」,锚匹配到了这句**否定该契约的历史注**
-    (同族:price_claims 把卡片"引用并拒绝"的 intel 断言当成卡片自己的断言)。当时定下的
-    教训是「锚要挑只可能出现在活契约里的词」——道理没错,但只写在 docstring 里挡不住
-    下一次协议变更时被忘记应用,Wave11-C3 复发就是证据。改协议的那次改动应该同一个 PR
-    里把锚也扫一遍,不是留给下一次 review 抓。
-    """
+def test_scan_market_skill_documents_current_recovery_and_measurement_contract():
+    """The active entry follows session ownership; legacy dispatch stays reference-only."""
     skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
     for anchor in (
-        "dispatch_batches",
-        "一次性全派",
-        "task_book 全 SUCCEEDED",
-        "RATE_LIMIT",
-        "streaming_l4",
-        # Wave10 B4:另两个性能开关已退役 —— 锚改成"退役这件事本身"被写进契约文档,
-        # 否则下次有人照着旧文档去设一个不存在的开关。
-        "Wave10 B4 退役两个",
-        # 引擎隔离(2026-08-11):doc 命令统一 $CTX 记号(= context_<engine>,bash 块顶行取值)
-        "--json-out $CTX/scan/<date>/_token_usage.json",
-        "autoresearch.scan.post_run <date> observe",
-        "IMMATURE",
-        "10 次真实扫描",
+        "session plan", "局部恢复", "RATE_LIMIT", "streaming_l4",
+        "不得改 finalist cap、三门、主尺或 BUY 数量", "UNMEASURED", "IMMATURE",
+        "10 次完整真实运行", "HOST_CAPABILITY_REQUIRED", "session_v1",
     ):
-        assert anchor in skill, f"SKILL.md 缺 Wave 3 运行契约:{anchor}"
+        assert anchor in skill
+    assert "Workflow({" not in skill
     assert "_l4_tasks.json" in stages
     assert "PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED" in stages
     assert "预算只告警" in stages
@@ -697,18 +672,20 @@ def test_scan_skill_keeps_codex_restart_discipline():
 
 
 def test_stages_channel_quota_listing_matches_config():
-    """终审 M-8(2026-09-26):STAGES.md 的配额行必须与 scan_config.jsonc 的 channel_quotas 逐键同值。
+    """配置标准 R9(2026-09-27):STAGES.md 只指向 `funnel.channel_quotas`,**不复述任何配额值**——
+    值只住 scan_config.jsonc(原终审 M-8 的「逐键同值」被 R9 取代:两份都写就会漂)。
 
-    变异验证:把 jsonc 里任一键的值改掉、或从 STAGES 删掉一键 → 红。
+    变异验证:往 STAGES 的配额行写回 `value 312` → R9 红(tests/scan/test_config_standard.py);
+    把 jsonc 的 channel_quotas 删到 8 键以下 → 本测试红。
     """
     from autoresearch.scan.user_config import load_user_config
     cfg = load_user_config(SKILLS / "scan-market" / "scan_config.jsonc")
     quotas = cfg["funnel"]["channel_quotas"]
     stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
     assert len(quotas) >= 8, quotas
+    assert "`funnel.channel_quotas`" in stages, "STAGES.md 要指向配额键"
     for key, value in quotas.items():
-        assert f"{key} {value}" in stages, f"STAGES.md 配额行缺或不等:{key} {value}"
-    assert f"{len(quotas)} 键全写" in stages, "STAGES.md 配额行的键数与 jsonc 不符"
+        assert f"{key} {value}" not in stages, f"STAGES.md 复述了配额值 {key} {value}(值只住 jsonc)"
 
 
 def test_scan_workflow_reads_l3cap_from_gate1_not_a_literal():

@@ -73,9 +73,16 @@ def _verify_row(d: Path, code6: str) -> dict | None:
     return {"verdict": str(r.get("verdict", "")), "trigger": str(r.get("trigger", ""))}
 
 
+def configured_max_days() -> int:
+    """`scan_config.l4.brief.dossier_days`:前科卡回看几个 scan 日(缺省 10)。"""
+    from autoresearch.scan.user_config import knob
+    return int((knob("l4", "brief", None, {}) or {}).get("dossier_days", 10))
+
+
 def stock_dossier(code: str, scan_root: Path | str = _WS_SCAN_ROOT,
-                  max_days: int = 10, exclude: str | None = None) -> list[dict]:
+                  max_days: int | None = None, exclude: str | None = None) -> list[dict]:
     """最近 max_days 个 scan 日里该票的入围史(exclude 当日;档案=历史)。日期升序。"""
+    max_days = configured_max_days() if max_days is None else max_days
     code6 = str(code).split(".")[0].zfill(6)
     root = Path(scan_root)
     if not root.exists():
@@ -95,7 +102,7 @@ def stock_dossier(code: str, scan_root: Path | str = _WS_SCAN_ROOT,
 
 
 def render_dossier(code: str, scan_root: Path | str = _WS_SCAN_ROOT,
-                   max_days: int = 10, exclude: str | None = None) -> str:
+                   max_days: int | None = None, exclude: str | None = None) -> str:
     """前科卡 markdown;无历史 → ""(presence-gated)。"""
     entries = stock_dossier(code, scan_root=scan_root, max_days=max_days, exclude=exclude)
     if not entries:

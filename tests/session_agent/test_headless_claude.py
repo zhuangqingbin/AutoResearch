@@ -21,6 +21,14 @@ from autoresearch.session_agent.executors.base import (
     classify_error,
 )
 
+
+@pytest.fixture(autouse=True)
+def simulated_access_for_fake_cli(monkeypatch):
+    # This suite exercises subprocess lifecycle, never claims host enforcement.
+    # Real C4 manifest/binding behavior is covered by test_task_access.py.
+    monkeypatch.setattr(hc, 'bind_task_access', lambda *args, **kwargs: {'enforcement': 'SIMULATED'})
+
+
 TASK = "scan.l4.card.600000"
 
 #: Fake claude prelude: pick the session id out of argv, log argv one per line.
@@ -198,7 +206,7 @@ def _dead(pid: int, deadline: float) -> bool:
     return False
 
 
-def test_timeout_kills_the_whole_process_group(tmp_path):
+def test_timeout_kills_the_whole_process_group(tmp_path, monkeypatch):
     pidfile = tmp_path / "grandchild.pid"
     body = f"""\
         sleep 30 &
@@ -206,14 +214,79 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
         wait
         """
     ex = _executor(tmp_path, _fake_claude(tmp_path, body), kill_grace_seconds=0.2)
-    started = time.monotonic()
+    real_popen = hc.subprocess.Popen
+    group_started = []
+
+    def started_group(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        if kwargs.get("start_new_session"):
+            # Start the timeout assertion only after its grandchild exists.
+            # Slow shell startup must not turn this into a leader-only test.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if pidfile.is_file() and pidfile.read_text().strip().isdigit():
+                    group_started.append(time.monotonic())
+                    return proc
+                time.sleep(0.01)
+            try:
+                hc.os.killpg(proc.pid, hc.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=2)
+            pytest.fail("fixture did not start its grandchild")
+        return proc
+
+    monkeypatch.setattr(hc.subprocess, "Popen", started_group)
     with pytest.raises(ExecutorTimeout, match="超时"):
         ex.dispatch(_request(tmp_path, timeout=0.8))
-    assert time.monotonic() - started < 8
+    assert time.monotonic() - group_started[0] < 8
     grandchild = int(pidfile.read_text(encoding="utf-8").strip())
     assert _dead(grandchild, time.monotonic() + 5), "grandchild `sleep` survived the timeout"
     rec = _record(tmp_path)
     assert rec["timed_out"] is True and rec["state"] == "KILLED"
+
+
+@pytest.mark.parametrize("probe_error,expected", [
+    (None, False), (ProcessLookupError(), True), (PermissionError(), None), (OSError(), None),
+])
+def test_group_cancellation_confirmation_requires_observed_absence(monkeypatch, probe_error, expected):
+    def probe(pgid, sig):
+        assert (pgid, sig) == (12345, 0)
+        if probe_error is not None:
+            raise probe_error
+
+    monkeypatch.setattr(hc.os, "killpg", probe)
+    assert hc._group_stopped(12345) is expected
+
+
+def test_timeout_does_not_claim_group_cancelled_when_only_leader_stopped(tmp_path, monkeypatch):
+    ex = _executor(tmp_path, _fake_claude(tmp_path, "exec sleep 30"))
+
+    def only_leader(proc):
+        proc.kill()
+        proc.wait(timeout=2)
+        return False
+
+    monkeypatch.setattr(ex, "_kill_group", only_leader)
+    with pytest.raises(ExecutorTimeout, match="未确认"):
+        ex.dispatch(_request(tmp_path, timeout=0.05))
+    record = _record(tmp_path)
+    assert record["cancel_capability"] == "PROCESS_GROUP"
+    assert record["cancel_confirmed"] is False
+    assert record["state"] == "CANCEL_UNCONFIRMED"
+
+
+def test_orphan_stop_records_unconfirmed_group(tmp_path, monkeypatch):
+    ex = _executor(tmp_path, "unused")
+    path = tmp_path / "orphan.json"
+    record = {"state": "RUNNING", "pid": 12345}
+    monkeypatch.setattr(hc, "owns_group", lambda _: True)
+    monkeypatch.setattr(hc, "stop_group", lambda *_: True)
+    monkeypatch.setattr(hc, "_group_stopped", lambda _: False, raising=False)
+    ex._stop_orphans([(path, record)], "next")
+    result = json.loads(path.read_text())
+    assert result["cancel_confirmed"] is False
+    assert result["state"] == "CANCEL_UNCONFIRMED"
 
 
 def test_max_turns_explicit_request_wins_then_role_then_tier(tmp_path):
@@ -310,7 +383,8 @@ def test_runner_binds_the_headless_transcript_as_independent_review_evidence(tmp
                      independent=True, inputs=("synthetic.prompt",))],
         host=support.profile(independent_context=True, session_ref="headless-host"),
     )
-    out = run.output_path("synthetic.review.out")
+    from autoresearch.session_agent import artifacts
+    out = Path(artifacts.output_paths(run.handle, run.tasks[0], 1)['synthetic.review.out'])
     projects = tmp_path / "projects"
     body = f"""\
         mkdir -p "{out.parent}"; printf 'card' > "{out}"
@@ -517,7 +591,12 @@ def test_prelaunch_stops_a_still_running_session_of_the_same_task(tmp_path):
         assert ex.dispatch(_attempt(_request(tmp_path), 2)).ok is True
         assert orphan.wait(timeout=10) is not None, "the orphaned session kept running"
         old = json.loads((folder / f"{TASK}.a1.json").read_text(encoding="utf-8"))
-        assert old["state"] == "KILLED" and old["superseded_by"]
+        # The record precedes this parent's wait/reap. Group absence may not yet
+        # have been observable when cancellation was recorded.
+        assert old["cancel_requested"] is True and old["superseded_by"]
+        assert old["cancel_capability"] == "PROCESS_GROUP"
+        expected = "KILLED" if old["cancel_confirmed"] is True else "CANCEL_UNCONFIRMED"
+        assert old["state"] == expected
     finally:
         if orphan.poll() is None:
             orphan.kill()
@@ -642,3 +721,66 @@ def test_child_env_keeps_the_login_basics():
     assert env == {"HOME": "/h", "PATH": "/p", "USER": "u", "TMPDIR": "/t", "LANG": "C",
                    "CLAUDE_CONFIG_DIR": "/c", "AUTORESEARCH_ENGINE": "claude"}
     assert stripped == ["ANTHROPIC_API_KEY"]
+
+
+@pytest.mark.parametrize("error_stage", ["term", "term_probe", "kill", "kill_probe"])
+def test_group_cancellation_retries_until_absence_is_observed(tmp_path, monkeypatch, error_stage):
+    ex = _executor(tmp_path, "unused", kill_grace_seconds=0.2)
+    calls = []
+    clock = [0.0]
+    probe_count = [0]
+
+    class Leader:
+        pid = 12345
+
+        def wait(self, timeout):
+            return -15
+
+        def poll(self):
+            return -15
+
+    def killpg(pgid, sig):
+        assert pgid == Leader.pid
+        calls.append(sig)
+        if (error_stage == "term" and sig == hc.signal.SIGTERM
+                or error_stage == "kill" and sig == hc.signal.SIGKILL):
+            raise PermissionError(1, "Operation not permitted")
+        if sig == 0:
+            probe_count[0] += 1
+            if probe_count[0] >= 3:
+                raise ProcessLookupError(3, "No such process")
+            if (error_stage == "term_probe" and probe_count[0] == 1
+                    or error_stage == "kill_probe" and probe_count[0] == 2):
+                raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(hc.os, "killpg", killpg)
+    monkeypatch.setattr(hc.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(hc.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    assert ex._kill_group(Leader()) is True
+    assert hc.signal.SIGKILL in calls
+    assert probe_count[0] >= 3
+
+
+@pytest.mark.parametrize("observable", [True, False])
+def test_group_cancellation_stays_unconfirmed_without_observed_absence(tmp_path, monkeypatch, observable):
+    ex = _executor(tmp_path, "unused", kill_grace_seconds=0.2)
+    calls = []
+    clock = [0.0]
+
+    class Leader:
+        pid = 12345
+
+        def wait(self, timeout):
+            return -15
+
+    def killpg(pgid, sig):
+        calls.append(sig)
+        if not observable:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(hc.os, "killpg", killpg)
+    monkeypatch.setattr(hc.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(hc.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    assert ex._kill_group(Leader()) is (False if observable else None)
+    assert hc.signal.SIGKILL in calls
+    assert 5 <= clock[0] <= 5.2

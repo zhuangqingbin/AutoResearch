@@ -152,6 +152,8 @@ def abandon_request(staging, task_id: str, attempt: int, *, reason: str) -> bool
             _atomic_write(marker, {
                 "schema_version": 1, "task_id": task_id, "attempt": attempt,
                 "abandoned_at": _now(), "reason": str(reason)[:2000], "pid": os.getpid(),
+                "cancel_capability": "UNSUPPORTED", "cancel_requested": False,
+                "cancel_confirmed": False,
             })
     return True
 
@@ -319,8 +321,10 @@ def runner_dead_reason(runner: dict | None, *, wall=time.time) -> tuple[str, str
         return "PID", f"runner pid {pid} is not alive (killed/crashed; runner.json still RUNNING)"
     beat = float(runner.get("heartbeat_seconds") or 5.0)
     age = _heartbeat_age(runner, wall)
-    if age is not None and age > DEAD_HEARTBEATS * beat:
-        return "HEARTBEAT", (f"runner heartbeat is {age:.0f}s old (> {DEAD_HEARTBEATS}× "
+    from autoresearch.session_agent.config import session_cfg
+    dead = session_cfg()["mailbox"]["dead_heartbeats"]
+    if age is not None and age > dead * beat:
+        return "HEARTBEAT", (f"runner heartbeat is {age:.0f}s old (> {dead}× "
                              f"{beat:g}s); pid {pid} does not beat")
     return None
 
@@ -328,7 +332,7 @@ def runner_dead_reason(runner: dict | None, *, wall=time.time) -> tuple[str, str
 def wait_request(
     staging,
     *,
-    timeout: float = DEFAULT_WAIT_SECONDS,
+    timeout: float | None = None,
     poll_seconds: float = 1.0,
     include_taken: bool = False,
     clock=time.monotonic,
@@ -345,6 +349,9 @@ def wait_request(
     ``{"kind": "REQUEST", **request, "request_path"}`` (each request is handed out once
     unless ``include_taken``; abandoned attempts never), or ``{"kind": "IDLE", ...}``.
     """
+    if timeout is None:
+        from autoresearch.session_agent.config import session_cfg
+        timeout = session_cfg()["mailbox"]["wait_s"]
     deadline = clock() + float(timeout)
     stale_since = None
     while True:
@@ -384,10 +391,11 @@ class MailboxExecutor:
 
     def __init__(self, staging, *, poll_seconds: float = 2.0, clock=time.monotonic,
                  sleep=time.sleep, wall=time.time,
-                 never_taken_factor: float = NEVER_TAKEN_FACTOR):
+                 never_taken_factor: float | None = None):
+        from autoresearch.session_agent.config import session_cfg
         self.staging = Path(staging)
         self.poll_seconds = poll_seconds
-        self.never_taken_factor = never_taken_factor
+        self.never_taken_factor = session_cfg()["mailbox"]["never_taken_factor"] if never_taken_factor is None else never_taken_factor
         self._clock = clock
         self._sleep = sleep
         self._wall = wall

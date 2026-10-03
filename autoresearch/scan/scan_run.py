@@ -66,6 +66,22 @@ HARD_STOP = "01:00"
 MIN_RUNNER_MINUTES = 10
 #: 停在飞 ``claude -p`` / runner 进程组:TERM 后等多久再 KILL。
 KILL_GRACE_S = 5.0
+SUBPROCESS_TIMEOUT_S = 1800
+
+
+def runner_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.runner`:无人值守场的全部时钟(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"window_start": str(knob("runner", "window_start", None, WINDOW_START, cfg)),
+            "hard_stop": str(knob("runner", "hard_stop", None, HARD_STOP, cfg)),
+            "min_runner_minutes": int(knob("runner", "min_runner_minutes", None, MIN_RUNNER_MINUTES, cfg)),
+            "run_timeout_minutes": float(knob("runner", "run_timeout_minutes", None, RUN_TIMEOUT_MINUTES, cfg)),
+            "live_run_window": timedelta(minutes=int(knob("runner", "live_run_window_min", None, 90, cfg))),
+            "kill_grace_s": float(knob("runner", "kill_grace_s", None, KILL_GRACE_S, cfg)),
+            "subprocess_timeout_s": int(knob("runner", "subprocess_timeout_s", None, SUBPROCESS_TIMEOUT_S, cfg)),
+            "force_full": bool(knob("runner", "force_full", None, False, cfg))}
+
+
 NO_CHANNEL_WARNING = ("⚠ 送达渠道 = none(scan_config.jsonc delivery.channel):本场任何推送 —— "
                       "含 FAILED / 未开 / 错过 —— 都不会发出,只看日志与摘要")
 VERIFY_KEYS = ("report_covered", "publication_ok", "orchestration_verified", "completeness_ok")
@@ -110,7 +126,7 @@ def build_headless_request(date: str, *, session_ref: str | None = None) -> dict
     ``claude -p``(``safe_resume=false``)。没有主会话 transcript,所以不给 ``transcript-file:``。
     """
     return {
-        "schema_version": 1,
+        "schema_version": 4,
         "kind": "scan-market",
         "requested_mode": "AUTO",
         "analysis_date": date,
@@ -119,7 +135,7 @@ def build_headless_request(date: str, *, session_ref: str | None = None) -> dict
         "asset_type": None,
         "name": None,
         # 📌 持仓由确定性判据 SENTINEL_PINNED 兜住;无人值守不做人工 override。
-        "force_full": False,
+        "force_full": runner_cfg()["force_full"],
         "host_profile": {
             "schema_version": 1,
             "engine": "claude",
@@ -137,12 +153,20 @@ def build_headless_request(date: str, *, session_ref: str | None = None) -> dict
             "evidence_refs": list(HEADLESS_EVIDENCE),
         },
         "predecessor_run_id": None,
+        # 与交互样例 docs/session-agent/examples/scan.request.json 同一份契约(测试锁同源):
+        # v3 起 DecisionFrame 带日历来源证据,v4 起宏观/行业候选 profile 显式取缺省。
+        "card_research_profile": "single-stage-v1",
+        "research_context": {"venue": "XSHG", "usage": "scan", "calendar_source_path": None},
+        "macro_research_profile": "serial21",
+        "macro_optional_products": [],
+        "sector_brief_profile": "legacy",
     }
 
 
 def live_scan_runs(*, now: datetime | None = None,
-                   window: timedelta = LIVE_RUN_WINDOW) -> list[dict]:
+                   window: timedelta | None = None) -> list[dict]:
     """同引擎 ACTIVE 的 scan-market run 中,持有者进程还活着或心跳在 ``window`` 内的那些。"""
+    window = runner_cfg()["live_run_window"] if window is None else window
     from autoresearch.trace import process_probe
 
     stamp = now or datetime.now(timezone.utc)
@@ -288,13 +312,15 @@ def _at(hhmm: str) -> clock_time:
     return clock_time(hour, minute)
 
 
-def in_window(now: datetime, deadline: str, start: str = WINDOW_START) -> bool:
+def in_window(now: datetime, deadline: str, start: str | None = None) -> bool:
     """定时场的合法开跑时段 [start, deadline](本地时刻;截止那一整分钟仍算在内)。"""
+    start = runner_cfg()["window_start"] if start is None else start
     return _at(start) <= now.time() and now.replace(second=0, microsecond=0).time() <= _at(deadline)
 
 
-def hard_stop_after(started: datetime, hhmm: str = HARD_STOP) -> datetime:
+def hard_stop_after(started: datetime, hhmm: str | None = None) -> datetime:
     """``started`` 之后第一次到达的 HH:MM(21:20 起跑 → 次日 01:00)。"""
+    hhmm = runner_cfg()["hard_stop"] if hhmm is None else hhmm
     stop = datetime.combine(started.date(), _at(hhmm))
     return stop if stop > started else stop + timedelta(days=1)
 
@@ -335,7 +361,7 @@ def _call(argv: list[str], *, env: dict, timeout: float | None,
             out = ""
         return None, out or ""
     except BaseException:
-        _stop_process_group(proc, grace=KILL_GRACE_S)
+        _stop_process_group(proc, grace=runner_cfg()["kill_grace_s"])
         raise
 
 
@@ -361,7 +387,7 @@ def _env(run_id: str | None = None) -> dict:
     return env
 
 
-def terminate_inflight(records_dir: Path | str, *, grace: float = KILL_GRACE_S) -> list[int]:
+def terminate_inflight(records_dir: Path | str, *, grace: float | None = None) -> list[int]:
     """Stop every headless call still recorded as STARTING/RUNNING (its own process group).
 
     The runner's ``claude -p`` children live in their own sessions (``start_new_session``),
@@ -372,6 +398,7 @@ def terminate_inflight(records_dir: Path | str, *, grace: float = KILL_GRACE_S) 
     executor.  All groups get SIGTERM at once, then whatever is left after ``grace`` seconds
     gets SIGKILL (review M1b); a pid twin (same pid, other start token) is never signalled.
     """
+    grace = runner_cfg()["kill_grace_s"] if grace is None else grace
     from autoresearch.trace import process_probe
 
     signalled = []
@@ -449,7 +476,7 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         code, out = _call(_session_agent("begin", "--orchestration", "session_v1",
                                          "--request-file", str(request_path),
                                          "--ignore-scan-lock"),
-                          env=_env(), timeout=1800, stderr=stream)
+                          env=_env(), timeout=runner_cfg()["subprocess_timeout_s"], stderr=stream)
         doc = _last_json(out) or {}
         if code != 0 or not doc.get("run_id"):
             detail = "; ".join(str(item.get("message")) for item in doc.get("errors") or []
@@ -474,7 +501,7 @@ def default_steps(args, log: OpsLog | None) -> Steps:
     def verify(canonical: str, run_id: str) -> dict:
         code, out = _call(_session_agent("verify-report", "--report-path", canonical,
                                          "--expected-run-id", run_id, "--level", "full"),
-                          env=_env(), timeout=1800, stderr=stream)
+                          env=_env(), timeout=runner_cfg()["subprocess_timeout_s"], stderr=stream)
         return _last_json(out) or {"error": f"verify-report exit={code}"}
 
     def deliver(brief: Path, *, run_id: str, title: str, report_path: str | None) -> dict:
@@ -493,7 +520,7 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         code, out = _call([sys.executable, "-m", "autoresearch.trace.capsule", "finalize", run_id,
                            "--business-status", "FAILED",
                            "--error-json", json.dumps(error, ensure_ascii=False)],
-                          env=_env(), timeout=1800, stderr=stream)
+                          env=_env(), timeout=runner_cfg()["subprocess_timeout_s"], stderr=stream)
         emit(f"capsule finalize FAILED exit={code} {out.strip()[:300]}")
 
     def notify(title: str, body: str) -> dict:
@@ -627,11 +654,13 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
         return held
 
     # 夜间硬截止(复审 M2):只管定时场;显式 --date 的补跑只受 --run-timeout-minutes 约束。
-    run_cap = float(getattr(args, "run_timeout_minutes", RUN_TIMEOUT_MINUTES)) * 60
-    stop_at = None if explicit else hard_stop_after(fired, getattr(args, "hard_stop", HARD_STOP))
+    rc = runner_cfg()
+    _cap_arg = getattr(args, "run_timeout_minutes", None)
+    run_cap = float(rc["run_timeout_minutes"] if _cap_arg is None else _cap_arg) * 60
+    stop_at = None if explicit else hard_stop_after(fired, getattr(args, "hard_stop", None) or rc["hard_stop"])
     if stop_at is not None:
         summary["hard_stop"] = stop_at.isoformat(timespec="minutes")
-        if (stop_at - steps.now()).total_seconds() < MIN_RUNNER_MINUTES * 60:
+        if (stop_at - steps.now()).total_seconds() < rc["min_runner_minutes"] * 60:
             log.line(f"已过/逼近夜间硬截止 {stop_at:%m-%d %H:%M},不再 begin")
             tell(f"扫描 {date} 未开",
                  f"已过夜间硬截止 {stop_at:%H:%M}(就绪等待期间本机可能睡眠)· 日志 {log.path}")
@@ -691,7 +720,7 @@ def _out_of_window(steps: Steps, fired: datetime, deadline: str, *, log: OpsLog,
     21:10,多半是手动)→ 静默并提示带 ``--date``;否则推一次「错过」并写该日摘要(之后的
     补触发就静默了)。
     """
-    log.line(f"触发时刻 {fired:%m-%d %H:%M} 不在窗口 {WINDOW_START}–{deadline} 内(未带 --date)")
+    log.line(f"触发时刻 {fired:%m-%d %H:%M} 不在窗口 {runner_cfg()["window_start"]}–{deadline} 内(未带 --date)")
     try:
         day = steps.missed_date(fired)
     except Exception as exc:  # noqa: BLE001
@@ -699,7 +728,7 @@ def _out_of_window(steps: Steps, fired: datetime, deadline: str, *, log: OpsLog,
         day = None
     if day is None:
         return finish(EXIT_OK, "OUT_OF_WINDOW")
-    if day == fired.strftime("%Y-%m-%d") and fired.time() < _at(WINDOW_START):
+    if day == fired.strftime("%Y-%m-%d") and fired.time() < _at(runner_cfg()["window_start"]):
         log.line(f"{day} 的窗口还没到;手动补跑请带 --date {day}")
         return finish(EXIT_OK, "OUT_OF_WINDOW")
     if (ops_dir() / f"scan_run_{day}.json").exists():
@@ -707,7 +736,7 @@ def _out_of_window(steps: Steps, fired: datetime, deadline: str, *, log: OpsLog,
         return finish(EXIT_OK, "OUT_OF_WINDOW")
     summary["date"] = day
     tell(f"扫描 {day} 错过",
-         f"本机睡眠/关机:launchd {fired:%m-%d %H:%M} 才触发(窗口 {WINDOW_START}–{deadline});"
+         f"本机睡眠/关机:launchd {fired:%m-%d %H:%M} 才触发(窗口 {runner_cfg()["window_start"]}–{deadline});"
          f"补跑 scripts/scan_run.sh --date {day} --skip-readiness · 日志 {log.path}")
     return finish(EXIT_OK, "MISSED", fired_at=fired.isoformat(timespec="minutes"))
 
@@ -720,9 +749,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-readiness", action="store_true", help="不等 stk_factor_pro(补跑用)")
     ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude)")
     ap.add_argument("--max-parallel", type=int, help="推理并发帽(缺省 budgets.concurrency.l4_stock)")
-    ap.add_argument("--run-timeout-minutes", type=float, default=RUN_TIMEOUT_MINUTES)
-    ap.add_argument("--hard-stop", default=HARD_STOP,
-                    help=f"定时场夜间硬截止 HH:MM(缺省 {HARD_STOP};显式 --date 补跑不受它约束)")
+    ap.add_argument("--run-timeout-minutes", type=float, default=None,
+                    help=f"runner 墙钟(缺省 = scan_config runner.run_timeout_minutes,内建 {RUN_TIMEOUT_MINUTES})")
+    ap.add_argument("--hard-stop", default=None,
+                    help=f"定时场夜间硬截止 HH:MM(缺省 = scan_config runner.hard_stop,内建 {HARD_STOP};显式 --date 补跑不受它约束)")
     args = ap.parse_args(argv)
     if ws.ENGINE != "claude":
         print(f"[scan-run] headless 执行器只跑 claude 引擎;当前 {ws.ENGINE}(Codex headless 不在范围)")

@@ -58,6 +58,19 @@ SUMMARY_MAX_BYTES = SUMMARY_WARN_BYTES
 # ── 一句依据长度(§6.7;全链唯一上限,不再 80/96 两套)──────────────────
 EVIDENCE_MAX_CHARS = 80
 
+
+def report_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.report`:brief / summary / appendix 的体积预算、定调句长度、一句依据长度(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    from autoresearch.scan import brief as _brief   # 两个缺省住 brief 模块(单源;测试可 monkeypatch)
+    return {"brief_max_bytes": int(knob("report", "brief_max_bytes", None, _brief.MAX_BYTES, cfg)),
+            "tone_chars": int(knob("report", "tone_chars", None, _brief.TONE_CHARS, cfg)),
+            "summary_target_bytes": int(knob("report", "summary_target_bytes", None, SUMMARY_TARGET_BYTES, cfg)),
+            "summary_warn_bytes": int(knob("report", "summary_warn_bytes", None, SUMMARY_WARN_BYTES, cfg)),
+            "appendix_target_bytes": int(knob("report", "appendix_target_bytes", None, APPENDIX_TARGET_BYTES, cfg)),
+            "appendix_warn_bytes": int(knob("report", "appendix_warn_bytes", None, APPENDIX_WARN_BYTES, cfg)),
+            "evidence_max_chars": int(knob("report", "evidence_max_chars", None, EVIDENCE_MAX_CHARS, cfg))}
+
 # ── appendix 锚(§4.2;ASCII id,跨 Markdown renderer 稳定)──────────────
 APPENDIX_FILENAME = "appendix.md"
 APPENDIX_ANCHORS: dict[str, str] = {

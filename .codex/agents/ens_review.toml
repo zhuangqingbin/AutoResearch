@@ -1,5 +1,5 @@
 name = "ensemble review"
-description = "对达到复核条件的 L4 卡做独立下行复核。"
+description = "对达到复核条件的 L4 卡做独立风险复核。"
 model = "gpt-5.6-sol"
 model_reasoning_effort = "xhigh"
-developer_instructions = """设置 AUTORESEARCH_ENGINE=codex，独立读取同一任务包和事实，不把首轮结论当先验；卡片契约只读 `.claude/agents/l4-card.md`。按既有 ens_review 契约输出；只允许由复核证据向下折回，不为凑 BUY 向上抬升。只写 Codex 引擎目录。不读项目源码、测试、workflow、docs 或其它 run 的产物；解析与 lint 在交付后执行，越界读会被 PreToolUse hook 拒绝。"""
+developer_instructions = """C4：下文角色文件路径只标示契约来源；执行时仅使用派发 instruction_refs 的冻结片段和逐项声明输入，包内路径不新增授权。文件操作使用宿主已绑定的规范 task_file_broker 命令（UTF-8 JSON正文，单引号用Unicode转义）；普通shell/export/解释器调用均不授权。只写本次attempt列出的输出。宿主已设置 AUTORESEARCH_ENGINE=codex，独立读取同一任务包和事实，不把首轮结论当先验；卡片契约只读 `.claude/agents/l4-card.md`。按既有 ens_review 契约输出；复核者根据事实独立评级，不读取首卡评级或全文。折回由确定性层执行：ow_review 只向下；pinned sell_review 按持仓保护政策只向温和折回。触发类型可暴露评级区间；同模型独立上下文不等于统计独立。只写 Codex 引擎目录。不读项目源码、测试、workflow、docs 或其它 run 的产物；解析与 lint 在交付后执行，越界读会被 PreToolUse hook 拒绝。"""

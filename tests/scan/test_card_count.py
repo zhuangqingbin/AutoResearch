@@ -22,7 +22,7 @@ def test_max_cards_binds_below_budget():
     cfg = {"l4": {"max_cards": 5}, "l3": {"composite_seat": {"enabled": True, "m": 3}}}
     caps = effective_caps(cfg, 30)
     assert caps == {"max_cards": 5, "budget_flags": True, "seat_m": 3,
-                    "finalist_cap": 2, "l3cap": 2}
+                    "finalist_cap": 2, "l3cap": 2, "l3min": 2}
 
 
 def test_max_cards_smaller_than_seats_keeps_positive_cap():
@@ -49,7 +49,7 @@ def test_budget_flags_false_ignores_menu_budget():
 def test_seats_disabled_do_not_reserve():
     cfg = {"l4": {"max_cards": 8}, "l3": {"composite_seat": {"enabled": False, "m": 3}}}
     assert effective_caps(cfg, 30) == {"max_cards": 8, "budget_flags": True, "seat_m": 0,
-                                       "finalist_cap": 8, "l3cap": 8}
+                                       "finalist_cap": 8, "l3cap": 8, "l3min": 7}
 
 
 # ───────── replay CLI:拷贝真 staging 到 scratch,按给定 max_cards 重跑 write_finalists ─────────

@@ -64,6 +64,16 @@ def initialize(path: Path | str, plan: dict) -> Path:
             if task["owner"] == "SESSION"
         },
     }
+    storage = target.parent / 'storage.json'
+    if storage.is_file():
+        declaration = json.loads(storage.read_text())
+        version = declaration['output_layout_version']
+        if type(version) is not int or version not in {1, 2}:
+            raise ValueError('unsupported output layout version')
+        if (declaration.get('run_id', plan['run_id']) != plan['run_id']
+                or declaration.get('plan_hash', plan['plan_hash']) != plan['plan_hash']):
+            raise TaskConflict('output storage does not match frozen plan')
+        payload['output_layout_version'] = version
     with _locked(target):
         if target.is_file():
             current = _load(target)
@@ -233,10 +243,33 @@ def _verify_submission(payload: dict, entry: dict, submission: dict) -> str:
     return _submission_digest(submission)
 
 
+def precheck(
+    path: Path | str, submission: dict,
+    validator: Callable[[dict, dict, dict, Callable[[str], dict]], object],
+):
+    """Validate a current attempt under its owner lock without committing anything."""
+    validate_submission(submission)
+    target = Path(path)
+    task_id = submission["envelope"]["task_id"]
+    with _locked(target):
+        payload = _load(target)
+        entry = payload["tasks"][task_id]
+        if entry["state"] != "RUNNING":
+            raise TaskConflict("task is not running")
+        _verify_submission(payload, entry, submission)
+        # Nested validators must read this snapshot rather than reacquire our lock.
+        def read_locked_entry(task_id):
+            return json.loads(canonical_json(payload["tasks"][task_id]))
+        result = validator(submission, entry["spec"], entry, read_locked_entry)
+        _verify_submission(payload, entry, submission)
+        return result
+
+
 def accept(
     path: Path | str,
     submission: dict,
     validator: Callable[[dict, dict], object],
+    *, prepare: Callable | None = None,
 ) -> dict:
     validate_submission(submission)
     target = Path(path)
@@ -258,7 +291,15 @@ def accept(
         if entry["state"] != "RUNNING":
             raise TaskConflict("task is not running")
         digest = _verify_submission(payload, entry, submission)
+        if payload.get('output_layout_version', 1) >= 2 and prepare is None:
+            raise TaskConflict('new layout requires captured outputs')
+        manifest = prepare(submission, entry['spec']) if prepare else None
         validator(submission, entry["spec"])
+        _verify_submission(payload, entry, submission)
+        if manifest is not None:
+            _attach_manifest(payload, entry, manifest)
+            entry['accepted_submission'] = submission
+            _promote_alias(payload, entry, manifest)
         intent = {
             "schema_version": 1,
             "task_id": task_id,
@@ -305,6 +346,7 @@ def complete_deterministic(
     attempt: int,
     outputs: list[dict],
     execution: dict,
+    *, accepted_artifacts: dict | None = None,
 ) -> dict:
     """Commit a captured deterministic result without forging an inference envelope."""
     target = Path(path)
@@ -325,6 +367,10 @@ def complete_deterministic(
             raise TaskConflict("deterministic completion attempt mismatch")
         if execution.get("status") != "SUCCEEDED" or execution.get("exit_code") != 0:
             raise ValueError("deterministic execution did not succeed")
+        if payload.get('output_layout_version', 1) >= 2 and accepted_artifacts is None:
+            raise TaskConflict('new layout requires captured deterministic outputs')
+        if accepted_artifacts is not None:
+            _attach_manifest(payload, entry, accepted_artifacts)
         expected = set(entry["spec"]["output_artifact_ids"])
         actual = {item.get("artifact_id") for item in outputs}
         if actual != expected or any(not item.get("sha256") for item in outputs):
@@ -372,6 +418,7 @@ def supersede_optional_failure(
     path: Path | str,
     task_ids: list[str],
     error: dict,
+    *, accepted_artifacts: dict | None = None,
 ) -> None:
     """Release a declared optional branch while preserving its failure evidence."""
     if not task_ids:
@@ -389,6 +436,8 @@ def supersede_optional_failure(
                     f"optional task cannot be superseded from {entry['state']}: {task_id}"
                 )
             entries.append(entry)
+        if accepted_artifacts is not None:
+            _attach_manifest(payload, entries[-1], accepted_artifacts)
         for entry in entries:
             entry["state"] = "SUPERSEDED"
             if entry["error"] is None:
@@ -416,6 +465,9 @@ def prepare_l4_retry(path: Path | str, code: str, previous_attempt: int) -> None
         matched = False
         for entry in matching:
             matched = True
+            if (entry["spec"].get("expected_output_contract") == "research.card.initial.v1"
+                    and entry["state"] == "SUCCEEDED"):
+                continue
             entry["state"] = (
                 "WAITING_RETRY"
                 if entry["spec"]["task_id"].endswith(".card")
@@ -442,7 +494,31 @@ def complete_l4_retry_alias(path: Path | str, code: str, previous_attempt: int) 
 
 
 __all__ = [
-    "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
+    "TaskConflict", "accept", "precheck", "claim", "complete_deterministic", "initialize",
     "complete_l4_retry_alias", "mark_failed", "prepare_l4_retry", "read_entries", "read_entry",
     "read_states", "recover_receipt", "register_tasks", "supersede_optional_failure",
 ]
+
+
+def _promote_alias(payload, entry, manifest):
+    import re
+    match = re.fullmatch(r'l4\.(\d{6})\.a(\d+)\.card', entry['spec']['task_id'])
+    if match is None or int(match.group(2)) < 2:
+        return
+    code, attempt = match.groups()
+    previous = int(attempt) - 1
+    original = payload['tasks'][f'l4.{code}.a{previous}.card']
+    if original['state'] != 'WAITING_RETRY':
+        raise TaskConflict('original L4 card is not waiting for retry')
+    key = f'scan.l4.{code}.a{previous}.card'
+    replacement = f'scan.l4.{code}.a{attempt}.card'
+    if original.get('accepted_artifacts'):
+        original.setdefault('accepted_history', []).append(original['accepted_artifacts'])
+    original['accepted_artifacts'] = {key: {**manifest[replacement], 'artifact_id': key}}
+    original['state'] = 'SUPERSEDED'
+
+
+def _attach_manifest(payload, entry, manifest):
+    payload['accepted_revision'] = payload.get('accepted_revision', 0) + 1
+    entry['accepted_revision'] = payload['accepted_revision']
+    entry['accepted_artifacts'] = manifest

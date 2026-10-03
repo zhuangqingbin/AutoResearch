@@ -46,6 +46,25 @@ def _context(tmp_path):
     )
 
 
+def _macro_data(handle, root):
+    request_path = handle.workspace / "session/request.json"
+    if not request_path.is_file():
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        request_path.write_text(json.dumps(_request()))
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "data.md"
+    path.write_text(
+        "**行业资金净流入(tushare)**:\n| 行业 | 主力净流入(亿) | 领涨股 |\n"
+        "|---|---:|---|\n| 电子 | 1 | 示例甲 |\n"
+    )
+    artifacts.register_artifact(handle, "macro.data", path, "WRITE")
+    artifacts.bind_artifact_hash(handle, "macro.data")
+
+
+def _cross_asset_rows():
+    return "\n".join(f"- {key}: **Rating**: Hold" for key in assemble.CROSS_ASSET_KEYS) + "\n置信度: 中\n"
+
+
 def test_macro_full_plan_matches_current_assembler_and_order(tmp_path):
     plan = build_macro_plan(_request(), _context(tmp_path))
     tasks = {task["task_id"]: task for task in plan["tasks"]}
@@ -58,7 +77,7 @@ def test_macro_full_plan_matches_current_assembler_and_order(tmp_path):
             if not optional
         ),
     }
-    assert tasks["macro.regional.us"]["dependencies"] == ["macro.harvest"]
+    assert tasks["macro.regional.us"]["dependencies"] == ["macro.global_intel"]
     assert tasks["macro.crossasset.rates"]["dependencies"] == ["macro.regional.global"]
     assert tasks["macro.sinous.divergence"]["dependencies"] == ["macro.crossasset.crypto"]
     assert tasks["macro.meso.sector_map"]["dependencies"] == ["macro.sinous.relative"]
@@ -71,13 +90,16 @@ def test_macro_full_requires_every_current_core_product(tmp_path):
     handle = _handle(tmp_path)
     mapping = macro_product_artifacts()
     root = handle.staging / "macro/2026-09-13"
+    _macro_data(handle, root)
     for relative, artifact_id in mapping.items():
         path = root / relative
         artifacts.register_artifact(handle, artifact_id, path, "WRITE")
         if relative in required_macro_products():
             path.parent.mkdir(parents=True, exist_ok=True)
-            if relative in {assemble.DECISION_REL, assemble.SECTOR_MAP_REL}:
-                path.write_text("- 资产: **Rating**: Hold\n置信度: 中\n")
+            if relative == assemble.DECISION_REL:
+                path.write_text(_cross_asset_rows())
+            elif relative == assemble.SECTOR_MAP_REL:
+                path.write_text("- 电子: **Rating**: Hold\n置信度: 中\n")
             else:
                 path.write_text("content\n置信度: 中\n")
             artifacts.bind_artifact_hash(handle, artifact_id)
@@ -91,6 +113,7 @@ def test_macro_full_rejects_unparseable_allocation_row(tmp_path):
     handle = _handle(tmp_path)
     mapping = macro_product_artifacts()
     root = handle.staging / "macro/2026-09-13"
+    _macro_data(handle, root)
     for relative in required_macro_products():
         artifact_id = mapping[relative]
         path = root / relative
@@ -119,13 +142,14 @@ def test_macro_assemble_publishes_run_state_without_overwriting_newer_state(tmp_
     (session / "request.json").write_text(json.dumps(_request()))
     mapping = macro_product_artifacts()
     root = handle.staging / "macro/2026-09-13"
+    _macro_data(handle, root)
     for relative, artifact_id in mapping.items():
         artifacts.register_artifact(handle, artifact_id, root / relative, "WRITE")
         if relative in required_macro_products():
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             text = (
-                "- OVERALL 风险档: **Rating**: Hold\n置信度: 中\n"
+                _cross_asset_rows()
                 if relative == assemble.DECISION_REL
                 else (
                     "- 电子: **Rating**: Overweight\n置信度: 中\n"

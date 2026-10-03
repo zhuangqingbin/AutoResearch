@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
+from autoresearch.sector.brief import extract_terrain
 from autoresearch.session_agent import artifacts
 from autoresearch.session_agent.domain_ops import (
     sector_full_validate,
     sector_lite_validate,
     sector_prepare_publication,
+)
+from autoresearch.session_agent.validation import (
+    DomainValidationError,
+    validate_registered_domain_contract,
 )
 from autoresearch.session_agent.workflows.sector import prepare_sector_bundle, publish_sector
 
@@ -135,3 +142,61 @@ def test_sector_publisher_is_idempotent_and_conflict_safe(tmp_path):
     target.write_text("manual edit")
     with pytest.raises(RuntimeError, match="conflict"):
         publish_sector(handle, reports_root=tmp_path / "reports")
+
+
+# ───── 2026-10-02 首场 session_v1 真扫:行业 brief 交稿 8 份,8 份全被判「方向性字样」 ─────
+#
+# 不是 agent 违约:`.claude/agents/sector-brief.md` 的地形段模板**要求**写资金流事实标签
+# 「主动买卖单净流入合计」,而两处方向词正则(scan 的 `sector.terrain.v1` 与单行业 LITE 的
+# `sector_lite_validate`)都含裸「买卖」→ 照模板写的 brief 必拒,`scan.l3.rank` 永远起不来。
+# 用模板原文(占位符填数)过两处校验;真正的方向措辞仍必须被拒。
+
+_AGENT_TEMPLATE = Path(__file__).resolve().parents[2] / ".claude/agents/sector-brief.md"
+
+
+def _template_brief() -> str:
+    """agent 定义里「## 模板」那一段围栏块,占位符一律填 1。"""
+    block = _AGENT_TEMPLATE.read_text(encoding="utf-8").split("## 模板", 1)[1].split("```", 2)[1]
+    return re.sub(r"<[^<>\n]+>", "1", block)
+
+
+def _terrain_submission(handle, text: str):
+    artifact_id = "scan.sector.abc.brief"
+    _register(handle, artifact_id, "scan.sector.abc.brief.md", text)
+    task = {"task_id": artifact_id, "role": "sector.brief",
+            "expected_output_contract": "sector.terrain.v1", "output_artifact_ids": [artifact_id]}
+    return {"outputs": [{"artifact_id": artifact_id}]}, task
+
+
+def _lite_handle(tmp_path, text: str):
+    handle = _handle(tmp_path)
+    _register(handle, "sector.report", "sector.md", text)
+    _register(handle, "sector.reuse", "sector.reuse.json", json.dumps({"reused": False}))
+    artifacts.register_artifact(
+        handle, "sector.validation", handle.staging / "session_outputs/sector.validation.json", "WRITE")
+    return handle
+
+
+def test_agent_template_terrain_passes_scan_direction_check(tmp_path):
+    brief = _template_brief()
+    assert "主动买卖单净流入合计" in extract_terrain(brief), "模板已改,本用例要测的标签不在了"
+    handle = _handle(tmp_path)
+    submission, task = _terrain_submission(handle, brief)
+    assert validate_registered_domain_contract(handle, submission, task) == []
+
+
+def test_agent_template_terrain_passes_sector_lite_direction_check(tmp_path):
+    handle = _lite_handle(tmp_path, _template_brief())
+    assert sector_lite_validate(handle)["contract"] == "sector.terrain.v1"
+
+
+@pytest.mark.parametrize("phrase", ["给出买卖建议", "买卖点已现", "建议回避", "看空本行业"])
+def test_directional_phrases_in_template_terrain_are_still_rejected(tmp_path, phrase):
+    brief = _template_brief().replace("- **链定位一句**:1", f"- **链定位一句**:{phrase}")
+    assert phrase in extract_terrain(brief), "锚点行没替换上,后面的断言是空操作"
+    handle = _handle(tmp_path / "scan")
+    submission, task = _terrain_submission(handle, brief)
+    with pytest.raises(DomainValidationError, match="directional"):
+        validate_registered_domain_contract(handle, submission, task)
+    with pytest.raises(RuntimeError, match="directional"):
+        sector_lite_validate(_lite_handle(tmp_path / "lite", brief))

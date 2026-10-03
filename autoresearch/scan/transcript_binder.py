@@ -444,13 +444,19 @@ def build_claude_candidates(
     return tuple(candidates)
 
 
+def codex_lookback_days() -> int:
+    """`scan_config.retention.codex_transcript_lookback_days`(缺省 10)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("retention", "codex_transcript_lookback_days", None, 10))
+
+
 def build_codex_candidates(
     run_identity: RunIdentity,
     expectations: Mapping[str, Mapping[str, object]],
     *,
     adapter: CodexTranscriptAdapter | None = None,
     sessions_root: Path | str | None = None,
-    lookback_days: int = 10,
+    lookback_days: int | None = None,
     now: datetime | None = None,
 ) -> tuple[TranscriptCandidate, ...]:
     """Discover + snapshot every rollout this run's session could own.
@@ -476,6 +482,7 @@ def build_codex_candidates(
     than letting both independently claim exclusivity `ordinal_window_for_timestamps`
     (which only ever sees one invocation's own window at a time) cannot see.
     """
+    lookback_days = codex_lookback_days() if lookback_days is None else lookback_days
     resolved_adapter = adapter or CodexTranscriptAdapter()
     search = discover_rollout_candidates(
         run_identity,

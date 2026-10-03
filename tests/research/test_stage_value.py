@@ -85,8 +85,9 @@ def population(**overrides):
 
 def test_unknown_flags_go_to_coverage_not_false():
     frame, cov = sv.pairs_from_population(population(), stage="menu_to_l3", ruler="gap_c1_o2")
-    assert cov["unknown_flags"] == 1 and "600002" not in set(frame["code"])
-    assert len(frame) == 3
+    assert cov["unknown_flags"] == 1 and "600002" in set(frame["code"])
+    assert len(frame) == 4
+    assert pd.isna(frame.set_index("code").loc["600002", "refined"])
 
 
 def test_immature_ruler_makes_the_day_incomplete_not_zero():
@@ -242,3 +243,34 @@ def test_spec_with_unregistered_ruler_is_refused_before_any_output(tmp_path):
     with pytest.raises(ValueError):
         sv.run(spec_path=spec_path, populations=[pop], parent=tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_population_coverage_includes_security_days_and_industry_concentration():
+    table=population()
+    table['sector']=['bank','bank','bank','energy']
+    _, cov=sv.pairs_from_population(table,stage='menu_to_l3',ruler='gap_c1_o2')
+    assert cov['security_days']==4
+    assert cov['date_count']==1
+    assert cov['industry_hhi']==pytest.approx(.625)
+    assert cov['unselected_rows']==1
+
+
+def test_retro_readout_discloses_model_memory_leakage():
+    value=spec()
+    value['evidence_mode']='RETRO_REPLAY'
+    text=sv._readout(value,{},[])
+    assert '模型记忆' in text
+    assert '不自动' in text
+
+
+def test_production_run_unknown_selection_blocks_entire_day(tmp_path):
+    pop=tmp_path/'population.csv'
+    population().to_csv(pop,index=False)
+    spec_path=tmp_path/'spec.json'
+    spec_path.write_text(json.dumps(bound_spec(pop)))
+    output=sv.run(spec_path=spec_path,populations=[pop],parent=tmp_path/'out')
+    stats=json.loads((output/'statistics.json').read_text())
+    assert stats['menu_to_l3|gap_c1_o2']['n_complete']==0
+    assert stats['menu_to_l3|gap_c1_o2']['status_counts']['UNKNOWN_SELECTION']==1
+    frame,cov=sv.pairs_from_population(population(),stage='menu_to_l3',ruler='gap_c1_o2')
+    assert len(frame)==4 and cov['unknown_flags']==1

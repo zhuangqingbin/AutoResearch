@@ -56,8 +56,11 @@ def test_inference_boundaries_emit_only_after_claim_and_submit(tmp_path):
     request_files = list((handle.capsule / "agents/session/requests").glob("*.json"))
     assert len(request_files) == 1
 
+    from pathlib import Path
+    output_two = Path(claimed['result']['claim_receipt']['output_paths']['step.two.output'])
     output_two.write_text("**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: HOLD\n")
-    digest = artifacts.bind_artifact_hash(handle, "step.two.output")["sha256"]
+    from autoresearch.common.atomic import sha256_bytes
+    digest = sha256_bytes(output_two.read_bytes())
     submission = {
         "schema_version": 1,
         "envelope": claimed["result"]["envelope"],
@@ -104,8 +107,11 @@ def test_resume_repairs_terminal_event_after_event_append_failure(tmp_path):
         handle_loader=lambda run_id: handle,
         event_recorder=lambda *args, **kwargs: None,
     )
+    from pathlib import Path
+    output_two = Path(claimed['result']['claim_receipt']['output_paths']['step.two.output'])
     output_two.write_text("hold")
-    digest = artifacts.bind_artifact_hash(handle, "step.two.output")["sha256"]
+    from autoresearch.common.atomic import sha256_bytes
+    digest = sha256_bytes(output_two.read_bytes())
     submission = {
         "schema_version": 1,
         "envelope": claimed["result"]["envelope"],

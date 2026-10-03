@@ -14,9 +14,13 @@
 
 样例中的 `session_ref`、能力和 `evidence_refs` 必须替换成本次会话实际观测值。能力未知写 `null` 或 `false`，不能从旧配置推断为可用。
 
+## C4 兼容限制与前置检查
+
+旧 Workflow 缺少任务级访问绑定，当前在研究启动前返回 `HOST_CAPABILITY_REQUIRED`。新入口仍为显式 PILOT，默认切换门尚未满足。先在仓库根固定引擎并运行 `uv run --no-sync python -m autoresearch.session_agent.task_access preflight --orchestration session_v1`；`CONFIGURED_UNVERIFIED` 只表示配置可用。身份绑定、broker 与重载步骤见 [文件访问边界](access-boundary.md)。下文旧 fallback 说明是保留的协议语义，不能据此跳过 C4 能力门。
+
 ## 控制环(四个用户 skill 共用;2026-09-26 起只在此处讲一遍,SKILL.md 只留指针)
 
-开发/验收期显式选择新编排时使用 `python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`,宿主循环为 `begin → next → claim → execute/宿主研究 → submit → finish`。冻结计划、artifact、attempt、回执和发布由 Python 验证,推理仍发生在订阅会话。宿主能力不足会在创建 run 前返回 `HOST_CAPABILITY_REQUIRED`;`session_agent --orchestration legacy` 只返回 `LEGACY_ENTRYPOINT_REQUIRED`,绝不代跑旧 Workflow——确需回退必须显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并记录原因(`--legacy-reason`),不能给旧执行贴 `session_v1` 标签。当前双宿主真实验收为 `INCOMPLETE`,新入口仅作显式 PILOT,默认仍保留 legacy fallback;合成重放通过不等于真实宿主放行。`finish` 后必须对机器返回的 canonical 报告路径运行 `uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`,按结果分别声明编排、发布、完整性与重放;未绑定改写返回 `UNBOUND_REPORT`,不得借同一 run_id 或旧 ROOT 归因。
+开发/验收期显式选择新编排时使用 `python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`,宿主循环为 `begin → next → claim → execute/宿主研究 → submit → finish`。冻结计划、artifact、attempt、回执和发布由 Python 验证,推理仍发生在订阅会话。宿主能力不足会在创建 run 前返回 `HOST_CAPABILITY_REQUIRED`;`session_agent --orchestration legacy` 只返回 `LEGACY_ENTRYPOINT_REQUIRED`,绝不代跑旧 Workflow——确需回退必须显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并记录原因(`--legacy-reason`),不能给旧执行贴 `session_v1` 标签。当前双宿主真实验收为 `INCOMPLETE`,新入口仅作显式 PILOT,旧 legacy fallback 当前由 C4 能力门阻断；合成重放通过不等于真实宿主放行。`finish` 后必须对机器返回的 canonical 报告路径运行 `uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`,按结果分别声明编排、发布、完整性与重放;未绑定改写返回 `UNBOUND_REPORT`,不得借同一 run_id 或旧 ROOT 归因。
 
 ## Codex 与 Claude Code 启动
 
@@ -42,10 +46,8 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 
 1. `next --run-id <RUN_ID>` 读取可运行任务，不发生认领。
 2. `claim --run-id <RUN_ID> --task-id <TASK> --expected-attempt 1` 冻结本次输入并取得所有权。
-3. DETERMINISTIC 任务用 `execute --params-file <JSON>`；INFERENCE 任务由当前宿主读取 claim 返回的角色说明和登记 artifact，写入指定输出后用 `submit` 回交。
-4. 推理完成后先用 `bind-host-evidence` 把真实 transcript 区段绑定到
-   `task_id/attempt/session/context`，再提交输出。需要独立上下文的复核必须附引用该绑定的
-   真实 `host_receipt`；同一主会话换角色名不算独立。
+3. DETERMINISTIC 任务用 `execute --params-file <JSON>`；INFERENCE 任务派入独立研究上下文，根会话先按 [C4 绑定步骤](access-boundary.md) 绑定真实宿主身份，再交付登记读写命令。研究完成写入指定输出后用 `submit` 回交。
+4. 推理输出后先用 `precheck --run-id <RUN_ID> --submission-file <SUBMISSION.json>` 做候选领域预检，按错误在当前活跃 attempt 修订。未最终绑定时 `host_evidence_status=PENDING_FINAL_BINDING`、`can_submit=false` 是预期结果。完成修订后仅封存一次完整 transcript：用 `bind-host-evidence` 绑定到 `task_id/attempt/session/context`，再携带匹配的真实 host receipt 预检及正式 `submit`。独立复核还须不同的真实上下文；同一主会话换角色名不算独立。详见 [预检与封存顺序](operations.md#候选预检与最终封存)。
 5. `next` 返回 `DONE` 后执行 `finish`。五类能力统一执行可恢复的
    `seal → promote → state views → capsule finalize → commit receipt`；canonical 目录与
    hash-chain 收据是发布真值，日期旧路径只是在提交后生成的兼容视图。
@@ -60,7 +62,7 @@ uv run --no-sync python -m autoresearch.session_agent verify-report \
 证据闭包，并把旧存量结论与重算差异列入 `diffs`。命令按报告实际字节绑定身份；同 run_id 的
 未封存改写返回 `UNBOUND_REPORT`，不会借旧 capsule 放行。
 
-完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。
+完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。逐票复核、状态提交与调度计量见 [scheduling.md](scheduling.md)。
 
 ## 扫描 runner + mailbox 宿主循环(host 模式,PILOT,opt-in)
 
@@ -68,7 +70,7 @@ uv run --no-sync python -m autoresearch.session_agent verify-report \
 GATE2 / L4 prep+任务簿+slim+intel 状态 / 复核决策 / finalize / assemble / GATE4 / usage / observe)在
 runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 general-purpose 壳);只有 7 种
 判断角色(macro-brief、sector-brief、l3-rank(+repair)、l4-intel、l4-card、l4-card 复核)交给宿主会话。
-**默认入口仍是 scan-market SKILL 的 legacy Workflow**;本循环在真实验收(批 2–3 Task 6)通过前只作显式试跑。
+**默认切换门尚未开启，legacy Workflow 当前也因缺少 C4 绑定而被能力门阻断**；本循环只作显式 PILOT。
 已知缺口(单票终失败会让整场停在 BLOCKED/STALLED,legacy 则降级为盲卡)见
 `docs/research/2026-09-26-session-plan-vs-workflow-audit.md`。
 
@@ -95,6 +97,7 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
    `--timeout` 不超过 100 s(宿主 Bash 默认 120 s 上限),IDLE 就再调;不要一次长等。
 
    - `kind=REQUEST`:原样执行 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`(请求带 `model` 时一并传)。
+     C4 要求取得真实 agent ID 后先执行 `mailbox bind-access --run-id <RUN_ID> --task-id <TASK> --attempt <SESSION_ATTEMPT> --context-ref <AGENT_ID>`，将返回的登记命令发送给该 agent；绑定前工具调用会拒绝，不能跳过此步。
      model/effort 已由 runner 经 `resolve_agent_bundle` 解释并写在请求里(`model`/`effort`/`agent_spec`),
      不要改 prompt、不要另加指令。注意:Claude Code 的 `Agent` 工具不收 effort,host 模式下生效的是
      agent 定义 frontmatter 的 effort(legacy Workflow 显式传配置值;两者今天有差,见审计 R6);
@@ -130,8 +133,10 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
    `--key`**(如 `session-runner-2`、`-3`…):`trace/detach` 对同一 `(run_id, key)` 只等不重跑,用旧 key
    什么也不会发生。重试意图从任务表/任务簿的持久状态推导(不靠进程内存),重启后照常补足那一次重试;
    同一 run 同时只能有一个 runner(`_dispatch/runner.lock`),第二个会带着持锁 pid 直接拒绝启动。
-   `REVIEW_FAILED:<类>`(复核超时/断连)不会重跑 intel+card,整场停在 BLOCKED。
-   或换新 run_id 走 legacy Workflow(`LEGACY_ORCHESTRATION_FALLBACK`,记录原因)。runner 不替失败 run
+   复核超时/断连按既有瞬时错误分类重试该复核的 SESSION attempt，保留成功的 intel、主卡和其他复核。
+   重试耗尽或历史父票已失败时，报告 `REVIEW_UNAVAILABLE` 及原因；其他 READY 工作继续，必需缺口仍阻止完整发布。
+   任务终态、成功主卡、必需深核和复核覆盖分别观察，详见 [局部恢复](local-recovery.md)。
+   如需重新开始，建立新的显式 PILOT run；旧 legacy Workflow 仍被 C4 能力门阻断。runner 不替失败 run
    冻结 capsule,需要时显式 `python -m autoresearch.trace.capsule finalize <RUN_ID> --business-status FAILED`。
 
 **邮箱协议**(`<staging>/_dispatch/`,已登记为 run 内产物;驱动器只认 result 文件):
@@ -171,8 +176,8 @@ argv 脱敏、pid + 启动时刻、usage、`total_cost_usd`、session id、trans
 协议、五类计划、扫描四模式、恢复、发布和离线对拍已有自动化覆盖。`begin` 会在创建 run 前检查
 `deterministic_exec`、`capture_binding` 和 `inference_handoff`，缺能力返回
 `HOST_CAPABILITY_REQUIRED`。真实 Codex/Claude 宿主仍须分别完成 [acceptance.md](acceptance.md)
-的运行矩阵；未验收场景只能显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow 并记录
-原因。`session_agent --orchestration legacy` 返回 `LEGACY_ENTRYPOINT_REQUIRED`，不会静默代跑。
+的运行矩阵；未验收场景保持显式 PILOT；旧 `LEGACY_ORCHESTRATION_FALLBACK` 当前同样受 C4 能力门阻断，只保留兼容代码。
+`session_agent --orchestration legacy` 返回 `LEGACY_ENTRYPOINT_REQUIRED`，不会静默代跑。
 旧 run 和历史 capsule 保持只读兼容。
 
 默认切换由 `evaluation.accept_workflow(records)` 的机器门控制。每个 workflow 的 Codex 与
@@ -180,3 +185,5 @@ Claude Code 必须分别覆盖登记场景，记录必须是 `REAL_SESSION`（�
 `REAL_SESSION_DRILL`），且 portable proof 能同时解引用 VerificationResult、ReplayPlan、
 ReplayResult、bundle、receipt 和 ExecutionOrigin。`SYNTHETIC`、字符串 `PASS`、任意 run_id
 或缺 proof 都只得到 `INCOMPLETE`。当前没有完整双宿主 proof，因此五类默认均未切换。
+
+请求字段、宏观六组与行业确定性候选见 [版本化研究请求](research-profiles.md)；样例使用 schema v4，默认候选开关保持原值。

@@ -73,8 +73,12 @@ def record_stage(
     outputs=(),
     metrics: dict | None = None,
     error: str | None = None,
+    operation: str | None = None,
 ) -> dict | None:
     """把一个阶段的事实记进当前 run 的现场;没有 run 就什么都不做。
+
+    `operation` = 以哪个操作的身份过写守卫;缺省是旧 CLI 的 `stock.<stage>`。session_v1 的
+    计划只登记自己的操作名(FULL 的装配是 `stock.full.assemble`),由调用方显式传入。
 
     返回 checkpoint 的 dict(便于测试断言),no-op / 取证失败时返回 None ——
     **调用方不看返回值**,业务返回码永远不受取证影响。
@@ -91,7 +95,7 @@ def record_stage(
         )
 
         with run_write_lock(run_id):
-            handle = assert_write_allowed(run_id, f"stock.{stage}", ws.ENGINE)
+            handle = assert_write_allowed(run_id, operation or f"stock.{stage}", ws.ENGINE)
             if handle.contract.run_kind != "stock-research":
                 raise ValueError(
                     f"ambient run {run_id} is a {handle.contract.run_kind!r} run; "
@@ -205,8 +209,9 @@ def begin(
     name: str | None = None,
     legacy_reason: str | None = None,
 ) -> dict:
+    from autoresearch.contracts.research_access import require_legacy_access
     from autoresearch.trace.capsule import begin_run, freeze_legacy_execution_origin
-
+    require_legacy_access()
     reason = str(legacy_reason or "").strip()
     if not reason:
         raise ValueError("legacy_reason is required")

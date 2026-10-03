@@ -101,7 +101,37 @@ def _is_live_scan_root(root: Path) -> bool:
         return False
 
 
-def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
+SENTINEL_AUTO_BELOW = 0.03        # 全市场健康上涨占比 < 此值 → 自动哨兵档(跳 L3/L4)
+SENTINEL_CONSIDER_BELOW = 0.05    # 此值以下提示「可考虑哨兵」,人拍板
+BUDGET_DEFAULTS: dict = {
+    "base": 30, "floor": 12,
+    "flags": {"knife_share_max": 0.60, "knife_rel_min": 0.40, "knife_rel_mult": 2.0, "healthy_min": 2,
+              "risk_off": True, "streak_warn": 3, "streak_heavy": 5, "streak_hard": 7, "streak_lookback": 10},
+    "tiers": {"one_flag": 0.75, "multi": 0.5, "hard_min": 8, "hard_div": 3},
+}
+
+
+def budget_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4.budget` → 菜单感知预算的基准 / 下限 / 五面旗阈 / 降档比例(缺键 = BUDGET_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l4", "budget", None, {}, cfg) or {}
+    if not isinstance(user, dict):
+        user = {}
+    return {"base": int(user.get("base", BUDGET_DEFAULTS["base"])),
+            "floor": int(user.get("floor", BUDGET_DEFAULTS["floor"])),
+            "flags": {**BUDGET_DEFAULTS["flags"], **(user.get("flags") or {})},
+            "tiers": {**BUDGET_DEFAULTS["tiers"], **(user.get("tiers") or {})}}
+
+
+def sentinel_thresholds(frac_lo: float | None = None, frac_hi: float | None = None) -> tuple[float, float]:
+    """`scan_config.sentinel.{auto_below, consider_below}`(显式形参恒优先;缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    lo = float(knob("sentinel", "auto_below", frac_lo, SENTINEL_AUTO_BELOW))
+    hi = float(knob("sentinel", "consider_below", frac_hi, SENTINEL_CONSIDER_BELOW))
+    return lo, hi
+
+
+def zero_buy_streak(scan_dir: Path | str, lookback: int | None = None) -> int:
     """今日之前连续 0 买 scan 日数(只数出过卡的日;哨兵/未跑 L4 的日子跳过、不断链)。
 
     「这天出过卡」仍看 `health.final_ratings`(非空 = 跑过 L4);「这天有没有买」改读
@@ -121,6 +151,8 @@ def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
     2026-08-29 修 K4:「更早的日子在哪」交给 `_prev_day_dirs`(run 分区下兄弟目录只有今天),
     口径与回看深度**一字未改**。
     """
+    if lookback is None:
+        lookback = int(budget_cfg()["flags"]["streak_lookback"])
     scan_dir = Path(scan_dir)
     root = scan_dir.parent
     from autoresearch.scan.health import (  # lazy:避免 import cycle
@@ -148,13 +180,17 @@ def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
     return streak
 
 
-def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[int, str]:
+def l4_budget(scan_dir: Path | str, base: int | None = None, floor: int | None = None) -> tuple[int, str]:
     """菜单感知 L4 预算:病菜单/risk_off/0买连败的日子少烧 Opus(design: l4-economy §2 + 2026-07-04 加旗)。
 
     五旗:落刀>60% / **相对落刀**(>40% 且 >2×全市场,07-03 病灶 45% vs 20% 绝对门抓不住)/
     健康涨≤2 / regime==risk_off / **0买连败≥3**(≥5 计重旗=双份)。
     权重 1=3/4 档、≥2=1/2 档(≥floor)。**只降不升**;L2/meta 缺 → (base, parity 注)。
     """
+    b = budget_cfg()
+    fl, tiers = b["flags"], b["tiers"]
+    base = b["base"] if base is None else base
+    floor = b["floor"] if floor is None else floor
     scan_dir = Path(scan_dir)
     f2 = scan_dir / "L2_gbdt_top200.csv"
     if not f2.exists():
@@ -173,37 +209,37 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
             k1 = _knife_share(pd.read_csv(f1))
         except Exception:  # noqa: BLE001
             k1 = None
-    if k is not None and k > 0.60:
+    if k is not None and k > fl["knife_share_max"]:
         flags.append(f"落刀{k:.0%}")
-    elif k is not None and k1 and k > 0.40 and k > 2 * k1:
-        flags.append(f"落刀{k:.0%}(全市场{k1:.0%}×2=召回错配)")
-    if h is not None and h <= 2:
+    elif k is not None and k1 and k > fl["knife_rel_min"] and k > fl["knife_rel_mult"] * k1:
+        flags.append(f"落刀{k:.0%}(全市场{k1:.0%}×{fl['knife_rel_mult']:g}=召回错配)")
+    if h is not None and h <= fl["healthy_min"]:
         flags.append(f"健康涨仅{h}只")
     mp = scan_dir / "meta.json"
     if mp.exists():
         try:
             import json
-            if json.loads(mp.read_text(encoding="utf-8")).get("regime") == "risk_off":
+            if fl["risk_off"] and json.loads(mp.read_text(encoding="utf-8")).get("regime") == "risk_off":
                 flags.append("risk_off")
         except Exception:  # noqa: BLE001
             pass
-    streak = zero_buy_streak(scan_dir)
-    if streak >= 3:
-        flags.append(f"0买连败{streak}日" + ("·重旗" if streak >= 5 else ""))
-        if streak >= 5:
-            weight += 1                      # 重旗:连败≥5 单独就该压到 1/2 档
+    streak = zero_buy_streak(scan_dir, lookback=int(fl["streak_lookback"]))
+    if streak >= fl["streak_warn"]:
+        flags.append(f"0买连败{streak}日" + ("·重旗" if streak >= fl["streak_heavy"] else ""))
+        if streak >= fl["streak_heavy"]:
+            weight += 1                      # 重旗:连败≥streak_heavy 单独就该压到 1/2 档
     if not flags:
         return base, f"菜单健康 → 预算={base}(基准)"
     weight += len(flags)
-    n = max(floor, round(base * 0.75)) if weight == 1 else max(floor, base // 2)
-    if streak >= 7:                      # 长连败硬压(2026-07-06):再降到 ~1/3 档(≥8),低产日别烧 20 卡
-        n = min(n, max(8, base // 3))
-        flags.append(f"连败≥7硬压→{n}")
+    n = max(floor, round(base * tiers["one_flag"])) if weight == 1 else max(floor, int(base * tiers["multi"]))
+    if streak >= fl["streak_hard"]:      # 长连败硬压:再降到 ~1/hard_div 档(≥hard_min),低产日别烧满卡
+        n = min(n, max(int(tiers["hard_min"]), base // int(tiers["hard_div"])))
+        flags.append(f"连败≥{fl['streak_hard']}硬压→{n}")
     return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日)"
 
 
-def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
-                    frac_hi: float = 0.05) -> tuple[str, str]:
+def sentinel_advice(scan_dir: Path | str, frac_lo: float | None = None,
+                    frac_hi: float | None = None) -> tuple[str, str]:
     """哨兵建议(design: 2026-07-03-scan-sentinel-economy §1)。人拍板,不自动降档。
 
     判据用**全市场**健康上涨占比(L1_scored_full × healthy_riser_mask——不受自家 L2 采样
@@ -231,7 +267,7 @@ def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
         import json
         with contextlib.suppress(Exception):
             regime = json.loads(mp.read_text(encoding="utf-8")).get("regime")
-    return _sentinel_verdict(frac, regime, frac_lo, frac_hi)
+    return _sentinel_verdict(frac, regime, *sentinel_thresholds(frac_lo, frac_hi))
 
 
 def _sentinel_verdict(frac: float, regime: str | None,
@@ -251,8 +287,8 @@ def _sentinel_verdict(frac: float, regime: str | None,
     return "full", f"全市场健康上涨 {pct} 材料充足 → 全扫"
 
 
-def sentinel_advice_from_frame(frame: pd.DataFrame, frac_lo: float = 0.03,
-                               frac_hi: float = 0.05) -> tuple[str, str]:
+def sentinel_advice_from_frame(frame: pd.DataFrame, frac_lo: float | None = None,
+                               frac_hi: float | None = None) -> tuple[str, str]:
     """帧入口(盘前 cron / `python -m autoresearch.scan.frame`):同谓词同口径,scan staging 无需存在。
 
     regime 由 `classify_regime(frame)` 现算(scan-dir 版读 meta.json——那是 universe 落的同一标签)。
@@ -266,7 +302,7 @@ def sentinel_advice_from_frame(frame: pd.DataFrame, frac_lo: float = 0.03,
     if m is None:
         return "full", "健康谓词缺列 → 全扫(降级)"
     from autoresearch.common.regime import classify_regime
-    return _sentinel_verdict(float(m.mean()), classify_regime(frame).label, frac_lo, frac_hi)
+    return _sentinel_verdict(float(m.mean()), classify_regime(frame).label, *sentinel_thresholds(frac_lo, frac_hi))
 
 
 def main(argv: list[str] | None = None) -> int:

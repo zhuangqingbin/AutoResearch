@@ -11,7 +11,7 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.common.atomic import atomic_write_bytes, canonical_json, sha256_bytes
-from autoresearch.contracts.session_plan import plan_hash
+from autoresearch.contracts.session_plan import expansion_hash, plan_hash
 from autoresearch.sector.pack import _safe
 from autoresearch.session_agent import artifacts
 from autoresearch.session_agent.roles import roles_hash
@@ -44,7 +44,7 @@ def _task(
         "expected_output_contract": contract,
         "owner": "SESSION",
         "subject": industry,
-        "independent_context": False,
+        "independent_context": kind == "INFERENCE" and role in {"sector.intel", "sector.research"},
         "parent_task": None,
     }
 
@@ -127,6 +127,19 @@ def _tasks(industry: str, mode: str) -> list[dict]:
 def build_sector_plan(request: dict, handle) -> dict:
     if request["kind"] != "sector-research":
         raise ValueError("sector plan requires sector-research request")
+    profile = request.get("sector_brief_profile", "legacy")
+    if profile not in {"legacy", "deterministic-v1"}:
+        raise ValueError("unknown sector brief profile")
+    if profile == "deterministic-v1" and (request.get("schema_version", 1) < 4 or request["requested_mode"] != "LITE"):
+        raise ValueError("deterministic sector terrain requires frozen v4 LITE request")
+    tasks = _tasks(request["subject"], request["requested_mode"])
+    templates = []
+    if profile == "deterministic-v1":
+        tasks = tasks[:1]
+        tasks[0]["input_artifact_ids"] = ["research.frame"]
+        tasks[0]["output_artifact_ids"].append("sector.events.request")
+        templates = [{"template_id": "sector.sections", "expander": "sector.sections",
+                      "depends_on": [tasks[0]["task_id"]], "allowed_roles": ["sector.brief"]}]
     config_hash = getattr(handle.contract, "config_hash", None) or sha256_bytes(
         canonical_json(getattr(handle.contract, "user_config", {})).encode("utf-8")
     )
@@ -142,8 +155,8 @@ def build_sector_plan(request: dict, handle) -> dict:
         "config_hash": config_hash,
         "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
-        "tasks": _tasks(request["subject"], request["requested_mode"]),
-        "task_templates": [],
+        "tasks": tasks,
+        "task_templates": templates,
         "plan_hash": "0" * 64,
     }
     value["plan_hash"] = plan_hash(value)
@@ -161,6 +174,10 @@ def register_sector_artifacts(request: dict, handle, plan: dict) -> None:
         "sector.validation": output / "sector.validation.json",
         "sector.publication.bundle": output / "sector.publication.json",
     }
+    if request.get("sector_brief_profile") == "deterministic-v1":
+        registrations["sector.events.request"] = output / "sector.events.request.json"
+        registrations["sector.events"] = output / "sector.events.json"
+        registrations["sector.stable.snapshot"] = Path(handle.staging) / "sector_briefs" / f"{_safe(request['subject'])}.facts.json"
     if request["requested_mode"] == "FULL":
         registrations["sector.intel"] = output / "sector.intel.md"
     for artifact_id, path in registrations.items():
@@ -171,6 +188,61 @@ def validate_sector_operation_params(request: dict, task: dict, params: dict) ->
     del request, task
     if params != {}:
         raise ValueError("sector deterministic operations accept no parameters")
+
+
+
+def terrain_tasks(industry: str, *, prefix: str, pack_id: str, reuse_id: str | None,
+                  brief_id: str, event_request_id: str, event_output_id: str,
+                  needs_events: bool, dependencies: list[str]) -> list[dict]:
+    """Shared standalone/scan candidate DAG; selected sector coverage stays intact."""
+    inputs = [pack_id, event_request_id]
+    if reuse_id is not None:
+        inputs.append(reuse_id)
+    tasks = []
+    if needs_events:
+        event = _task(f"{prefix}.events", "INFERENCE", industry,
+                      dependencies=dependencies, inputs=[pack_id, event_request_id, "research.frame"],
+                      outputs=[event_output_id], contract="sector.events.v1", role="sector.brief")
+        event["independent_context"] = True
+        tasks.append(event)
+        dependencies = [event["task_id"]]
+        inputs.append(event_output_id)
+    stable_id = "sector.stable.snapshot" if brief_id == "sector.report" else f"{prefix}.stable.snapshot"
+    tasks.append(_task(f"{prefix}.render", "DETERMINISTIC", industry,
+                       dependencies=dependencies, inputs=[*inputs, "research.frame"], outputs=[brief_id, stable_id],
+                       contract="sector.terrain.v1", operation="scan.sector.render" if prefix.startswith("scan.") else "sector.terrain.render"))
+    return tasks
+
+
+def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list[dict]:
+    """Expand only after the candidate preparation's frozen event request exists."""
+    if request.get("sector_brief_profile", "legacy") != "deterministic-v1":
+        return []
+    prefix = f"sector.{sector_key(request['subject'])}"
+    if task["task_id"] != f"{prefix}.prepare":
+        return []
+    with artifacts.open_artifact(handle, "sector.events.request") as stream:
+        events = json.load(stream)
+    with artifacts.open_artifact(handle, "sector.pack") as stream:
+        pack = json.load(stream)
+    from autoresearch.sector.terrain import digest
+    if events.get("pack_sha256") != digest(pack) or type(events.get("dispatch")) is not bool:
+        raise ValueError("sector event request differs from frozen pack")
+    tasks = terrain_tasks(request["subject"], prefix=prefix, pack_id="sector.pack", reuse_id="sector.reuse",
+                          brief_id="sector.report", event_request_id="sector.events.request", event_output_id="sector.events",
+                          needs_events=events["dispatch"], dependencies=[task["task_id"]])
+    tail = _tasks(request["subject"], "LITE")[-2:]
+    tail[0]["dependencies"] = [tasks[-1]["task_id"]]
+    tasks.extend(tail)
+    inputs = []
+    for key in ("sector.pack", "sector.events.request"):
+        snapshot = artifacts.snapshot_artifact(handle, key)
+        inputs.append({"artifact_id": key, "sha256": snapshot["sha256"]})
+    value = {"schema_version": 1, "expansion_id": "", "template_id": "sector.sections",
+             "plan_hash": plan["plan_hash"], "input_artifacts": inputs, "tasks": tasks, "expansion_hash": ""}
+    value["expansion_hash"] = expansion_hash(value)
+    value["expansion_id"] = f"sector.sections-{value['expansion_hash'][:16]}"
+    return [value]
 
 
 @contextlib.contextmanager
@@ -185,18 +257,19 @@ def _locked(path: Path) -> Iterator[None]:
 
 
 def _publish_sector_active(handle, *, reports_root: Path | str | None = None) -> Path:
-    output = Path(handle.staging) / "session_outputs"
-    bundle = json.loads((output / "sector.publication.json").read_text(encoding="utf-8"))
-    source = output / "sector.md"
-    if sha256_bytes(source.read_bytes()) != bundle["report_sha256"]:
+    with artifacts.open_artifact(handle, "sector.publication.bundle") as stream:
+        bundle = json.load(stream)
+    with artifacts.open_artifact(handle, "sector.report") as stream:
+        report = stream.read()
+    if sha256_bytes(report) != bundle["report_sha256"]:
         raise RuntimeError("sector report changed after publication preparation")
     base = Path(reports_root) if reports_root is not None else ws.reports_root() / "sector"
     target = base / bundle["analysis_date"] / f"{_safe(bundle['industry'])}.md"
     with _locked(target):
-        if target.is_file() and target.read_bytes() != source.read_bytes():
+        if target.is_file() and target.read_bytes() != report:
             raise RuntimeError("sector report publication conflict")
         if not target.is_file():
-            atomic_write_bytes(target, source.read_bytes())
+            atomic_write_bytes(target, report)
     return target
 
 
@@ -208,11 +281,8 @@ def publish_sector(handle, *, reports_root: Path | str | None = None) -> Path:
         if tracked is not None:
             base = Path(reports_root) if reports_root is not None else ws.reports_root() / "sector"
             assert_output_path(base, ws.run_reports_root("sector-research"))
-            bundle = json.loads(
-                (Path(handle.staging) / "session_outputs/sector.publication.json").read_text(
-                    encoding="utf-8"
-                )
-            )
+            with artifacts.open_artifact(handle, "sector.publication.bundle") as stream:
+                bundle = json.load(stream)
             assert_output_path(
                 base / bundle["analysis_date"] / f"{_safe(bundle['industry'])}.md",
                 base,
@@ -222,8 +292,8 @@ def publish_sector(handle, *, reports_root: Path | str | None = None) -> Path:
 
 def prepare_sector_bundle(handle) -> dict:
     """Describe the sector report before any compatibility path is touched."""
-    output = Path(handle.staging) / "session_outputs"
-    bundle = json.loads((output / "sector.publication.json").read_text(encoding="utf-8"))
+    with artifacts.open_artifact(handle, "sector.publication.bundle") as stream:
+        bundle = json.load(stream)
     return {
         "business_files": [
             {

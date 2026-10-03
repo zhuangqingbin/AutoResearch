@@ -21,12 +21,18 @@ import json
 import re
 from pathlib import Path
 
-from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import parse_rating, validate_rating_and_proposal
 from autoresearch.contracts.agent_output import (
     CARD_SCHEMA_VERSION,
     OW_GATES,
     PROPOSALS,
     RUBRIC_DIMENSIONS,
+)
+from autoresearch.contracts.profiles import (
+    CURRENT_CARD_RULES,
+    LEGACY_CARD_RULES,
+    PREVIOUS_CARD_RULES,
+    validate_card_rules_version,
 )
 from autoresearch.contracts.research_card import validate_card
 from autoresearch.scan.l4.parsers import (
@@ -45,7 +51,7 @@ from autoresearch.scan.tripwire_watch import parse_tripwires
 # 卡面写法「基本面 强 ｜ 估值 中」:名字与档位之间是空白,也可能是冒号/竖线/加粗号。
 _DIM_RE = re.compile(
     r"(基本面|估值|技术·?资金|盈利质量|偿付(?:\(爆雷\)|（爆雷）)?|催化)[\s|:：*]*(强|中|弱|未核)(?![\w])")
-_DEV_REASON_RE = re.compile(r"\*\*\s*偏离\s*\*\*[:：]?\s*([^\n]+)")
+_DEV_REASON_RE = re.compile(r"\*\*[ \t]*偏离[ \t]*\*\*[:：]?[ \t]*([^\r\n]*)")
 _EXEC_LINE_RE = re.compile(r"^\s*\[执行线\][^\n]*$", re.MULTILINE)
 _VETO_RE = re.compile(r"入场否决[^:：\n]*[:：]\s*([^\n｜|]+)")
 
@@ -82,11 +88,53 @@ def _gates(text: str) -> dict[str, str]:
     return states
 
 
+def card_rules_version(*, scan_dir: Path | str | None = None, handle=None) -> str:
+    """Resolve the profile attached to this run, never today's process defaults."""
+    from autoresearch.trace.completeness import card_rules_from_capsule
+
+    if handle is not None:
+        capsule = getattr(handle, "capsule", None)
+        return card_rules_from_capsule(capsule) if capsule is not None else LEGACY_CARD_RULES
+    if scan_dir is not None:
+        path = Path(scan_dir)
+        for parent in (path, *path.parents):
+            if parent.name == "staging":
+                return card_rules_from_capsule(parent.parent / "capsule")
+    return LEGACY_CARD_RULES
+
+
+def card_rating_bands(*, handle=None, scan_dir=None) -> dict:
+    from autoresearch.contracts.profiles import CARD_RATING_BANDS_DEFAULT
+    from autoresearch.trace.completeness import card_rating_bands_from_capsule
+    capsule = getattr(handle, "capsule", None)
+    if capsule is None and scan_dir is not None:
+        path = Path(scan_dir)
+        for parent in (path, *path.parents):
+            if parent.name == "staging":
+                capsule = parent.parent / "capsule"
+                break
+    return (card_rating_bands_from_capsule(capsule) if capsule is not None
+            else dict(CARD_RATING_BANDS_DEFAULT))
+
+
 def card_from_text(text: str, *, code: str, analysis_date: str, holding: bool,
-                   engine: str | None = None) -> dict:
+                   engine: str | None = None, rules_version: str = PREVIOUS_CARD_RULES) -> dict:
+    validate_card_rules_version(rules_version)
+    if rules_version == CURRENT_CARD_RULES:
+        from autoresearch.common.card_decision import card_from_decision_text
+        from autoresearch.dataflows.symbol_utils import normalize_symbol
+
+        subject = str(code).zfill(6)
+        venue = {"SS": "XSHG", "SZ": "XSHE", "BJ": "XBSE"}[normalize_symbol(subject).rsplit(".", 1)[-1]]
+        return card_from_decision_text(text, subject=subject, venue=venue,
+                                      analysis_date=analysis_date, holding=holding)
     dash = _parse_dashboard(text)
-    rating = parse_rating(text, strict=True) or parse_rating(text)
-    prop = _PROPOSAL_RE.search(text)
+    if rules_version == LEGACY_CARD_RULES:
+        rating = parse_rating(text, strict=True) or parse_rating(text)
+        prop = _PROPOSAL_RE.search(text)
+        proposal = prop.group(1).upper() if prop and prop.group(1).upper() in PROPOSALS else "HOLD"
+    else:
+        rating, proposal = validate_rating_and_proposal(text)
     conf = _get(dash, "置信度") or (_CONF_RE.search(text).group(1) if _CONF_RE.search(text) else None)
     conf = conf if conf in ("高", "中", "低") else None
     dev = _DEV_REASON_RE.search(text)
@@ -96,8 +144,8 @@ def card_from_text(text: str, *, code: str, analysis_date: str, holding: bool,
         "dimensions": _dimensions(text), "gates": _gates(text), "early_stop": parse_early_stop(text),
         "theses": [], "evidence_refs": [],
         "initial_rating": rating,
-        "proposal": prop.group(1).upper() if prop and prop.group(1).upper() in PROPOSALS else "HOLD",
-        "rating_deviation_reason": (dev.group(1).strip() if dev else ("见卡面" if _DEV_RE.search(text) else "")),
+        "proposal": proposal,
+        "rating_deviation_reason": (dev.group(1).strip() if dev else ("见卡面" if rules_version == LEGACY_CARD_RULES and _DEV_RE.search(text) else "")),
         "confidence": conf, "scenarios": [], "probability_basis": "not_provided",
         "holding": bool(holding), "management": "",
         "target": _get(dash, "EV目标", "目标") or "未核", "rr": _get(dash, "R:R") or "未核",
@@ -110,12 +158,45 @@ def card_from_text(text: str, *, code: str, analysis_date: str, holding: bool,
 
 
 def card_from_markdown(scan_dir: Path | str, code: str, *, analysis_date: str, holding: bool = False,
-                       engine: str | None = None) -> dict | None:
+                       engine: str | None = None, rules_version: str | None = None) -> dict | None:
     """定位 details/<code>.md → ResearchCard;无卡 → None(不是空卡)。"""
     text = _decision_text(Path(scan_dir), str(code))
     if text is None:
         return None
-    return card_from_text(text, code=code, analysis_date=analysis_date, holding=holding, engine=engine)
+    return card_from_text(text, code=code, analysis_date=analysis_date, holding=holding, engine=engine,
+                          rules_version=rules_version or card_rules_version(scan_dir=scan_dir))
+
+
+def frozen_claim_semantics(scan_dir, text, *, code, holding=False):
+    """Production scan uses the same root-bound claim owner as standalone cards."""
+    from autoresearch.news.card_claims import registered_card_semantics
+    from autoresearch.trace.frozen_sources import frozen_source_context
+
+    if card_rules_version(scan_dir=scan_dir) != CURRENT_CARD_RULES:
+        return None
+    context = frozen_source_context(scan_dir)
+    if context is None:
+        # Offline parser-only callers have no root evidence context. They cannot
+        # authorize a usage mapping or reuse a tracked run's material claims.
+        if "```decision-claim-uses-v1" in text:
+            raise ValueError("claim usage requires frozen run source context")
+        return None
+    handle = context["handle"]
+    owner = json.loads((Path(handle.workspace) / "session/tasks.json").read_text())
+    candidates = [entry for entry in owner["tasks"].values()
+                  if entry["spec"].get("role") == "scan.l4.card"
+                  and entry["spec"].get("subject") == code and entry["state"] == "SUCCEEDED"]
+    if len(candidates) != 1:
+        raise ValueError("claim usage requires unique accepted scan card producer")
+    task = candidates[0]["spec"]
+    card_ids = [key for key in task["output_artifact_ids"] if not key.endswith(".changes")]
+    if len(card_ids) != 1:
+        raise ValueError("unique accepted card artifact required")
+    registry = json.loads((Path(handle.workspace) / "session/artifacts.json").read_text())
+    return registered_card_semantics(handle, text, subject=code, frame=context["frame"],
+        frame_hash=registry["artifacts"]["research.frame"]["sha256"], task=task,
+        artifact_id=card_ids[0], holding=holding,
+        bands=card_rating_bands(handle=handle))
 
 
 def read_card(scan_dir: Path | str, code: str, *, card_source: str, legacy_reader):

@@ -24,17 +24,32 @@ from autoresearch.contracts import retry as _retry
 from autoresearch.scan import structural_audit
 from autoresearch.trace.capsule import require_active_run
 from autoresearch.trace.events import append_event
+from autoresearch.contracts.scan_config import DEFAULT_CONCURRENCY
 
 SCHEMA_VERSION = 1
 MAX_ATTEMPTS = 2
 #: 任务簿重试口径的单一真身在 `contracts/retry.py`(与情报再搜口径**故意不同**:
 #: 这里含 STALE_TASK 而不含 ENOTFOUND,理由见那边)。
 TRANSIENT_ERRORS = _retry.TASK_ATTEMPT
-REQUIRED_CAPS = ("tushare", "web_search", "web_fetch", "l4_stock")
-# l4_stock 退出「资源」语义,升为派发帽;缺省 64 = 事实无上限(Wave11 C1)。
-# tushare/web_search/web_fetch 仍是独立资源帽,但不再参与 effective_cap 的运算 ——
-# 它们喂的是 prepare_slim 的操作级信号量(T2),不是这里的批次切片宽度。
-DEFAULT_CAPS = {"tushare": 4, "web_search": 4, "web_fetch": 4, "l4_stock": 64}
+# 帽的键集与缺省从注册表转出(contracts/scan_config.DEFAULT_CONCURRENCY):l4_stock = 派发帽
+# (64 = 事实无上限,Wave11 C1);tushare = prepare_slim 的操作级信号量。2026-09-27 删掉的
+# web_search / web_fetch 两帽从未有过执行点(只校验不执行 = 假参数)。
+REQUIRED_CAPS = tuple(DEFAULT_CONCURRENCY)
+STALE_AFTER_S = 3600
+SLOT_POLL_S = 5.0
+SLOT_HEARTBEAT_S = 60
+
+
+def tasks_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4_tasks`:任务簿重试 / 卡死判定 / slim 重试与并发 / tushare 槽轮询(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"max_attempts": int(knob("l4_tasks", "max_attempts", None, MAX_ATTEMPTS, cfg)),
+            "stale_after_s": int(knob("l4_tasks", "stale_after_s", None, STALE_AFTER_S, cfg)),
+            "slim_retries": int(knob("l4_tasks", "slim_retries", None, 1, cfg)),
+            "slim_workers": int(knob("l4_tasks", "slim_workers", None, 4, cfg)),
+            "slot_poll_s": float(knob("l4_tasks", "slot_poll_s", None, SLOT_POLL_S, cfg)),
+            "slot_heartbeat_s": int(knob("l4_tasks", "slot_heartbeat_s", None, SLOT_HEARTBEAT_S, cfg))}
+DEFAULT_CAPS = dict(DEFAULT_CONCURRENCY)
 
 
 def _stamp(now: datetime | None = None) -> str:
@@ -466,11 +481,14 @@ def _locked(path: Path) -> Iterator[None]:
 
 
 @contextmanager
-def _tushare_slot(scan_dir: Path, k: int, *, poll_seconds: float = 5.0,
-                  heartbeat_seconds: int = 60) -> Iterator[int]:
+def _tushare_slot(scan_dir: Path, k: int, *, poll_seconds: float | None = None,
+                  heartbeat_seconds: int | None = None) -> Iterator[int]:
     """K 槽 fcntl 信号量:只限 slim 取数,不限派发。持有者进程死亡 flock 自动释放,
     无需 mtime stale 回收。等待期每 heartbeat_seconds 打一行心跳 —— 08-05 事故的另一半药:
     安静的长等待会被上层(人或壳)误判「卡住」。"""
+    _tc = tasks_cfg()
+    poll_seconds = _tc["slot_poll_s"] if poll_seconds is None else poll_seconds
+    heartbeat_seconds = _tc["slot_heartbeat_s"] if heartbeat_seconds is None else heartbeat_seconds
     sem_dir = scan_dir / "_sem"
     sem_dir.mkdir(parents=True, exist_ok=True)
     waited = 0.0
@@ -721,9 +739,10 @@ def preflight(
     *,
     expected_attempt: int | None = None,
     now: datetime | None = None,
-    stale_after_seconds: int = 3600,
+    stale_after_seconds: int | None = None,
 ) -> dict:
     """为一票领取一次执行权；SUCCEEDED 只在三件产物指纹仍匹配时可复用。"""
+    stale_after_seconds = tasks_cfg()["stale_after_s"] if stale_after_seconds is None else stale_after_seconds
     if expected_attempt is not None and (
         type(expected_attempt) is not int or expected_attempt < 1
     ):
@@ -807,7 +826,7 @@ def preflight(
                     "reason": "ALREADY_RUNNING",
                 }
             stale_attempt = int(task.get("attempt") or 0)
-            if stale_attempt < MAX_ATTEMPTS:
+            if stale_attempt < tasks_cfg()["max_attempts"]:
                 stale_next_attempt = stale_attempt + 1
                 if (
                     expected_attempt is not None
@@ -817,7 +836,7 @@ def preflight(
                         f"expected attempt {expected_attempt} does not match "
                         f"next attempt {stale_next_attempt}"
                     )
-            exhausted_stale = stale_attempt >= MAX_ATTEMPTS
+            exhausted_stale = stale_attempt >= tasks_cfg()["max_attempts"]
             status = "BLOCKED" if exhausted_stale else "FAILED"
             task["status"] = status
             task["last_error_class"] = "STALE_TASK"
@@ -861,20 +880,20 @@ def preflight(
             }
         if status == "FAILED":
             error_class = str(task.get("last_error_class") or "")
-            if error_class not in TRANSIENT_ERRORS or int(task["attempt"]) >= MAX_ATTEMPTS:
+            if error_class not in TRANSIENT_ERRORS or int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
                 task["status"] = "BLOCKED"
                 task["updated_at"] = stamp
                 book_hash = _atomic_write(path, payload)
                 terminal_event = (
                     "TASK_FAILED"
                     if error_class in TRANSIENT_ERRORS
-                    and int(task["attempt"]) >= MAX_ATTEMPTS
+                    and int(task["attempt"]) >= tasks_cfg()["max_attempts"]
                     else "TASK_BLOCKED"
                 )
                 already_recorded_exhaustion = (
                     old_status == "FAILED"
                     and error_class in TRANSIENT_ERRORS
-                    and int(task["attempt"]) >= MAX_ATTEMPTS
+                    and int(task["attempt"]) >= tasks_cfg()["max_attempts"]
                 )
                 if not already_recorded_exhaustion:
                     _record_task_transition(
@@ -955,7 +974,7 @@ def mark_failure(
             )
         terminal_status = (
             "FAILED"
-            if kind in TRANSIENT_ERRORS and authoritative_attempt < MAX_ATTEMPTS
+            if kind in TRANSIENT_ERRORS and authoritative_attempt < tasks_cfg()["max_attempts"]
             else "BLOCKED"
         )
         terminal_error = error or kind
@@ -989,7 +1008,7 @@ def mark_failure(
         book_hash = _atomic_write(path, payload)
         if kind not in TRANSIENT_ERRORS:
             event_type = "TASK_BLOCKED"
-        elif int(task["attempt"]) >= MAX_ATTEMPTS:
+        elif int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
             event_type = "TASK_FAILED"
         else:
             event_type = "TASK_RETRY_SCHEDULED"
@@ -1426,11 +1445,16 @@ def prepare_slim(
     code: str,
     *,
     harvest_fn: Callable[[str, str], Path] | None = None,
-    retries: int = 1,
-    min_bytes: int = 4096,
+    retries: int | None = None,
+    min_bytes: int | None = None,
     now: datetime | None = None,
 ) -> dict:
     """仅准备一票 slim；已有合格文件零网络，失败最多轻量重拉一次。"""
+    if retries is None:
+        retries = tasks_cfg()["slim_retries"]
+    if min_bytes is None:                       # l4.slim.min_bytes(与 producers.harvest_slim_batch 同源)
+        from autoresearch.scan.l4.producers import slim_min_bytes
+        min_bytes = slim_min_bytes()
     path, payload = _read(book)
     code6 = str(code).split(".")[0].zfill(6)
     task = payload["tasks"][code6]
@@ -1546,7 +1570,7 @@ def dispatch_batches(
                     and task.get("last_error_class") not in TRANSIENT_ERRORS
                 ):
                     continue
-                if int(task.get("attempt") or 0) >= MAX_ATTEMPTS:
+                if int(task.get("attempt") or 0) >= tasks_cfg()["max_attempts"]:
                     continue
                 codes.append(code)
         batches = [

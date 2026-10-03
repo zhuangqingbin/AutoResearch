@@ -5,6 +5,7 @@ import json
 import pytest
 
 from autoresearch.common import workspace as ws
+from autoresearch.session_agent import artifacts
 from autoresearch.session_agent.workflows.stock import publish_stock
 from autoresearch.trace.write_guard import assert_output_path, assert_write_allowed
 from tests.forensic_fixtures import redirect_roots
@@ -73,6 +74,10 @@ def test_domain_publisher_rejects_bundle_path_escape_before_creating_parent(
     bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
     bundle["output_name"] = "../../escaped.md"
     bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    # Bind the malformed publication as an actual input so this probes the path
+    # guard after artifact integrity, rather than failing on an absent registry row.
+    artifacts.register_artifact(case.handle, "macro.publication.bundle", bundle_path, "WRITE")
+    artifacts.bind_artifact_hash(case.handle, "macro.publication.bundle")
     before = case.snapshot_persistent_tree()
 
     with pytest.raises(RuntimeError, match="OUTPUT_ROOT_MISMATCH"):

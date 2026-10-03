@@ -58,9 +58,14 @@ def test_claimed_research_rejects_input_changed_in_place(tmp_path):
         handle_loader=lambda run_id: handle,
         event_recorder=lambda *args, **kwargs: None,
     )
+    from pathlib import Path
+    slim = artifacts.artifact_path(handle, 'step.one.output')
+    slim.chmod(0o644)
     slim.write_text("000858.SZ financials replaced the claimed input")
+    card = Path(claimed['result']['claim_receipt']['output_paths']['step.two.output'])
     card.write_text("**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: HOLD\n")
-    digest = artifacts.bind_artifact_hash(handle, "step.two.output")["sha256"]
+    from autoresearch.common.atomic import sha256_bytes
+    digest = sha256_bytes(card.read_bytes())
     submission = {
         "schema_version": 1,
         "envelope": claimed["result"]["envelope"],

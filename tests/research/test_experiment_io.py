@@ -193,3 +193,18 @@ def test_experiment_dir_is_created_exclusively(tmp_path):
 def test_invalid_experiment_id_is_rejected(tmp_path, bad):
     with pytest.raises(ValueError):
         eio.create_experiment_dir(tmp_path, bad)
+
+
+@pytest.mark.parametrize('window', [['2026-02-30', '2026-09-01'], ['20260101', '20260901'], ['bad', 'later']])
+def test_split_requires_valid_iso_dates(window):
+    value = spec()
+    value['split']['test'] = window
+    with pytest.raises(ValueError, match='date'):
+        rx.validate_spec(value)
+
+
+def test_split_windows_cannot_overlap():
+    value = spec()
+    value['split']['validation'] = ['2024-01-01', '2026-01-01']
+    with pytest.raises(ValueError, match='overlap'):
+        rx.validate_spec(value)

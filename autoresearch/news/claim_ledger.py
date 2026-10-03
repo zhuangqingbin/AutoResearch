@@ -204,26 +204,12 @@ def lint_claim(claim: Claim, *, catalog=None, artifacts: dict | None = None,
 
 
 def _supports(claim: Claim, texts: list[str]) -> tuple[str, str]:
-    """留档正文支不支撑这条 claim → (verdict, reason)。
+    """Text presence/keywords establish neither company identity nor semantic support.
 
-    **默认 UNKNOWN,只在有正证据时才 PASS/FAIL** —— 这是 `price_claims` Wave10 A3 那一课的
-    移植:旧版「默认认领 + 列举排除」词表漏一个词就多一条「分析师捏造」的自信误指控。
-    这里同样先定**可判定的东西**:
-
-    - `predicate` 是受控词表里的事件词(回购/重组/立案…):
-        · 正文里有它 → `PASS`(来源确实在说这件事);
-        · 正文里没有 → `FAIL`(来源通篇不提这件事 = 正证据的错引);
-    - `predicate == "statement"`(没落进受控词表)→ `UNKNOWN`,不猜。
-
-    **不做**朴素子串匹配:claim 是自然语言复述,「公司回购股份」不会逐字出现在
-    「关于回购股份的公告」里,拿子串判假会把正确引用判成捏造。
+    Field-level support must come from claim_binding with verified provenance.
+    Missing a word in a partial page likewise cannot refute the claim.
     """
-    if claim.predicate not in _PREDICATE_WORDS:
-        return UNKNOWN, ("claim 谓语不在受控词表 —— 无法从正文判定支撑与否,"
-                         "按 UNKNOWN 处理(不猜)")
-    if any(claim.predicate in text for text in texts):
-        return PASS, ""
-    return FAIL, (f"留档正文通篇不提「{claim.predicate}」 —— 来源不支撑该 claim")
+    return UNKNOWN, "语义未核：关键词或原文存在不等于本公司断言已获支持"
 
 
 def _status_from(verdicts: dict, current: str) -> str:

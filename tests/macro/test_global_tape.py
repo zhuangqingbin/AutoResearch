@@ -397,7 +397,9 @@ def test_global_tape_json_and_macro_state_share_one_as_of(monkeypatch, tmp_path)
 
     tape = harvest.global_tape_payload(DATE)
     harvest.write_global_tape_json(root, tape, {"ok": False})
-    written = state.write_macro_state(root, out_dir=tmp_path / "out")
+    written = state.write_macro_state(
+        root, out_dir=tmp_path / "out", expected_keys={"1_spine/decision.md": ["权益"]},
+    )
 
     on_disk = json.loads((root / harvest.GLOBAL_TAPE_JSON).read_text(encoding="utf-8"))
     assert written["global_tape_asof"] == on_disk["as_of"] == DATE
@@ -414,7 +416,9 @@ def test_a_failed_tape_never_masquerades_as_a_reading(monkeypatch, tmp_path):
     harvest.write_global_tape_json(root, {"as_of": DATE, "ok": False, "numbers": {}},
                                    {"ok": False})
 
-    written = state.write_macro_state(root, out_dir=tmp_path / "out")
+    written = state.write_macro_state(
+        root, out_dir=tmp_path / "out", expected_keys={"1_spine/decision.md": ["权益"]},
+    )
 
     assert written["global_tape_asof"] is None and written["global_tape"] == {}
 

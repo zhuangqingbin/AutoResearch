@@ -46,7 +46,6 @@ from autoresearch.scan.decision_finalize import (
     _VERDICT_BADGE,
     BLIND_CARD_TARGET,
     TIER_RANK,
-    _apply_ensemble_fold,
     _apply_verify_downgrade,
     _dump_decision_records,
     _dump_final_ratings,
@@ -67,7 +66,7 @@ from autoresearch.scan.l4.parsers import (
     _strip,
     gate_status,
 )
-from autoresearch.scan.relative_buy import DECISION_FILENAME, is_active
+from autoresearch.scan.relative_buy import DECISION_FILENAME as DECISION_FILENAME, is_active
 from autoresearch.scan.report_model import (
     APPENDIX_TARGET_BYTES,
     APPENDIX_WARN_BYTES,
@@ -80,12 +79,14 @@ from autoresearch.scan.report_model import (
     ReportModel,
     appendix_link,
     method_link,
+    report_cfg,
 )
 
 #: 兼容再导出:`SUMMARY_MAX_BYTES` 等名字历史上住在本模块,现在**单一事实源在 `report_model`**。
 #: 这行让 ruff 认得这些 import 是有意的对外面(不是没用到的死 import)。
 __all_report_model_reexports__ = (APPENDIX_TARGET_BYTES, APPENDIX_WARN_BYTES,
-                                  FOOTNOTES, SUMMARY_MAX_BYTES, SUMMARY_TARGET_BYTES)
+                                  EVIDENCE_MAX_CHARS, FOOTNOTES, SUMMARY_MAX_BYTES,
+                                  SUMMARY_TARGET_BYTES, SUMMARY_WARN_BYTES)
 
 _CH_ZH = {
     "composite": "复合",
@@ -205,6 +206,48 @@ def _l2_cell(code: str, l2_top: dict[str, dict]) -> str:
         gtxt = ""
     return f"#{r.get('l2_rank', '?')}{gtxt}"
 
+def _material_claim_note(scan_dir: Path) -> list[str]:
+    """Machine evidence coverage in the existing intel/runtime report, scoped to this run."""
+    from autoresearch.news.material_claims import verify_material_claims
+    from autoresearch.trace.frozen_sources import frozen_source_context
+
+    try:
+        context = frozen_source_context(scan_dir)
+        if context is None:
+            return []
+        result = verify_material_claims(context["handle"].capsule, decision_frame=context["frame"])
+    except (OSError, ValueError, KeyError, RuntimeError):
+        # Lost frame/receipt integrity must not silently remove material claims.
+        # Re-check only run scope; no verdict is trusted on this fallback path.
+        from autoresearch.trace.frozen_sources import active_source_handle
+
+        try:
+            handle = active_source_handle(scan_dir)
+            if handle is None:
+                return []
+            n = 0
+            for path in scan_dir.glob("_l4_claims_*.json"):
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if (value.get("schema_version") == 2 and value.get("run_id") == handle.run_id
+                        and value.get("engine") == handle.engine):
+                    n += len(value.get("events", []))
+        except (OSError, ValueError, KeyError, RuntimeError):
+            return []
+        return ["", f"> 材料断言机检：冻结来源不可核验；UNKNOWN {n}/{n}；"
+                "来源/语义/时效/冲突均 UNKNOWN，未证实不等于假。"]
+    n = result["claims"]
+    if not n:
+        return []
+    dimensions = []
+    for key, label in (("source", "来源"), ("semantic", "语义"), ("timing", "时效"), ("conflict", "冲突")):
+        counts = Counter(row.get(key, "UNKNOWN") for row in result["results"])
+        unknown = n - counts["PASS"] - counts["FAIL"]
+        dimensions.append(f"{label} PASS {counts['PASS']} / FAIL {counts['FAIL']} / UNKNOWN {unknown}")
+    return ["", f"> 材料断言机检：共 {n} 条；支持 {result['supported']}；反证 {result['refuted']}；"
+            f"UNKNOWN {result['unknown']}/{n}（含未解析/缺来源条目，未证实不等于假）。",
+            "> " + "；".join(dimensions) + "。来源完整性不代表语义支持；时效指公开可得，晚抓取不冒充当时已收到。"]
+
+
 def _stage_token_estimate(scan_dir: Path) -> list[str]:
     """分阶段耗时 + LLM 调用数 + 落盘字节(确定性,无 LLM)。**本表不再估算 token**。
 
@@ -311,6 +354,7 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
               "(`python -m autoresearch.trace.usage_harvest --session <sessionId> --out …`,按计价倍率加权)。"
               "**该文件不存在 = 本次未计量,不等于用量小。**"
               "上表三列(墙钟/调用数/落盘字节)是确定性硬事实,可直接引用。", ""]
+    lines += _material_claim_note(scan_dir)
     return lines
 
 def _stage_overview(label: str, rows: list[dict], reason: str) -> list[str]:
@@ -750,9 +794,12 @@ def _review_ctx(scan_dir: Path, rows: list[dict], regime_drift: str = "") -> dic
                        "composite": lf.get("composite"), "winner_rate": lf.get("winner_rate"),
                        "pct_60d": lf.get("pct_60d"), "rsi6": lf.get("rsi6"),
                        "main_net_ratio": lf.get("main_net_ratio"),
-                       "rubric_suggest": r.get("rubric_suggest"), "rubric_dev": r.get("rubric_dev")})
+                       "rubric_suggest": r.get("rubric_suggest"), "rubric_dev": r.get("rubric_dev"),
+                       "card_incomplete": r.get("card_incomplete", False),
+                       "card_validation_error": r.get("card_validation_error")})
     n_present = sum(1 for r in rows
-                    if r.get("target") not in ("⚠️卡片缺失", BLIND_CARD_TARGET))
+                    if r.get("target") not in ("⚠️卡片缺失", BLIND_CARD_TARGET)
+                    and not r.get("card_incomplete"))
     # E3b(task-2.4)· `flow.buys_n` 的口径:
     # shadow 期 = ≥OW 张数(现行为,逐字不变);active 期这个数**不再是买单数** ——
     # 买单只存在于 `_relative_buy_decision.json`,而本函数跑在 `build_summary` 内部,比
@@ -945,6 +992,10 @@ def _candidate_table_lines(rows: list[dict], l1_full: dict, l2_top: dict, ch_map
             badges += f" {_verify_badge(code, vmap)}"
         if r.get("ens_flag"):
             badges += " 🎭复核分歧"        # 保留全字:光一个 🎭 读者不知道它在说什么
+        if r.get("review_status"):
+            badges += " " + {"COMPLETE": "复核已完成", "NOT_REQUIRED": "未触发复核",
+                             "MISSING": "应复核·缺结果", "INCOMPLETE": "复核未完成",
+                             "UNKNOWN": "复核未知"}[r["review_status"]]
         ncell = f" {_strip(r.get('pinned_note', '') or '—')} |" if note_col else ""
         lines.append(
             f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
@@ -1099,7 +1150,7 @@ def _budget_warn(text: str, warn_bytes: int, target_bytes: int, label: str) -> s
 
 def summary_budget_warn(text: str) -> str | None:
     """最终注入态 summary 的预算 warn(post_run 刷完两块之后调)。"""
-    return _budget_warn(text, SUMMARY_WARN_BYTES, SUMMARY_TARGET_BYTES, "summary.md")
+    return _budget_warn(text, report_cfg()["summary_warn_bytes"], report_cfg()["summary_target_bytes"], "summary.md")
 
 
 def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
@@ -1135,9 +1186,21 @@ def prepare_report_model(scan_dir: Path, analysis_date: str, hhmm: str, folder: 
     for r in rows:
         e = emap.get(str(r.get("code", "")).zfill(6))
         r["_ensemble_ratings"] = list((e or {}).get("ratings") or [])
+        from autoresearch.scan.decision_finalize import (
+            current_review_policy,
+            fold_review,
+            review_coverage,
+        )
+        strict_review = current_review_policy(scan_dir, e)
+        coverage = review_coverage(r.get("_source_rating", "—"),
+                                   pinned=str(r.get("lane") or "").strip() == "pinned", record=e,
+                                   legacy=not strict_review)
+        r.update(coverage)
         if not e:
             continue
-        folded = _apply_ensemble_fold(r.get("rating", "Hold"), e)
+        folded = fold_review(r.get("rating", "Hold"), e, strict=strict_review, coverage=coverage)
+        if strict_review and coverage["review_status"] != "COMPLETE":
+            r["ens_flag"] = True
         if folded != r.get("rating"):
             r["rating"] = folded
             r["proposal"] = _PROPOSAL_BY_RATING.get(folded, r.get("proposal", "—"))

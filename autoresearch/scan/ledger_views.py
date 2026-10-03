@@ -882,10 +882,10 @@ def line(reports_root: Path | None = None) -> str:
     for key in ("BUY", "ZERO_BUY", SESSION_NO_RUN, SESSION_NO_APPROVED_RUN):
         values = buckets[key]
         label = _BUCKET_LABEL[key]
-        if len(values) >= MIN_SESSION_N:
+        if len(values) >= __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["min_session_n"]:
             parts.append(f"{label} {len(values)}日 市场 {100 * float(np.mean(values)):+.2f}pp")
         else:
-            parts.append(f"{label} 攒样本 {len(values)}/{MIN_SESSION_N}")
+            parts.append(f"{label} 攒样本 {len(values)}/{__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["min_session_n"]}")
     health = _read_json(health_path(scan))
     tail = "" if health.get("green", True) else f" · ⚠️ 成熟欠账 {health.get('blocked_by_data')}"
     return ("运行日历:" + " · ".join(parts)

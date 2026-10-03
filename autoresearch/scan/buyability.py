@@ -240,7 +240,7 @@ def build_buyability(scan_dir: Path | str) -> dict:
            "blocked": bool(decision.get("blocked"))}
 
     menu_bad = ((menu["l2_knife"] is not None and menu["l0_knife"] is not None
-                 and menu["l2_knife"] > menu["l0_knife"] + MENU_KNIFE_TOLERANCE)
+                 and menu["l2_knife"] > menu["l0_knife"] + __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["menu_knife_tolerance"])
                 or (menu["l2_healthy"] is not None and menu["l0_healthy"] is not None
                     and menu["l2_healthy"] < menu["l0_healthy"]))
     # fix round 1 finding ③:`eligible` 只问当次运行实际生效的硬门(旋钮

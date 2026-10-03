@@ -320,21 +320,6 @@ def test_relative_buy_exclude_pinned_bad_type_raises(tmp_path):
         load_from(tmp_path, {"relative_buy": {"exclude_pinned": "yes"}})
 
 
-def test_relative_buy_activate_date_accepts_a_date_or_null(tmp_path):
-    """task-2.4:legacy 账本冻结日。null = 不冻结(现行为);字符串必须是 YYYY-MM-DD。"""
-    assert load_from(tmp_path, {"relative_buy": {"activate_date": None}})[
-        "relative_buy"]["activate_date"] is None
-    assert load_from(tmp_path, {"relative_buy": {"activate_date": "2026-08-20"}})[
-        "relative_buy"]["activate_date"] == "2026-08-20"
-
-
-def test_relative_buy_activate_date_bad_shape_raises(tmp_path):
-    """`"20260820"` / `"明天"` 这种会静默让冻结永不生效 —— 错型必须 raise,不许静默。"""
-    for bad in ("20260820", "2026/08/20", "明天", 20260820, True):
-        with pytest.raises(ValueError, match="非法"):
-            load_from(tmp_path, {"relative_buy": {"activate_date": bad}})
-
-
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 

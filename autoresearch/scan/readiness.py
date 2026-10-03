@@ -43,6 +43,16 @@ LATE_RECHECK_S = 30
 ENDPOINT = "stk_factor_pro"
 
 
+def readiness_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.readiness`:湖就绪探针的行数下限 / 稳定轮数 / 轮询间隔 / 截止 / 补读间隔(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"min_rows": int(knob("readiness", "min_rows", None, MIN_ROWS, cfg)),
+            "stable_polls": int(knob("readiness", "stable_polls", None, STABLE_POLLS, cfg)),
+            "interval_s": float(knob("readiness", "interval_s", None, INTERVAL_S, cfg)),
+            "deadline": str(knob("readiness", "deadline", None, DEADLINE, cfg)),
+            "late_recheck_s": float(knob("readiness", "late_recheck_s", None, LATE_RECHECK_S, cfg))}
+
+
 def count_factor_rows(date: str) -> int:
     """tushare `stk_factor_pro` 在 ``date``(YYYY-MM-DD)的全市场行数(一次网络调用)。"""
     from autoresearch.data.tushare_source import _pro
@@ -59,16 +69,21 @@ def _deadline_at(now: datetime, hhmm: str) -> datetime:
 def stable_rows(
     date: str,
     *,
-    min_rows: int = MIN_ROWS,
-    stable_polls: int = STABLE_POLLS,
-    interval_s: float = INTERVAL_S,
-    deadline: str = DEADLINE,
+    min_rows: int | None = None,
+    stable_polls: int | None = None,
+    interval_s: float | None = None,
+    deadline: str | None = None,
     count_rows: Callable[[str], int] | None = None,
     now: Callable[[], datetime] = datetime.now,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] | None = None,
 ) -> int | None:
     """轮询到「最近 ``stable_polls`` 次读数相等且 ≥``min_rows``」→ 返回该行数;过 ``deadline`` → None。"""
+    _rc = readiness_cfg()
+    min_rows = _rc["min_rows"] if min_rows is None else min_rows
+    stable_polls = _rc["stable_polls"] if stable_polls is None else stable_polls
+    interval_s = _rc["interval_s"] if interval_s is None else interval_s
+    deadline = _rc["deadline"] if deadline is None else deadline
     counter = count_rows or count_factor_rows
     emit = log or (lambda line: print(line, flush=True))
     stop = _deadline_at(now(), deadline)
@@ -93,7 +108,7 @@ def stable_rows(
             if len(readings) >= stable_polls:
                 emit(f"[readiness] 截至 {deadline} 未就绪(读数 {readings[-3:]})")
                 return None
-            sleep(float(LATE_RECHECK_S))        # 晚开场:凑满两次读数再判
+            sleep(float(readiness_cfg()["late_recheck_s"]))        # 晚开场:凑满两次读数再判
             continue
         sleep(min(float(interval_s), remaining))
 
@@ -148,9 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autoresearch.scan.readiness",
                                  description="stk_factor_pro 就绪探针(0=就绪,1=截止未就绪)")
     ap.add_argument("date", help="YYYY-MM-DD(交易日)")
-    ap.add_argument("--deadline", default=DEADLINE, help=f"本地 HH:MM,缺省 {DEADLINE}")
-    ap.add_argument("--min-rows", type=int, default=MIN_ROWS)
-    ap.add_argument("--interval", type=float, default=INTERVAL_S, help="轮询间隔秒")
+    ap.add_argument("--deadline", default=None, help=f"本地 HH:MM,缺省 = scan_config readiness.deadline(内建 {DEADLINE})")
+    ap.add_argument("--min-rows", type=int, default=None)
+    ap.add_argument("--interval", type=float, default=None, help="轮询间隔秒(缺省 = scan_config readiness.interval_s)")
     args = ap.parse_args(argv)
     ready = wait_and_guard(args.date, min_rows=args.min_rows, interval_s=args.interval,
                            deadline=args.deadline)

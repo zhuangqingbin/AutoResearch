@@ -108,10 +108,11 @@ def _full(**over):
     return {"agents": agents}
 
 
-def test_resolved_lists_all_ten_roles():
+def test_resolved_lists_all_registered_roles():
     resolved = uc.resolve_agent_config(_full())
     assert set(resolved) == uc._AGENT_ROLES
-    assert len(resolved) == 10, f"闭集应为 10 role,实际 {len(resolved)}"
+    from autoresearch.session_agent.roles import configured_agents
+    assert set(resolved) == set(configured_agents())
 
 
 def test_resolved_empty_cfg_raises():
@@ -248,7 +249,10 @@ def test_claude_roles_resolve_exactly_as_before_the_tier_migration():
     prod = (_Path(__file__).resolve().parents[2]
             / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
     resolved = uc.resolve_agent_config(uc.load_user_config(prod))
-    assert resolved == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
+    assert {key: resolved[key] for key in _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION} == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
+    new_roles = {"stock_full", "macro_full", "sector_full", "company_intel", "us_intel", "sector_intel", "global_intel"}
+    assert set(resolved) == set(_CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION) | new_roles
+    assert all(resolved[key] == {"effort": "max"} for key in new_roles)
     # 判断类 role **不得**出现 model 键:那是 agent def frontmatter 的地盘(opus/sonnet),
     # 配置里写死会把 frontmatter 压掉 —— 同族前科见 test_resolved_model_key_absent...
     for role in ("l3_rank", "l4_card", "l4_intel", "strategist"):

@@ -26,9 +26,10 @@ def effective_caps(cfg: dict | None, l4_budget: int) -> dict:
     seat_on, seat_m = composite_seat_cfg(cfg)
     seat_m = max(0, min(int(seat_m) if seat_on else 0, max_cards - 1))
     finalist_cap = max(1, max_cards - seat_m)
-    l3cap = min(finalist_cap, int(l4_budget)) if budget_flags else finalist_cap
+    l3cap = max(1, int(min(finalist_cap, int(l4_budget)) if budget_flags else finalist_cap))
+    l3min = max(1, min(int(((cfg or {}).get("l3") or {}).get("finalist_min", 7)), l3cap))   # l3.finalist_min
     return {"max_cards": max_cards, "budget_flags": budget_flags, "seat_m": seat_m,
-            "finalist_cap": finalist_cap, "l3cap": max(1, int(l3cap))}
+            "finalist_cap": finalist_cap, "l3cap": l3cap, "l3min": l3min}
 
 
 def _gate1_metrics(staging) -> dict:

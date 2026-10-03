@@ -68,7 +68,7 @@ def test_ashare_name_from_context_matches_dash_date(tmp_path):
     `ws.context_root()` 的真实产物位置一致。正文里名字与代码零间隔相邻
     (`中际旭创300308…`)才是抽取正则要求的真实新闻标题写法(纯 `\\n` 分隔不触发）。
     """
-    ctx_root = tmp_path / "context_claude"
+    ctx_root = tmp_path / "context_codex"
     root = ctx_root / "analyze" / "300308.SZ_20260830"
     root.mkdir(parents=True)
     (ctx_root / "300308.SZ_2026-08-30.md").write_text(
@@ -79,7 +79,7 @@ def test_ashare_name_from_context_matches_dash_date(tmp_path):
 @pytest.mark.unit
 def test_ashare_name_from_context_returns_none_when_md_absent(tmp_path):
     """仍然是兜底:harvest md 真的不存在时(而不是格式没对齐)必须回 None,不得报错。"""
-    ctx_root = tmp_path / "context_claude"
+    ctx_root = tmp_path / "context_codex"
     root = ctx_root / "analyze" / "600519.SS_20260830"
     root.mkdir(parents=True)
     assert assemble._ashare_name_from_context("600519.SS", root) is None
@@ -162,3 +162,42 @@ def test_assemble_manifest_context_file_recorded_when_present(tmp_path, monkeypa
     out_dir = next(analyze_root.iterdir())
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["context_file"] == str(ws.context_root() / "600519.SS_2026-08-30.md")
+
+
+@pytest.mark.parametrize("decision", [
+    "**Rating**: Buy\nFINAL TRANSACTION PROPOSAL: **SELL**",
+    "**Rating**: Hold\n**Rating**: Buy\nFINAL TRANSACTION PROPOSAL: **HOLD**",
+    "**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: **HOLD**\nFINAL TRANSACTION PROPOSAL: **SELL**",
+    "**Rating**: Hold\nprose FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+def test_assemble_rejects_inconsistent_or_conflicting_decisions(tmp_path, monkeypatch, decision):
+    root = _sandboxed_root(tmp_path, monkeypatch, "600519.SS_20260830")
+    _populate_required_files(root, decision)
+    monkeypatch.setattr(sys, "argv", ["assemble.py", str(root)])
+    assert assemble.main() == 1
+    assert not (tmp_path / ws.reports_root()).exists()
+
+
+# --------------------------------------------------------------------- 写身份(2026-10-02)
+
+def test_main_guards_its_writes_under_the_callers_operation(monkeypatch):
+    """装配器的写守卫身份由调用方给:CLI 仍是 `stock.assemble`,session_v1 传自己登记的操作名。"""
+    import contextlib
+
+    seen = []
+
+    class _Stop(Exception):
+        pass
+
+    @contextlib.contextmanager
+    def guard(operation):
+        seen.append(operation)
+        raise _Stop
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("autoresearch.trace.write_guard.guarded_ambient_write", guard)
+    with pytest.raises(_Stop):
+        assemble.main(write_operation="stock.full.assemble")
+    with pytest.raises(_Stop):
+        assemble.main()
+    assert seen == ["stock.full.assemble", "stock.assemble"]

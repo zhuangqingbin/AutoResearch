@@ -36,6 +36,20 @@ RESONANCE_CAP = 5
 # 回滚杆 = 改 True(一行)。
 HEALTHY_MANDATORY = False
 
+RESONANCE_MIN_CHANNELS = 3
+
+
+def pass1_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l3.pass1` → 共振强留上限 / 共振路数门槛 / healthy 全入。
+
+    缺键 = 上面三个模块常量(调用时现读,改常量仍是回滚杆)。
+    """
+    from autoresearch.scan.user_config import knob
+    user = knob("l3", "pass1", None, {}, cfg) or {}
+    defaults = {"resonance_cap": RESONANCE_CAP, "resonance_min_channels": RESONANCE_MIN_CHANNELS,
+                "healthy_mandatory": HEALTHY_MANDATORY}
+    return {**defaults, **(user if isinstance(user, dict) else {})}
+
 
 def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0,
                      lowturn_cfg: dict | None = None,
@@ -114,6 +128,7 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
     边界:`df` 为空 → 两个都空(kept 仍带两列,免得下游按列名读时炸)。
     `target >= len(df)` → kept=全量,cut=空。
     """
+    p1 = pass1_cfg()
     if df.empty:
         empty = df.copy()
         empty["selection_reason"] = pd.Series(dtype=str)
@@ -171,16 +186,16 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
 
     if "n_channels" in d.columns:                        # ② 多路共振 top-RESONANCE_CAP 强留
         n_ch = pd.to_numeric(d["n_channels"], errors="coerce").fillna(0)
-        resonant = [i for i in d.index[n_ch >= 3] if not mandatory.loc[i]]
+        resonant = [i for i in d.index[n_ch >= p1["resonance_min_channels"]] if not mandatory.loc[i]]
         resonant.sort(key=lambda i: order.loc[i], reverse=True)
-        for i in resonant[:RESONANCE_CAP]:
+        for i in resonant[:p1["resonance_cap"]]:
             mandatory.loc[i] = True
             _mark(i, "conviction_guard", f"n_channels={int(n_ch.loc[i])}")
 
     chan_sets = None
     if "recall_channels" in d.columns:
         chan_sets = d["recall_channels"].fillna("").astype(str).map(lambda s: set(s.split("|")) - {""})
-        if HEALTHY_MANDATORY:                                            # ③ healthy lane 全入(2026-08-22 起默认关)
+        if p1["healthy_mandatory"]:                                      # ③ healthy lane 全入(l3.pass1.healthy_mandatory)
             healthy = chan_sets.map(lambda s: "healthy" in s)
             mandatory |= healthy
             for i in d.index[healthy]:

@@ -94,6 +94,9 @@ def _fixed_tasks() -> list[dict]:
 def build_scan_plan(request: dict, handle) -> dict:
     if request["kind"] != "scan-market" or request["requested_mode"] != "AUTO":
         raise ValueError("scan plan requires scan-market/AUTO")
+    if (request.get("card_research_profile") == "two-stage-v1"
+            and request["host_profile"].get("independent_context") is not True):
+        raise ValueError("two-stage-v1 requires host independent_context capability")
     config_hash = getattr(handle.contract, "config_hash", None) or sha256_bytes(
         canonical_json(getattr(handle.contract, "user_config", {})).encode("utf-8")
     )
@@ -131,27 +134,34 @@ def build_scan_plan(request: dict, handle) -> dict:
             },
             {
                 "template_id": "scan.l4",
-                "expander": "scan.l4",
+                "expander": ("scan.l4.two-stage-v1" if request.get("card_research_profile") == "two-stage-v1" else "scan.l4"),
                 "depends_on": ["scan.gate1"],
                 "allowed_roles": ["scan.l4.intel", "scan.l4.card"],
             },
             {
                 "template_id": "scan.reviews",
-                "expander": "scan.reviews",
+                "expander": "scan.reviews.per-stock-v1",
                 "depends_on": ["scan.gate1"],
                 "allowed_roles": ["scan.l4.review"],
             },
             {
                 "template_id": "scan.review3",
-                "expander": "scan.review3",
+                "expander": "scan.review3.per-stock-v1",
                 "depends_on": ["scan.gate1"],
                 "allowed_roles": ["scan.l4.review"],
             },
+            {"template_id": "scan.review.join", "expander": "scan.review.join",
+             "depends_on": ["scan.gate1"], "allowed_roles": []},
         ],
         "plan_hash": "0" * 64,
     }
     value["plan_hash"] = plan_hash(value)
     return value
+
+
+def per_stock_reviews(plan: dict) -> bool:
+    return any(item["template_id"] == "scan.reviews" and item["expander"] == "scan.reviews.per-stock-v1"
+               for item in plan["task_templates"])
 
 
 def _expansion(
@@ -270,6 +280,16 @@ def l3_expansion(
         pack_id, brief_id = sector_artifact_ids(industry)
         key = _sector_key(industry)
         brief_ids.append(brief_id)
+        if row.get("profile") == "deterministic-v1":
+            from autoresearch.session_agent.workflows.sector import terrain_tasks
+            if type(row.get("needs_events")) is not bool:
+                raise ValueError("candidate sector list lacks frozen event requirement")
+            brief_tasks.extend(terrain_tasks(industry, prefix=f"scan.sector.{key}",
+                pack_id=pack_id, reuse_id=f"scan.sector.{key}.reuse", brief_id=brief_id,
+                event_request_id=f"scan.sector.{key}.events.request",
+                event_output_id=f"scan.sector.{key}.events", needs_events=row["needs_events"],
+                dependencies=["scan.sector.prepare"]))
+            continue
         if row.get("reused"):
             continue
         brief_tasks.append(
@@ -294,7 +314,7 @@ def l3_expansion(
                 dependencies=rank_dependencies,
                 inputs=["scan.l3.table", "scan.market.view", *brief_ids],
                 outputs=["scan.l3.judged"],
-                contract="scan.l3.v1",
+                contract="scan.l3.v2",
                 role="scan.l3",
             ),
             _task(
@@ -395,13 +415,51 @@ def _l4_ids(code: str, attempt: int = 1) -> dict[str, str]:
     return {
         "prompt": f"{prefix}.prompt",
         "slim": f"{prefix}.slim",
+        "deep": f"{prefix}.deep",
         "intel": f"{prefix}.intel",
         "intel_status": f"{prefix}.intel_status",
         "intel_bundle": f"{prefix}.intel_bundle",
         "card": f"{prefix}.card",
         "ticket": f"{prefix}.ticket",
+        **{kind: f"{prefix}.{kind}" for kind in ("facts", "initial", "changes")},
     }
 
+
+
+def two_stage_plan(plan: dict) -> bool:
+    return any(row["template_id"] == "scan.l4" and row["expander"] == "scan.l4.two-stage-v1"
+               for row in plan.get("task_templates", []))
+
+
+def _two_stage_card(tasks: list[dict], card: dict, *, holding: bool = False,
+                    retained_initial: dict | None = None) -> None:
+    """Keep the business card identity; add independent reasoning before it."""
+    prefix = card["task_id"].removesuffix(".card")
+    parent = card["parent_task"]
+    ids = _l4_ids(card["subject"], parent["attempt"])
+    for sibling in tasks:
+        if sibling["task_id"] == f"{prefix}.slim":
+            sibling["expected_output_contract"] = "research.card.harvest.v1"
+    if retained_initial is None:
+        facts = _task(f"{prefix}.facts", "DETERMINISTIC",
+            dependencies=[f"{prefix}.slim"],
+            inputs=[ids["slim"], ids["deep"], "scan.l4.source.bundle"], outputs=[ids["facts"]],
+            contract="research.card.facts.v1", operation="research.card.facts",
+            subject=card["subject"], parent_task=parent)
+        initial = _task(f"{prefix}.initial", "INFERENCE", dependencies=[facts["task_id"]],
+            inputs=[ids["facts"], *([ids["deep"]] if holding else [])], outputs=[ids["initial"]],
+            contract="research.card.initial.v1", role=card["role"],
+            subject=card["subject"], parent_task=parent, independent=True)
+        index = tasks.index(card)
+        tasks[index:index] = [facts, initial]
+    else:
+        initial = retained_initial
+    fact_id = next(item for item in initial["input_artifact_ids"] if item.endswith(".facts"))
+    card["dependencies"].append(initial["task_id"])
+    card["input_artifact_ids"].extend([fact_id, initial["output_artifact_ids"][0], ids["intel_bundle"]])
+    card["output_artifact_ids"].append(ids["changes"])
+    card["expected_output_contract"] = "research.card.decision.v1"
+    card["independent_context"] = True
 
 def l4_retry_expansion(
     plan: dict,
@@ -410,6 +468,8 @@ def l4_retry_expansion(
     snapshots: list[dict],
     *,
     intel_enabled: bool,
+    retained_initial: dict | None = None,
+    holding: bool = False,
 ) -> dict:
     """Create a fresh child subtree for one retryable taskbook attempt."""
     code = str(code).zfill(6)
@@ -439,7 +499,7 @@ def l4_retry_expansion(
             "DETERMINISTIC",
             dependencies=["scan.l4.prepare"],
             inputs=["scan.l4.source.bundle", ids["prompt"]],
-            outputs=[ids["slim"]],
+            outputs=[ids["slim"], ids["deep"]],
             contract="stock.harvest.slim.v1",
             operation="scan.l4.slim",
             subject=code,
@@ -485,7 +545,7 @@ def l4_retry_expansion(
             f"{prefix}.card",
             "INFERENCE",
             dependencies=[f"{prefix}.slim", f"{prefix}.intel_status"],
-            inputs=[ids["prompt"], ids["slim"], ids["intel_status"]],
+            inputs=[ids["prompt"], ids["slim"], ids["deep"], ids["intel_status"], "scan.finalists"],
             outputs=[ids["card"]],
             contract="stock.lite.v1",
             role="scan.l4.card",
@@ -493,6 +553,8 @@ def l4_retry_expansion(
             parent_task=parent,
         )
     )
+    if two_stage_plan(plan):
+        _two_stage_card(tasks, tasks[-1], holding=holding, retained_initial=retained_initial)
     return _expansion(plan, "scan.l4", snapshots, tasks)
 
 
@@ -587,7 +649,7 @@ def l4_expansion(
                 "DETERMINISTIC",
                 dependencies=["scan.l4.prepare"],
                 inputs=["scan.l4.source.bundle", ids["prompt"]],
-                outputs=[ids["slim"]],
+                outputs=[ids["slim"], ids["deep"]],
                 contract="stock.harvest.slim.v1",
                 operation="scan.l4.slim",
                 subject=code,
@@ -632,7 +694,7 @@ def l4_expansion(
             f"l4.{code}.a1.card",
             "INFERENCE",
             dependencies=[f"l4.{code}.a1.slim", f"l4.{code}.a1.intel_status"],
-            inputs=[ids["prompt"], ids["slim"], ids["intel_status"]],
+            inputs=[ids["prompt"], ids["slim"], ids["deep"], ids["intel_status"], "scan.finalists"],
             outputs=[ids["card"]],
             contract="stock.lite.v1",
             role="scan.l4.card",
@@ -641,21 +703,33 @@ def l4_expansion(
         )
         tasks.append(card_task)
         card_tasks.append(card_task)
-    tasks.append(
-        _task(
-            "scan.review.plan",
-            "DETERMINISTIC",
-            dependencies=[task["task_id"] for task in card_tasks],
-            inputs=[
-                "scan.finalists",
-                "scan.l4.source.bundle",
-                *[_l4_ids(row["code"])["card"] for row in rows],
-            ],
-            outputs=["scan.review.plan"],
-            contract="scan.review.plan.v1",
-            operation="scan.review.plan",
+        if two_stage_plan(plan):
+            _two_stage_card(tasks, card_task, holding=row.get("lane") == "pinned")
+    if per_stock_reviews(plan):
+        for card_task in card_tasks:
+            code = card_task["subject"]
+            tasks.append(_task(
+                f"scan.review.plan.{code}", "DETERMINISTIC",
+                dependencies=[card_task["task_id"]],
+                inputs=["scan.finalists", "scan.l4.source.bundle", _l4_ids(code)["card"]],
+                outputs=[f"scan.review.plan.{code}"], contract="scan.review.plan.v1",
+                operation="scan.review.plan", subject=code))
+    else:
+        tasks.append(
+            _task(
+                "scan.review.plan",
+                "DETERMINISTIC",
+                dependencies=[task["task_id"] for task in card_tasks],
+                inputs=[
+                    "scan.finalists",
+                    "scan.l4.source.bundle",
+                    *[_l4_ids(row["code"])["card"] for row in rows],
+                ],
+                outputs=["scan.review.plan"],
+                contract="scan.review.plan.v1",
+                operation="scan.review.plan",
+            )
         )
-    )
     return _expansion(plan, "scan.l4", snapshots, tasks)
 
 
@@ -666,14 +740,20 @@ def _review_ids(code: str, attempt: int = 1) -> dict[str, str]:
         "review3": f"{prefix}.review3",
         "none": f"{prefix}.review_none",
         "ticket": f"{prefix}.ticket",
+        **{kind: f"{prefix}.{kind}" for kind in ("facts", "initial", "changes")},
     }
 
 
-def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict]) -> dict:
+def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict], *, scope: str | None = None) -> dict:
     """Expand the first independent review without exposing another review's result."""
+    plan_id = f"scan.review.plan.{scope}" if scope else "scan.review.plan"
+    decide_id = f"scan.review.decide.{scope}" if scope else "scan.review.decide"
+    decision_id = f"scan.review.decision.{scope}" if scope else "scan.review.decision"
+    if scope and [row["code"] for row in review_plan.get("reviews", [])] != [scope]:
+        raise ValueError("review expansion must contain exactly its frozen stock scope")
     tasks = []
     dependencies = []
-    decision_inputs = ["scan.review.plan"]
+    decision_inputs = [plan_id]
     for row in review_plan.get("reviews") or []:
         code = str(row.get("code") or "").zfill(6)
         if not code.isdigit() or len(code) != 6:
@@ -688,8 +768,8 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict]) -> di
                 _task(
                     task_id,
                     "INFERENCE",
-                    dependencies=["scan.review.plan"],
-                    inputs=[_l4_ids(code, attempt)["prompt"]],
+                    dependencies=[plan_id],
+                    inputs=[_l4_ids(code, attempt)[key] for key in ("prompt", "slim", "deep", "intel_status")] + ["scan.finalists"],
                     outputs=[ids["review2"]],
                     contract="stock.lite.v1",
                     role="scan.l4.review",
@@ -705,8 +785,8 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict]) -> di
                 _task(
                     task_id,
                     "DETERMINISTIC",
-                    dependencies=["scan.review.plan"],
-                    inputs=["scan.review.plan", "scan.l4.source.bundle"],
+                    dependencies=[plan_id],
+                    inputs=[plan_id, "scan.l4.source.bundle"],
                     outputs=[ids["none"]],
                     contract="scan.review.none.v1",
                     operation="scan.review.none",
@@ -737,11 +817,12 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict]) -> di
         )
     tasks.append(
         _task(
-            "scan.review.decide",
+            decide_id,
             "DETERMINISTIC",
             dependencies=dependencies,
             inputs=decision_inputs,
-            outputs=["scan.review.decision"],
+            outputs=[decision_id],
+            subject=scope,
             contract="scan.review.decision.v1",
             operation="scan.review.decide",
         )
@@ -749,8 +830,12 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict]) -> di
     return _expansion(plan, "scan.reviews", snapshots, tasks)
 
 
-def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict:
+def review3_expansion(plan: dict, decision: dict, snapshots: list[dict], *, scope: str | None = None) -> dict:
     """Expand only mathematically necessary third reviews, then finalize each ticket."""
+    decide_id = f"scan.review.decide.{scope}" if scope else "scan.review.decide"
+    decision_id = f"scan.review.decision.{scope}" if scope else "scan.review.decision"
+    if scope and [row["code"] for row in decision.get("decisions", [])] != [scope]:
+        raise ValueError("review3 expansion must contain exactly its frozen stock scope")
     tasks = []
     for row in decision.get("decisions") or []:
         code = str(row.get("code") or "").zfill(6)
@@ -765,21 +850,23 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
             l4_ids["card"],
             l4_ids["prompt"],
             l4_ids["slim"],
+            l4_ids["deep"],
             l4_ids["intel_status"],
             l4_ids["intel_bundle"],
-            "scan.review.decision",
+            decision_id,
             "scan.l4.source.bundle",
         ]
         if trigger in {"ow_review", "sell_review"}:
             inputs.append(ids["review2"])
-        if trigger is not None and row.get("same_tier") is False:
+        from autoresearch.scan.decision_finalize import review_cfg  # l4.review.max_runs
+        if trigger is not None and row.get("same_tier") is False and int(review_cfg()["max_runs"]) >= 3:
             review3_id = f"l4.{code}.a{attempt}.review3"
             tasks.append(
                 _task(
                     review3_id,
                     "INFERENCE",
-                    dependencies=["scan.review.decide"],
-                    inputs=[_l4_ids(code, attempt)["prompt"]],
+                    dependencies=[decide_id],
+                    inputs=[_l4_ids(code, attempt)[key] for key in ("prompt", "slim", "deep", "intel_status")] + ["scan.finalists"],
                     outputs=[ids["review3"]],
                     contract="stock.lite.v1",
                     role="scan.l4.review",
@@ -791,7 +878,7 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
             dependencies = [review3_id]
             inputs.append(ids["review3"])
         else:
-            dependencies = ["scan.review.decide"]
+            dependencies = [decide_id]
         tasks.append(
             _task(
                 f"l4.{code}.a{attempt}.finalize",
@@ -805,6 +892,8 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
                 parent_task=parent,
             )
         )
+    if scope:
+        return _expansion(plan, "scan.review3", snapshots, tasks)
     if not tasks:
         tasks.append(
             _task(
@@ -812,7 +901,7 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
                 "DETERMINISTIC",
                 dependencies=["scan.reviews.skip"],
                 inputs=[
-                    "scan.review.decision",
+                    decision_id,
                     "scan.l4.source.bundle",
                     "scan.l3.final.bundle",
                 ],
@@ -834,7 +923,7 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
                 inputs=[
                     "scan.l4.source.bundle",
                     "scan.l3.final.bundle",
-                    "scan.review.decision",
+                    decision_id,
                     *[
                         _review_ids(
                             str(row["code"]).zfill(6),
@@ -851,6 +940,20 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
         complete_dependency = "scan.l4.complete"
     tasks.extend(_l5_tasks(complete_dependency))
     return _expansion(plan, "scan.review3", snapshots, tasks)
+
+
+def review_join_expansion(plan: dict, rows: list[dict], snapshots: list[dict]) -> dict:
+    codes = [row["code"] for row in rows]
+    if not codes or len(codes) != len(set(codes)):
+        raise ValueError("review join requires unique frozen stock population")
+    complete = _task("scan.l4.complete", "DETERMINISTIC",
+        dependencies=[f"l4.{row['code']}.a{int(row.get('attempt') or 1)}.finalize" for row in rows],
+        inputs=["scan.l4.source.bundle", "scan.l3.final.bundle",
+                *[f"scan.review.{kind}.{code}" for code in codes for kind in ("plan", "decision")],
+                *[_review_ids(row["code"], int(row.get("attempt") or 1))["ticket"] for row in rows]],
+        outputs=["scan.l4.complete", "scan.l4.final.bundle", "scan.review.plan", "scan.review.decision"],
+        contract="scan.l4.complete.v1", operation="scan.l4.complete")
+    return _expansion(plan, "scan.review.join", snapshots, [complete, *_l5_tasks("scan.l4.complete")])
 
 
 def _l5_tasks(complete_dependency: str) -> list[dict]:
@@ -946,7 +1049,12 @@ def ensemble_record(
     degraded = bool(review3_dispatched and review3_rating is None)
     tiers = sorted(rank[item] for item in ratings)
     names = {value: key for key, value in rank.items()}
+    from autoresearch.scan.decision_finalize import review_coverage
+    coverage = review_coverage(rating, pinned=trigger == "sell_review", record={
+        "ratings": ratings, "trigger": trigger, "degraded": degraded,
+    })
     return {
+        **coverage,
         "code": str(code).zfill(6),
         "ratings": ratings,
         "median": names[tiers[len(tiers) // 2]],
@@ -980,7 +1088,9 @@ def inapplicable_templates(handle) -> frozenset[str]:
         mode = _load_artifact_json(handle, "scan.run_mode")
     except (KeyError, ValueError, RuntimeError, OSError):
         return frozenset()
-    if mode.get("mode") in {run_mode.SENTINEL_EMPTY, run_mode.SENTINEL_PINNED}:
+    if mode.get("mode") == run_mode.SENTINEL_EMPTY:
+        return frozenset({"scan.l3.repair", "scan.review.join"})
+    if mode.get("mode") == run_mode.SENTINEL_PINNED:
         return frozenset({"scan.l3.repair"})
     return frozenset()
 
@@ -1039,6 +1149,31 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
                 intel_enabled=intel_enabled,
             )
         ]
+    if per_stock_reviews(plan) and task["task_id"].startswith("scan.review.plan."):
+        artifact_id = task["output_artifact_ids"][0]
+        return [review_expansion(plan, _load_artifact_json(handle, artifact_id),
+                                 [_expansion_snapshot(handle, artifact_id)], scope=task["subject"])]
+    if per_stock_reviews(plan) and task["task_id"].startswith("scan.review.decide."):
+        import pandas as pd
+        artifact_id = task["output_artifact_ids"][0]
+        result = [review3_expansion(plan, _load_artifact_json(handle, artifact_id),
+                                    [_expansion_snapshot(handle, artifact_id)], scope=task["subject"])]
+        with artifacts.open_artifact(handle, "scan.finalists") as stream:
+            codes = sorted(pd.read_csv(stream, dtype={"code": str})["code"].tolist())
+        rows, snapshots = [], []
+        for code in codes:
+            key = f"scan.review.decision.{code}"
+            try:
+                value = _load_artifact_json(handle, key)
+                snapshot = _expansion_snapshot(handle, key)
+            except (KeyError, OSError, ValueError, RuntimeError):
+                return result  # another stock's valid decision has not arrived
+            if [row["code"] for row in value.get("decisions", [])] != [code]:
+                raise ValueError("review join decision identity mismatch")
+            rows.extend(value["decisions"])
+            snapshots.append(snapshot)
+        result.append(review_join_expansion(plan, rows, snapshots))
+        return result
     if task["task_id"] in {"scan.review.plan", "scan.l4.skip"}:
         review_plan = _load_artifact_json(handle, "scan.review.plan")
         return [
@@ -1062,9 +1197,30 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
 
 def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str]:
     staging = Path(handle.staging)
+    scoped_review = re.fullmatch(r"scan\.review\.(plan|decision)\.([0-9]{6})", artifact_id)
+    if scoped_review:
+        kind, code = scoped_review.groups()
+        return staging / "session_outputs/reviews" / f"{code}.{kind}.json", "WRITE"
     if artifact_id.startswith("scan.sector.") and artifact_id.endswith(".pack"):
         key = artifact_id.removeprefix("scan.sector.").removesuffix(".pack")
         return staging / "session_inputs/sectors" / f"{key}.json", "READ"
+    event_match = re.fullmatch(r"scan\.sector\.([a-z0-9]+)\.(events.request|events)", artifact_id)
+    if event_match:
+        key, kind = event_match.groups()
+        if kind == "events.request":
+            return staging / "session_inputs/sectors" / f"{key}.events.request.json", "READ"
+        return staging / "sector_briefs" / f"{key}.events.json", "WRITE"
+    reuse_match = re.fullmatch(r"scan\.sector\.([a-z0-9]+)\.(reuse|stable.snapshot)", artifact_id)
+    if reuse_match:
+        key, kind = reuse_match.groups()
+        if kind == "reuse":
+            return staging / "session_inputs/sectors" / f"{key}.reuse.json", "READ"
+        from autoresearch.sector.pack import _safe
+        industry = task.get("subject")
+        if industry is None:
+            sector_plan = _load_artifact_json(handle, "scan.sector.list")
+            industry = next(row["industry"] for row in sector_plan["sectors"] if row["key"] == key)
+        return staging / "sector_briefs" / f"{_safe(industry)}.facts.json", "WRITE"
     if artifact_id.startswith("scan.sector.") and artifact_id.endswith(".brief"):
         from autoresearch.sector.pack import _safe
 
@@ -1081,7 +1237,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
         )
     match = re.fullmatch(
         r"scan\.l4\.(\d{6})\.a(\d+)\."
-        r"(prompt|slim|intel|intel_status|intel_bundle|card|review2|review3|review_none|ticket)",
+        r"(prompt|slim|deep|intel|intel_status|intel_bundle|card|review2|review3|review_none|ticket|facts|initial|changes)",
         artifact_id,
     )
     if match:
@@ -1095,6 +1251,8 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 "slim": staging
                 / "_external_inputs"
                 / f"{normalize_symbol(code)}_{handle.analysis_date}_slim.md",
+                "deep": staging / "_external_inputs"
+                / f"{normalize_symbol(code)}_{handle.analysis_date}_slim_deep.md",
                 # N2: the bound intel is the agent's own bytes, kept apart like a retry's;
                 # `_l4_intel_<code>.md` (what the card reads) is the legacy working copy
                 # intel_status derives from it and the guard trims/normalizes in place.
@@ -1117,6 +1275,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
             paths = {
                 "prompt": staging / f"_l4_prompt_{code}.md",
                 "slim": retry / "slim.md",
+                "deep": retry / "deep.md",
                 "intel": retry / "intel.md",
                 "intel_status": retry / "intel_status.json",
                 "intel_bundle": retry / "intel_bundle.json",
@@ -1126,6 +1285,20 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 "review_none": retry / "review_none.json",
                 "ticket": staging / "session_outputs/tickets" / f"{code}.a{attempt}.json",
             }
+        # Candidate raw inputs are frozen per attempt as well, including a1.
+        # Replay lacks a plan; its request is a frozen replay input, never live config.
+        candidate = task.get("expected_output_contract", "").startswith("research.card.")
+        plan_path = Path(handle.workspace) / "session/plan.json"
+        request_path = Path(handle.workspace) / "session/request.json"
+        if plan_path.is_file():
+            candidate = two_stage_plan(json.loads(plan_path.read_text(encoding="utf-8")))
+        elif request_path.is_file():
+            candidate = json.loads(request_path.read_text(encoding="utf-8")).get("card_research_profile") == "two-stage-v1"
+        if candidate:
+            paths.update({name: staging / "session_attempts" / code / f"a{attempt}" / f"{name}.md"
+                          for name in ("slim", "deep")})
+        paths.update({name: staging / "session_attempts" / code / f"a{attempt}" / f"{name}.json"
+                      for name in ("facts", "initial", "changes")})
         return paths[kind], "WRITE" if artifact_id in task["output_artifact_ids"] else "READ"
     mapping = {
         "scan.prelude.bundle": staging / "session_outputs/prelude.bundle.json",
@@ -1272,8 +1445,8 @@ def _publish_scan_active(handle, *, reports_root: Path | str | None = None) -> P
     if bundle.get("pool_mutation"):
         from autoresearch.dossier import pool as dossier_pool
 
-        pool_candidate = Path(handle.staging) / "session_outputs/scan.pool.candidate.json"
-        payload = pool_candidate.read_bytes()
+        with artifacts.open_artifact(handle, "scan.pool.candidate") as stream:
+            payload = stream.read()
         if sha256_bytes(payload) != bundle.get("pool_after_sha256"):
             raise RuntimeError("scan pool candidate changed after publication preparation")
         pool_target = Path(dossier_pool.POOL_PATH)

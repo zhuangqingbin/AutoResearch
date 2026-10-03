@@ -7,16 +7,15 @@ publication stay in ``service`` / ``store`` / ``publication``.  Each round:
    trusts files, never an executor's word), bind transcript evidence, ``submit``;
    failures go through ``service.fail`` and ``contracts.retry.TASK_ATTEMPT`` classes
    (TIMEOUT …) get exactly one new attempt (L4 intel/card: one new taskbook attempt
-   via ``service.retry_l4``; a review2/review3 failure stops the run ``REVIEW_FAILED``
-   because retry-l4 never rebuilds the review);
+   via ``service.retry_l4``; review2/review3 retry only their SESSION attempt);
 2. read ``service.next``;
 3. **launch** READY tasks — L4 taskbook tickets are *claimed* (the taskbook preflight is
    the ticket's execution), deterministic tasks run through ``service.execute`` on one
    deterministic lane (``trace.exec_capture`` evidence, same as the CLI path), inference
    tasks go to the executor, at most ``max_parallel`` in flight.
 
-Threads: only the loop thread and the deterministic lane call the service; executor
-threads only run ``executor.dispatch``.  Store / artifact / event writes are flock-protected.
+Threads: only the loop thread calls the service. Executor threads only run
+``executor.dispatch``. Pure facts capture may yield to inference on the same owner thread.
 
 A crash between ``claim`` and ``submit`` leaves the attempt RUNNING.  On restart the
 runner never claims it again: an executor with ``supports_reattach`` re-attaches to the
@@ -63,6 +62,12 @@ from autoresearch.session_agent.executors.base import (
 
 #: One retry for TASK_ATTEMPT-class failures of a SESSION task (spec §4 A1-1).
 SESSION_MAX_ATTEMPTS = 2
+
+
+def _session_max_attempts() -> int:
+    """`scan_config.session.max_attempts`(缺省 = SESSION_MAX_ATTEMPTS)。"""
+    from autoresearch.session_agent.config import session_cfg
+    return int(session_cfg()["max_attempts"])
 _NO_PARAMS = {"type": "object", "required": [], "additionalProperties": False}
 _HEARTBEAT_SECONDS = 5.0
 
@@ -82,7 +87,7 @@ def orphan_hint(run_id: str, task_id: str, attempt: int) -> str:
         f"--task-id {task_id} --attempt {attempt} --error-class STALE_TASK "
         "--message 'orphaned by a dead runner'; then restart the runner under a NEW "
         "trace.detach key (e.g. session-runner-2): it retries the task once as "
-        f"a{attempt + 1} (an L4 child: one retry-l4; a review: stops REVIEW_FAILED)"
+        f"a{attempt + 1} (an L4 card/intel child: one retry-l4; a review: its SESSION attempt)"
     )
 
 
@@ -116,11 +121,15 @@ def _is_review(task_id: str) -> bool:
     return task_id.endswith((".review2", ".review3"))
 
 
-def _params_for(task: dict) -> dict:
-    """Parameters of a deterministic operation (scan operations take none)."""
+def _params_for(task: dict, request: dict | None = None) -> dict:
+    """Parameters of a deterministic operation; the frozen request is the only source."""
     operation = task["operation"]
     if operation == "test.noop":
         return {"message": f"runner {task['task_id']}"[:200]}
+    if operation == "stock.harvest" and request is not None:
+        from autoresearch.session_agent.workflows.stock import harvest_params
+
+        return harvest_params(request)
     from autoresearch.session_agent.operations import operation_catalog
 
     if operation_catalog()[operation]["params"] == _NO_PARAMS:
@@ -181,6 +190,8 @@ class Runner:
         log: Callable[[dict], None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         heartbeat_seconds: float = _HEARTBEAT_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], str] = _now,
     ):
         if type(max_parallel) is not int or max_parallel < 1:
             raise ValueError("max_parallel must be a positive integer")
@@ -203,6 +214,9 @@ class Runner:
         self._log = log or (lambda event: print(json.dumps(event, ensure_ascii=False),
                                                 file=sys.stderr, flush=True))
         self._sleep = sleep
+        from autoresearch.scan.observability import SchedulingMetrics
+
+        self.metrics = SchedulingMetrics(max_parallel, monotonic=monotonic, wall_clock=wall_clock)
         self._inflight: dict[str, _Flight] = {}
         # Retry intent is derived from durable state every round (review I3); the only
         # in-memory memo is "this process already tried and was refused" (no spinning).
@@ -227,6 +241,10 @@ class Runner:
 
     def _entry(self, task_id: str) -> dict:
         return store.read_entry(service._store_path(self.handle), task_id)
+
+    def _request(self) -> dict:
+        path = service._session_dir(self.handle) / "request.json"
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def _event(self, event_name: str, /, **fields) -> None:
         self._log({"ts": _now(), "event": event_name, "run_id": self.run_id, **fields})
@@ -258,6 +276,7 @@ class Runner:
                 "heartbeat_seconds": self.heartbeat_seconds,
                 "in_flight": sorted(self._inflight.copy()),   # dict.copy is atomic (GIL)
                 "outcome": outcome,
+                "scheduling": self.metrics.snapshot(),
             })
 
     def _heartbeat_loop(self) -> None:
@@ -325,6 +344,8 @@ class Runner:
         }
         self._dispatches.append({key: row[key] for key in (
             "task_id", "attempt", "kind", "outcome", "error_class")})
+        if outcome in {"SUBMITTED", "SUCCEEDED"}:
+            self.metrics.accepted(flight.task, flight.attempt)
         self._ledger(row)
         self._event("TASK_" + outcome.split(":")[0], task_id=row["task_id"],
                     attempt=row["attempt"], error_class=error_class)
@@ -341,14 +362,26 @@ class Runner:
         finally:
             self._release_run_lock()
 
+    def _preflight(self) -> None:
+        from autoresearch.session_agent.preflight import preflight_plan
+
+        plan = service._load_plan(self.handle)
+        tasks = service._all_tasks(self.handle, plan)
+        signature = tuple(sorted(task["task_id"] for task in tasks))
+        if signature != getattr(self, "_preflight_tasks", None):
+            report = preflight_plan(self.handle, plan, self.host_profile,
+                                    executor=self.executor, tasks=tasks)
+            self._event("ROLE_PREFLIGHT", report=report)
+            self._preflight_tasks = signature
+
     def _run_locked(self) -> dict:
+        self._preflight()
         self._write_status("RUNNING")
         beat = threading.Thread(target=self._heartbeat_loop, name="session-heartbeat",
                                 daemon=True)
         beat.start()
         self._inference_pool = cf.ThreadPoolExecutor(
             max_workers=self.max_parallel, thread_name_prefix="session-inference")
-        self._det_pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-det")
         outcome = None
         state = None
         rounds = 0
@@ -367,6 +400,7 @@ class Runner:
                     continue
                 progressed |= self._run_l4_retries()
                 state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
+                self._preflight()
                 status = state["state"]
                 retries = self._session_retries()
                 if not self._inflight and not retries:
@@ -391,10 +425,14 @@ class Runner:
                 outcome = self._outcome(state, rounds, "MAX_ROUNDS")
         finally:
             self._inference_pool.shutdown(wait=False, cancel_futures=True)
-            self._det_pool.shutdown(wait=False, cancel_futures=True)
             self._stop_beat.set()
             beat.join(timeout=max(1.0, 2 * self.heartbeat_seconds))
             self._write_status("EXITED", outcome)
+            try:
+                snapshot = self.metrics.snapshot()
+                atomic_write_json(self._dispatch_dir() / f"scheduling-{snapshot['segment_id']}.json", snapshot)
+            except Exception as exc:  # diagnostic persistence must not change task outcomes
+                self._event("SCHEDULING_METRICS_FAILED", message=str(exc))
         return outcome
 
     def _beat(self) -> None:
@@ -413,6 +451,7 @@ class Runner:
             "stop_reason": stop_reason,
             "rounds": rounds,
             "dispatches": self._dispatches,
+            "scheduling": self.metrics.snapshot(),
             "orphans": self._orphans,
             "skipped": [{"task_id": key, "reason": value} for key, value in self._skip.items()],
             "errors": [*(state or {}).get("errors", []), *self._errors],
@@ -451,29 +490,54 @@ class Runner:
         return any(flight.kind == "DETERMINISTIC" for flight in self._inflight.values())
 
     def _session_retries(self) -> list[tuple[dict, int]]:
-        """Durable retry intent: SESSION tasks (no parent ticket) the store holds FAILED
+        """Durable retry intent: SESSION tasks (including ticket reviews) held FAILED
         (= recorded retryable: an inference TASK_ATTEMPT class, an idempotent operation,
         or an operator's STALE_TASK) below ``SESSION_MAX_ATTEMPTS``."""
         retries = []
         for task_id, entry in store.read_entries(service._store_path(self.handle)).items():
             spec = entry["spec"]
+            if (spec.get("role") == "scan.l4.review"
+                    and entry["state"] in {"FAILED", "BLOCKED"}
+                    and (entry["state"] == "BLOCKED" or int(entry["attempt"]) >= _session_max_attempts())):
+                self._review_failed(spec, (entry.get("error") or {}).get("code", "UNKNOWN"),
+                                    (entry.get("error") or {}).get("message", ""))
             if (
                 entry["state"] != "FAILED"
-                or spec.get("parent_task") is not None
+                or (spec.get("parent_task") is not None and spec.get("role") != "scan.l4.review")
                 or task_id in self._inflight
                 or task_id in self._skip
-                or int(entry["attempt"]) >= SESSION_MAX_ATTEMPTS
+                or int(entry["attempt"]) >= _session_max_attempts()
             ):
                 continue
             if spec["kind"] == "INFERENCE" and (entry.get("error") or {}).get(
                     "code") not in TASK_ATTEMPT:
                 continue
+            if spec.get("parent_task") is not None:
+                from autoresearch.session_agent import legacy_scan
+                try:
+                    legacy_scan.validate_parent(self.handle, spec["parent_task"])
+                except ValueError as exc:
+                    self._review_failed(spec, "PARENT_NOT_RUNNING", str(exc))
+                    continue
             retries.append((spec, int(entry["attempt"]) + 1))
         return retries
 
     def _launch(self, ready: list[dict], retries: list[tuple[dict, int]] = ()) -> bool:
         launched = False
+        for task in ready:
+            if task["owner"] == "SESSION" and task["task_id"] not in self._inflight:
+                try:
+                    entry = self._entry(task["task_id"])
+                except KeyError:  # expansion may not have synced its store yet
+                    continue
+                if entry["state"] == "PENDING":
+                    self.metrics.ready(task, entry["attempt"] + 1,
+                                       "CAPACITY" if not self._can_start(task) else "READY")
         for task, attempt in retries:
+            entry = self._entry(task["task_id"])
+            if entry["state"] != "FAILED" or entry["attempt"] + 1 != attempt:
+                continue
+            self.metrics.ready(task, attempt, "RETRY_CAPACITY" if not self._can_start(task) else "RETRY_READY")
             if self._can_start(task):
                 launched |= self._start(task, attempt)
         for task in ready:
@@ -484,10 +548,13 @@ class Runner:
                 launched |= self._claim_ticket(task)
             elif self._can_start(task):
                 try:
-                    attempt = self._entry(task_id)["attempt"] + 1
+                    entry = self._entry(task_id)
                 except KeyError:          # expansion visible before its store sync
                     continue
-                launched |= self._start(task, attempt)
+                # Pure-lane callbacks can already have accepted this old READY row.
+                if entry["state"] != "PENDING":
+                    continue
+                launched |= self._start(task, entry["attempt"] + 1)
         return launched
 
     def _can_start(self, task: dict) -> bool:
@@ -526,11 +593,31 @@ class Runner:
                 self._error(task["task_id"], f"could not release claim: {fail_exc}")
         self._skip[task["task_id"]] = f"{type(exc).__name__}: {exc}"
 
-    def _start(self, task: dict, attempt: int) -> bool:
+    def _overlap_inference(self, can_dispatch: Callable[[], bool]) -> None:
+        """Bounded owner callback: no deterministic execute, retry-l4 or finish."""
+        if not can_dispatch():
+            return
+        self._harvest()
+        state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
+        self._preflight()
+        candidates = list(self._session_retries())
+        for task in state["tasks"] if state["state"] == "READY" else []:
+            if task["owner"] == "SESSION" and task["kind"] == "INFERENCE":
+                attempt = self._entry(task["task_id"])["attempt"] + 1
+                self.metrics.ready(task, attempt, "CAPACITY" if not self._can_start(task) else "PURE_LANE_READY")
+                candidates.append((task, attempt))
+        for task, attempt in candidates:
+            if not can_dispatch():
+                return
+            if (task["kind"] == "INFERENCE" and task["task_id"] not in self._inflight
+                    and task["task_id"] not in self._skip and self._can_start(task)):
+                self._start(task, attempt, can_dispatch=can_dispatch)
+
+    def _start(self, task: dict, attempt: int, *, can_dispatch=None) -> bool:
         task_id = task["task_id"]
         if task["kind"] == "DETERMINISTIC":
             try:
-                params = _params_for(task)
+                params = _params_for(task, self._request())
             except (RunnerUnsupported, KeyError) as exc:
                 self._skip[task_id] = str(exc)
                 self._error(task_id, str(exc))
@@ -542,11 +629,23 @@ class Runner:
             except Exception as exc:  # noqa: BLE001
                 self._release_failed_claim(task, attempt, exc)
                 return False
-            future = self._det_pool.submit(
-                service.execute, self.run_id, task_id, attempt, params,
-                handle_loader=self.hooks.handle_loader, runner=self.hooks.operation_runner)
+            future = cf.Future()
             self._inflight[task_id] = _Flight("DETERMINISTIC", task, attempt, future)
+            self.metrics.started(task, attempt)
+            self.metrics.occupancy(self._inference_count(), True)
             self._event("TASK_STARTED", task_id=task_id, attempt=attempt, kind="DETERMINISTIC")
+            try:
+                future.set_result(service.execute(
+                    self.run_id, task_id, attempt, params,
+                    handle_loader=self.hooks.handle_loader, runner=self.hooks.operation_runner,
+                    owner_callback=self._overlap_inference if task["operation"] == "research.card.facts" else None))
+            except Exception as exc:
+                future.set_exception(exc)
+            except BaseException:
+                self._inflight.pop(task_id, None)
+                raise
+            finally:
+                self.metrics.occupancy(self._inference_count(), False)
             return True
         try:
             request = build_request(
@@ -556,6 +655,8 @@ class Runner:
             self._skip[task_id] = f"{type(exc).__name__}: {exc}"
             self._error(task_id, f"cannot render dispatch request: {exc}")
             return False
+        if can_dispatch is not None and not can_dispatch():
+            return False
         try:
             claimed = service.claim(self.run_id, task_id, attempt,
                                     handle_loader=self.hooks.handle_loader,
@@ -563,14 +664,21 @@ class Runner:
         except Exception as exc:  # noqa: BLE001
             self._release_failed_claim(task, attempt, exc)
             return False
+        if can_dispatch is not None and not can_dispatch():
+            service.fail(self.run_id, task_id, attempt, "INTERRUPTED", "capture cancelled before dispatch",
+                         handle_loader=self.hooks.handle_loader)
+            return False
         self._dispatch(task, attempt, request,
                        {"envelope": claimed["envelope"], "plan_hash": claimed["plan_hash"]})
         return True
 
     def _dispatch(self, task: dict, attempt: int, request: DispatchRequest, claim: dict) -> None:
+        self.metrics.started(task, attempt)
         future = self._inference_pool.submit(self.executor.dispatch, request)
         self._inflight[task["task_id"]] = _Flight(
             "INFERENCE", task, attempt, future, request=request, claim=claim)
+        self.metrics.occupancy(self._inference_count(), any(
+            flight.kind == "DETERMINISTIC" and not flight.future.done() for flight in self._inflight.values()))
         self._event("TASK_DISPATCHED", task_id=task["task_id"], attempt=attempt,
                     agent_type=request.agent_type, timeout_seconds=request.timeout_seconds)
 
@@ -588,9 +696,18 @@ class Runner:
                         Path(self.handle.capsule) / "agents/session/requests"
                         / f"session-{task['task_id']}-a{attempt}.json"
                     ).read_text(encoding="utf-8"))
-                    request = build_request(
-                        self.handle, task, attempt, host_profile=self.host_profile,
-                        timeouts=self.timeouts, timeout_multiplier=self.timeout_multiplier)
+                    if artifacts.layout_version(self.handle) >= 2:
+                        if 'dispatch_request' not in handoff:
+                            raise RuntimeError('frozen dispatch request missing; explicit recovery required')
+                        request = DispatchRequest.from_json(handoff['dispatch_request'])
+                        from autoresearch.session_agent.task_access import activate_claim_access
+                        activate_claim_access(
+                            Path(self.handle.workspace) / 'session/dispatch'
+                            / f"{task['task_id']}-a{attempt}.json")
+                    else:
+                        request = build_request(
+                            self.handle, task, attempt, host_profile=self.host_profile,
+                            timeouts=self.timeouts, timeout_multiplier=self.timeout_multiplier)
                     claim = {"envelope": handoff["envelope"], "plan_hash": handoff["plan_hash"]}
                 except Exception as exc:  # noqa: BLE001 - one bad orphan is reported, not fatal
                     # e.g. a crash between store.claim and the handoff freeze: nothing to
@@ -612,6 +729,8 @@ class Runner:
             if not flight.future.done():
                 continue
             del self._inflight[task_id]
+            self.metrics.occupancy(self._inference_count(), any(
+                row.kind == "DETERMINISTIC" and not row.future.done() for row in self._inflight.values()))
             progressed = True
             if flight.kind == "DETERMINISTIC":
                 self._settle_deterministic(flight)
@@ -660,7 +779,11 @@ class Runner:
         outputs = []
         for artifact_id in task["output_artifact_ids"]:
             try:
-                descriptor = artifacts.bind_artifact_hash(self.handle, artifact_id)
+                if artifacts.layout_version(self.handle) >= 2:
+                    from autoresearch.common.atomic import sha256_file
+                    descriptor = {'sha256': sha256_file(Path(request.output_paths[artifact_id]))}
+                else:
+                    descriptor = artifacts.bind_artifact_hash(self.handle, artifact_id)
             except (KeyError, ValueError, RuntimeError, OSError) as exc:
                 self._fail(flight, "CONTRACT_ERROR",
                            f"output {artifact_id} missing or changed at "
@@ -767,20 +890,16 @@ class Runner:
         self._record(flight, f"FAILED:{error_class}", result, error_class)
         # Retries (SESSION: _session_retries; L4 intel/card: _l4_retries) are derived
         # from the durable store / taskbook each round, never queued here (review I3).
-        if error_class in TASK_ATTEMPT and task.get("parent_task") is not None and _is_review(
-                task["task_id"]):
-            self._review_failed(task, error_class, message)
 
     def _review_failed(self, task: dict, error_class: str, message: str) -> None:
-        """retry-l4 rebuilds ticket/slim/intel/card only — never the review — so a
-        review TASK_ATTEMPT failure stops the run instead of re-spending intel + card."""
+        """Expose an unrecoverable review without re-spending the successful card."""
         subject = str((task.get("parent_task") or {}).get("subject") or task.get("subject"))
         if any(item.get("task_id") == task["task_id"]
-               and str(item.get("code", "")).startswith("REVIEW_FAILED") for item in self._errors):
+               and str(item.get("code", "")).startswith("REVIEW_UNAVAILABLE") for item in self._errors):
             return
-        self._errors.append({"code": f"REVIEW_FAILED:{error_class}", "task_id": task["task_id"],
-                             "subject": subject, "message": message[:1000]})
-        self._event("REVIEW_FAILED", task_id=task["task_id"], subject=subject,
+        self._errors.append({"code": "REVIEW_UNAVAILABLE", "task_id": task["task_id"],
+                             "subject": subject, "reason": error_class, "message": message[:1000]})
+        self._event("REVIEW_UNAVAILABLE", task_id=task["task_id"], subject=subject,
                     error_class=error_class)
 
     def _l4_retries(self) -> dict[str, int]:
@@ -824,9 +943,9 @@ class Runner:
             ]
             if reviews:
                 task_id, entry = reviews[0]
-                self._review_failed(entry["spec"], (entry.get("error") or {}).get("code")
-                                    or str(ticket.get("last_error_class")),
-                                    str((entry.get("error") or {}).get("message") or ""))
+                self._review_failed(entry["spec"], "PARENT_NOT_RUNNING",
+                                    "Historical review failure left the parent ticket FAILED; "
+                                    "explicit recovery is required, the accepted card is retained.")
                 continue
             wanted[code] = attempt + 1
         return wanted

@@ -272,6 +272,8 @@ def _build_skeleton_unlocked(
         _section(7, f"- {today} 建档\n"),
     ]
     text = "\n".join(parts) + "\n"
+    from autoresearch.dossier.facts import empty_ledger, replace_ledger
+    text = replace_ledger(text, empty_ledger(code6))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

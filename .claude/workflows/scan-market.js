@@ -56,6 +56,8 @@ const AG = (role) => (RESOLVED[role]
 // Wave 3 性能开关只改变调度/上下文布局，不拥有 finalist、rubric 或评级语义。
 // streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
 const streamingL4 = cfg.performance?.streaming_l4 ?? true
+// shells(scan_config.shells):中继壳的轮数 / 等待 / 失联判定 / 取证壳数 / 尾行数
+const SHELLS = cfg.shells || {}
 // Wave10 B4:`stable_context_blocks` 已退役(离线 benchmark 收益 4.0% < 10% 门)。
 // 这里连读都不再读 —— 留着已退役的 `cfg.performance?.stable_context_blocks` 键就等于留了个陷阱:
 // Python 侧的 `--stable-context` 已随 context_blocks.py 一并删除,谁把这个键加回 config,
@@ -66,6 +68,7 @@ const forceFull = !!A.force_full
 // 引擎隔离根(2026-08-11):context_<engine>,engine 随 args.config.engine 下发(frame 注入)
 const ENGINE = (A.engine || cfg.engine || 'claude')
 if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:${ENGINE}`)
+throw new Error('HOST_CAPABILITY_REQUIRED: legacy research has no C4 task-bound dispatch transport; explicit session_v1 remains PILOT') // C4_LEGACY_GUARD
 
 // ── 失败也要留下现场 ────────────────────────────────────────────────
 // 主体包在 __main 里:业务异常必须**先冻结 capsule 再上抛**。不冻结的话,失败的 run
@@ -96,7 +99,7 @@ const PYC = (stage, invocation, attempt = 1) =>
 // 成本:bash 壳仅 ~5 个/次扫描且零判断,升一档远小于毙掉一整条 60min 流水线的代价。
 function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 phase() 分组函数
   return agent(
-    `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n` +
+    `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 ${SHELLS.tail_lines ?? 15} 行。不要做别的、不要判断、不要解释。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**` +
     `若命令的 stdout 已被重定向,回报改用:退出码 + stderr 末 15 行。\n` +
     `(2026-07-28 事故第一因:壳擅自把 \`frame --json > market_pack.json\` 改成 \`... 2>&1\`,` +
@@ -123,9 +126,9 @@ const DETACHED = { type: 'object', required: ['state', 'key'], additionalPropert
     stderr_tail: { type: 'string' }, result: {},
     expect_file: { type: ['boolean', 'null'] }, reason: { type: 'string' } } }
 const DETACH_TERMINAL = ['COMPLETED', 'FAILED', 'LOST']
-async function detached(key, cmd, label, phaseName, { expectFile = null, maxRounds = 40 } = {}) {
+async function detached(key, cmd, label, phaseName, { expectFile = null, maxRounds = SHELLS.detached_max_rounds_scan ?? 40 } = {}) {
   const call = `AUTORESEARCH_ENGINE=${ENGINE} uv run --no-sync python -m autoresearch.trace.detach ` +
-    `--run-id ${RUN_ID} --key ${key} --wait-seconds 100` +
+    `--run-id ${RUN_ID} --key ${key} --wait-seconds ${SHELLS.wait_seconds ?? 100}` +
     `${expectFile ? ` --expect-file ${expectFile}` : ''} --shell ${shq(cmd)}`
   let misses = 0
   // Workflow 运行时禁用 Date.now()(破坏 resume;09-26 探针实测)→ 用轮数封顶,每轮 ≤~100s 有界等待。
@@ -139,7 +142,7 @@ async function detached(key, cmd, label, phaseName, { expectFile = null, maxRoun
       .catch(() => null)
     if (res && DETACH_TERMINAL.includes(res.state)) return res
     misses = (res && typeof res.state === 'string') ? 0 : misses + 1   // 形状不对 = 没回报
-    if (misses >= 3) return { state: 'LOST', key, exit_code: null, tail: '', reason: '中继壳连续 3 次无有效回报' }
+    if (misses >= (SHELLS.misses_lost ?? 3)) return { state: 'LOST', key, exit_code: null, tail: '', reason: `中继壳连续 ${SHELLS.misses_lost ?? 3} 次无有效回报` }
   }
   return { state: 'TIMEOUT', key, exit_code: null, tail: '', reason: `${maxRounds} 轮有界等待内未到终态` }
 }
@@ -205,8 +208,8 @@ const CONTROL_EVENT_ROW = { ...AGENT_EVENT_ROW, properties: {
 const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
   additionalProperties: false,
   properties: { ok: { type: 'boolean' }, event: AGENT_EVENT_ROW,
-    control_events: { type: 'array', minItems: 2, maxItems: 2, items: CONTROL_EVENT_ROW } } }
-const TRACE_CONTROL_CALLS_PER_TARGET = 2
+    control_events: { type: 'array', minItems: SHELLS.trace_calls_per_target ?? 2, maxItems: SHELLS.trace_calls_per_target ?? 2, items: CONTROL_EVENT_ROW } } }
+const TRACE_CONTROL_CALLS_PER_TARGET = SHELLS.trace_calls_per_target ?? 2
 const EVENT_HASH_RE = /^[0-9a-f]{64}$/
 const EVENT_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
 const validateBoundaryAck = (ack, spec, eventType, controlInvocationId) => {
@@ -463,7 +466,8 @@ if (!Number.isInteger(l3cap) || l3cap <= 0 || !Number.isInteger(maxCards) || max
   throw new Error(`GATE1 未给出可用的 l3cap/max_cards(得到 ${JSON.stringify({ l3cap: g1m.l3cap, max_cards: g1m.max_cards })})` +
     `——升级后的 gates.gate1 必回显它们;拒绝猜卡数继续。`)
 }
-const l3lo = Math.min(7, l3cap)
+const l3lo = Number.isInteger(g1m.l3min) && g1m.l3min > 0 ? Math.min(g1m.l3min, l3cap) : Math.min(7, l3cap)   // l3.finalist_min 经 GATE1 回显
+const pass1Target = cfg.l3?.pass1_target ?? 60
 log(`GATE1 卡数 · L4预算=${l4Budget} · 卡上限 max_cards=${maxCards} → l3cap=${l3cap}${g1m.budget_flags === false ? '(五面旗不参与)' : ''}`)
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier。sector-pack + 待写清单
 // 合并一个 gate(壳合并①,-1 spawn):schema 顶层必须是 object(API 拒 `type:'array'` → 400 →
@@ -493,16 +497,16 @@ await parallel([
   ...preL3BriefSectors.map((sec, i) => () => tracedAgent(
     { stage: 'l3', role: 'sector-brief', subjectDisplay: sec,
       invocationId: `sector-brief-${i + 1}-1`, attempt: 1 },
-    `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,单段机器契约(## 地形段 喂 L3/L4;纯事实性,不含方向判断)。零新取数。`,
+    `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,单段机器契约(## 地形段 喂 L3/L4;纯事实性,不含方向判断)。可发 ≤${cfg.sector?.brief_web_searches ?? 2} 条有界 WebSearch(0 = 零新取数)。`,
     { agentType: 'sector-brief', ...AG('sector_brief'),
       label: `brief:${sec}`, phase: 'L3' })
     .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
-log(`L3 精排开始:pass1 已分诊 200→~40(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier ${l3lo}~${l3cap} 只+bench(effort max,历史 60行~14-25m,40行待测)`)
+log(`L3 精排开始:pass1 已分诊 200→~${pass1Target}(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier ${l3lo}~${l3cap} 只+bench(effort max)`)
 await tracedAgent(
   { stage: 'l3', role: 'l3-rank', invocationId: 'l3-rank-market-1', attempt: 1 },
-  `L3 精排 · 日期 ${date} · finalist tier 按质 ${l3lo}~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~40 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
+  `L3 精排 · 日期 ${date} · finalist tier 按质 ${l3lo}~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~${pass1Target} 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
   { agentType: 'l3-rank', ...AG('l3_rank'),
     label: 'L3-rank', phase: 'L3' })
 // thesis 数字机检(确定性 lint):打回一次自修,修复后不再二检(防循环)

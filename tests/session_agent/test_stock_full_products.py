@@ -149,3 +149,28 @@ def test_full_assembler_and_publisher_accept_missing_optional_lenses(tmp_path):
     report_dir = publish_stock(handle, reports_root=tmp_path / "published")
     assert (report_dir / "贵州茅台.md").is_file()
     assert json.loads((report_dir / "manifest.json").read_text())["run_id"] == handle.run_id
+
+
+@pytest.mark.parametrize("decision", [
+    "**Rating**: Buy\nFINAL TRANSACTION PROPOSAL: **SELL**",
+    "**Rating**: Hold\n**Rating**: Buy\nFINAL TRANSACTION PROPOSAL: **HOLD**",
+    "**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: **HOLD**\nFINAL TRANSACTION PROPOSAL: **SELL**",
+    "**Rating**: Hold\nprose FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+def test_full_pm_and_product_validation_reject_conflicting_decisions(tmp_path, decision):
+    handle = _handle(tmp_path)
+    mapping = full_product_artifacts()
+    for relative in required_full_products():
+        path = handle.staging / "full" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(decision if relative == assemble.DECISION_REL else "content")
+        artifacts.register_artifact(handle, mapping[relative], path, "WRITE")
+        artifacts.bind_artifact_hash(handle, mapping[relative])
+    decision_id = mapping[assemble.DECISION_REL]
+    with pytest.raises(DomainValidationError):
+        validate_registered_contract(handle, {"outputs": [{"artifact_id": decision_id}]}, {
+            "expected_output_contract": "stock.pm.v1", "output_artifact_ids": [decision_id],
+        })
+    with pytest.raises(RuntimeError):
+        stock_full_validate(handle)
+    assert not (handle.staging / "session_outputs/full.validation.json").exists()

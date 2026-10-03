@@ -2,11 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Grep|Glob",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PROJECT_DIR/scripts/hooks/agent_input_boundary.sh\" claude"
+            "command": "sh \"$CLAUDE_PROJECT_DIR/scripts/hooks/agent_input_boundary.sh\" claude || printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"AGENT_INPUT_BOUNDARY: project hook entrypoint unavailable\"}}'"
           }
         ]
       }
@@ -18,6 +18,15 @@
           {
             "type": "command",
             "command": "uv run --no-sync python scripts/hooks/webtrace_posttool.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/scripts/hooks/scan_config_standard.sh\""
           }
         ]
       }

@@ -305,7 +305,12 @@ def _validate_command_ref(value: dict | None) -> None:
     if value is None:
         return
     require_exact_fields(value, COMMAND_REF_FIELDS)
-    _unique_strings(value["argv"], "argv", allow_empty=False)
+    # argv is the ordered command actually run: repeated tokens and empty
+    # positionals (a no-peer stock harvest) are faithful, only the program is required.
+    argv = value["argv"]
+    if (type(argv) is not list or not argv or any(type(item) is not str for item in argv)
+            or not argv[0]):
+        raise ValueError("invalid argv")
     _safe_relative(value["cwd"], "cwd", allow_dot=True)
     if value["exit_code"] is not None and type(value["exit_code"]) is not int:
         raise ValueError("invalid exit_code")

@@ -36,7 +36,9 @@ def test_lowturn_flag_adds_column_and_legend(tmp_path):
 def test_lowturn_flag_default_off_is_byte_parity(tmp_path):
     _mk(tmp_path, [_row("000001", turn=True)])
     assert l3_table_md(_DATE, root=tmp_path) == l3_table_md(_DATE, root=tmp_path, lowturn_flag=False)
-    assert "lowturn" not in l3_table_md(_DATE, root=tmp_path)
+    md = l3_table_md(_DATE, root=tmp_path)
+    assert "lowturn" not in "\n".join(line for line in md.splitlines() if line.startswith("|"))
+    assert "lowturn 低位转强(确定性旗)" not in md
 
 
 def test_lowturn_cfg_threshold_respected(tmp_path):
@@ -64,5 +66,7 @@ def test_prepare_config_disabled_has_no_column(tmp_path, monkeypatch):
     cfgp.write_text(json.dumps({"l3": {"two_pass": True, "pass1_target": 40}}), encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfgp)
     res = prepare_l3_table(_DATE, root=base, do_harvest=False)
-    assert "lowturn" not in (base / _DATE / "_l3_table.md").read_text(encoding="utf-8")
+    md = (base / _DATE / "_l3_table.md").read_text(encoding="utf-8")
+    assert "lowturn" not in "\n".join(line for line in md.splitlines() if line.startswith("|"))
+    assert "lowturn 低位转强(确定性旗)" not in md
     assert "lowturn_n" not in res

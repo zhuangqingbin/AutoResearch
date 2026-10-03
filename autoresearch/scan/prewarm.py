@@ -31,6 +31,14 @@ from pathlib import Path
 from autoresearch.common import workspace as ws
 
 _SETTLE_HHMM = 19 * 60 + 15    # 当日 EOD 视为已结算的最早本地时刻(19:15;spec §P1 依据)
+
+
+def settle_minutes() -> int:
+    """`scan_config.readiness.settle_hhmm`(HH:MM → 自当日 0 点起的分钟数;缺省 19:15)。"""
+    from autoresearch.scan.user_config import knob
+    raw = str(knob("readiness", "settle_hhmm", None, "19:15"))
+    hh, mm = raw.split(":")
+    return int(hh) * 60 + int(mm)
 #: `_step()` 的失败哨兵。用独立对象而非 `None`:步骤函数返回 `None`(空 note)是合法成功。
 _STEP_FAILED = object()
 
@@ -42,7 +50,7 @@ def latest_settled_trade_date(now: datetime | None = None) -> str:
     days = _trade_days(_pro(), (now - timedelta(days=30)).strftime("%Y%m%d"), now.strftime("%Y%m%d"))
     if not days:
         raise RuntimeError("trade_cal 取不到交易日(token/网络?)")
-    if days[-1] == now.strftime("%Y%m%d") and now.hour * 60 + now.minute < _SETTLE_HHMM:
+    if days[-1] == now.strftime("%Y%m%d") and now.hour * 60 + now.minute < settle_minutes():
         days = days[:-1]
     if not days:
         raise RuntimeError("近 30 天无已结算交易日")

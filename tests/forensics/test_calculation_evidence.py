@@ -12,6 +12,24 @@ from autoresearch.research.calculations import (
 from autoresearch.trace.blobs import put_bytes
 
 
+def test_overnight_calculator_binds_entry_price_and_replays():
+    inputs = {"exit_price": "10.20", "entry_price": "10.00"}
+    parameters = {"ruler": "gap_c1_o2", "return_basis": "ENTRY_PRICE"}
+    result = calculate("conditional_gap.v1", inputs, parameters)
+    assert result["status"] == "SUCCEEDED"
+    assert result["values"]["return_fraction"] == "0.02"
+    assert replay_calculation(result, inputs, parameters)["values"] == result["values"]
+
+
+def test_overnight_calculator_keeps_unknown_entry_and_rejects_wrong_basis():
+    parameters = {"ruler": "gap_c1_o2", "return_basis": "ENTRY_PRICE"}
+    result = calculate("conditional_gap.v1", {"exit_price": "10.20", "entry_price": None}, parameters)
+    assert result["values"]["return_fraction"] is None
+    invalid = calculate("conditional_gap.v1", {"exit_price": "10.20", "entry_price": "10"},
+                        dict(parameters, return_basis="CURRENT_PRICE"))
+    assert invalid["status"] == "FAILED"
+
+
 def _money(value: str, *, basis="single_period", currency="CNY", unit="million"):
     return {
         "value": value,

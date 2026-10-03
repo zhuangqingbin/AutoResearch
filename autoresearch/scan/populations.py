@@ -81,6 +81,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import math
 import tempfile
@@ -103,14 +105,14 @@ from autoresearch.data import market_panel as _panel
 from autoresearch.research import edge_census as _ec
 from autoresearch.scan import outcome as _outcome
 
-POPULATION_SCHEMA_VERSION = 1
+POPULATION_SCHEMA_VERSION = 2
 #: 口径版本 —— 随**定义**改动而升,不随实现重构升。`stage_rulers.csv` 每行都带它,
 #: 于是「同一个 metric 名在不同日期下含义变了」这件事在表里是看得见的。
 METRIC_DEFINITION_VERSION = "g3.v1"
 
 LEDGER_DIRNAME = _outcome.LEDGER_DIRNAME
-UNIVERSE_DIRNAME = "universe"
-POPULATIONS_DIRNAME = "populations"
+UNIVERSE_DIRNAME = "evaluations/outcome_labels.v2/universe"
+POPULATIONS_DIRNAME = "evaluations/outcome_labels.v2/populations"
 VIEWS_DIRNAME = "views"
 STAGE_RULERS_CSV = "stage_rulers.csv"
 
@@ -164,43 +166,61 @@ MIN_CROSS_SECTION = _ec.MIN_CROSS_SECTION
 class FrozenSources:
     """一次 run 的**冻结**产物定位器。三级都在 run 目录内;共享 staging 不在候选里。"""
 
-    def __init__(self, run_dir: Path | str):
-        self.run = Path(run_dir)
+    def __init__(self, run_dir: Path | str, *, verify_hashes: bool = False):
+        from autoresearch.scan.research_provenance import safe_path
+        self.run = safe_path(run_dir)
         self.bases = [self.run / rel for rel in FROZEN_BASES]
-        self.manifest = self._json_at(self.run, "manifest.json") or {}
         self.origin: dict[str, str] = {}
+        self.digests: dict[str, str] | None = None
+        if verify_hashes:
+            manifest = self._path(self.run/'capsule/verification/MANIFEST.sha256')
+            self.digests = {}
+            for line in manifest.read_text().splitlines():
+                digest, separator, relative = line.partition('  ')
+                path = self._path(self.run/relative)
+                if (not separator or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest)
+                        or relative in self.digests or path.relative_to(self.run).as_posix() != relative):
+                    raise ValueError('invalid frozen manifest entry')
+                self.digests[relative] = digest
+            if not self.digests:
+                raise ValueError('frozen manifest is empty')
+        manifest = self.run/'manifest.json'
+        self.manifest = json.loads(self.read_bytes(manifest)) if manifest.is_file() else {}
 
-    @staticmethod
-    def _json_at(base: Path, name: str) -> object | None:
-        path = base / name
-        if not path.is_file():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
+    def _path(self, path):
+        from autoresearch.scan.research_provenance import safe_path
+        path = safe_path(path)
+        if not path.is_relative_to(self.run):
+            raise ValueError('source path escapes its own run')
+        return path
+
+    def read_bytes(self, path):
+        path = self._path(path)
+        content = path.read_bytes()
+        if self.digests is not None:
+            expected = self.digests.get(path.relative_to(self.run).as_posix())
+            if expected is None or hashlib.sha256(content).hexdigest() != expected:
+                raise ValueError('frozen source missing manifest binding or hash mismatch')
+        return content
 
     def find(self, *names: str) -> Path | None:
-        """按 base 优先级找第一个存在的文件(`names` 是同一件东西的历代别名)。"""
+        """Only canonical files belonging to this run are eligible sources."""
+        for name in names:
+            if Path(name).is_absolute() or '..' in Path(name).parts:
+                raise ValueError('source path must remain in its own run')
         for base in self.bases:
             for name in names:
-                path = base / name
+                path = self._path(base/name)
                 if path.is_file():
                     return path
         return None
 
     def rows(self, *names: str) -> list[dict] | None:
-        """CSV → 行字典列表;**全部走 stdlib csv 读字符串**。
-
-        不用 pandas:它的类型推断会把 `001283` 读成 `1283`(实测),六位代码的前导零一丢,
-        整张表的 join 就全错位 —— 而且错得静默。
-        """
         path = self.find(*names)
         if path is None:
             return None
         try:
-            with path.open(encoding="utf-8-sig", newline="") as handle:
-                got = list(csv.DictReader(handle))
+            got = list(csv.DictReader(io.StringIO(self.read_bytes(path).decode('utf-8-sig'))))
         except (OSError, UnicodeDecodeError):
             return None
         self.origin[names[0]] = self._label(path)
@@ -210,9 +230,11 @@ class FrozenSources:
         path = self.find(*names)
         if path is None:
             return None
-        doc = self._json_at(path.parent, path.name)
-        if doc is not None:
-            self.origin[names[0]] = self._label(path)
+        try:
+            doc = json.loads(self.read_bytes(path))
+        except (OSError, json.JSONDecodeError):
+            return None
+        self.origin[names[0]] = self._label(path)
         return doc
 
     def _label(self, path: Path) -> str:
@@ -271,7 +293,8 @@ def _truthy(value: object) -> bool:
 # ───────────────────────── 湖 → 全尺帧 + 逐尺成熟 ─────────────────────────
 
 def ruler_frame(date: str, *, lake_daily: Path | None = None,
-                sectors: dict[str, str] | None = None) -> tuple[pd.DataFrame | None, dict]:
+                sectors: dict[str, str] | None = None, calendar=None,
+                today: object = None) -> tuple[pd.DataFrame | None, dict]:
     """当日**全湖**十列事后指标 + 每列的 `status`/`matures_on`。
 
     与 `outcome.market_frame` 的关键差别:**未成熟不返回 None**。account 的老写法在
@@ -282,13 +305,21 @@ def ruler_frame(date: str, *, lake_daily: Path | None = None,
     含 `|gap|>GAP_CLIP` 的数据错剔除);三个相对列走 `outcome._relative_columns`
     ——**列名即口径**,分母各不相同,这里不重新推导。
     """
-    days = _panel.lake_trade_days(lake_daily)
-    day = str(date).replace("-", "")
-    if day not in days:
-        return None, {"reason": "NOT_IN_LAKE", "analysis_date": date}
+    if calendar is None:
+        from autoresearch.scan.exec_anchor import trading_sessions
+        calendar = trading_sessions
+    resolved = _outcome.resolve_outcome_sessions(date, calendar=calendar, today=today)
+    day = resolved['analysis_date']
+    if resolved['status'] in {_outcome.UNVERIFIED_CALENDAR, _outcome.INVALID_ANALYSIS_DATE}:
+        return None, {**resolved, 'reason': resolved['status']}
+    inventory = _panel.lake_trade_days(lake_daily)
+    if day not in inventory:
+        return None, {**resolved, 'reason': 'NOT_IN_LAKE'}
+    days = resolved['sessions']
     idx = days.index(day)
     horizon = max(RULER_HORIZON.values())
-    window = days[max(0, idx - 1): min(len(days), idx + horizon + 2)]
+    window = [d for d in days[max(0, idx - 1):idx + horizon + 1]
+              if d <= resolved['today']]
     pivots = _panel.load_lake_pivots(window, lake_daily)
     frame = _fwd.forward_frame(pivots, days, day)
     if frame is None or frame.empty:
@@ -317,7 +348,8 @@ def ruler_frame(date: str, *, lake_daily: Path | None = None,
     span = frame["t1_high"] - frame["t1_low"]
     frame["t1_pos_in_range"] = ((frame["t1_close"] - frame["t1_low"]) / span).where(span > 0)
 
-    rel = _outcome._relative_columns(frame, sectors or {})
+    membership, membership_doc = _outcome._market_membership(date, lake_daily)
+    rel = _outcome._relative_columns(frame, membership=membership)
     for column in (_ruler.REL_MARKET, _ruler.REL_SECTOR, "excess_med_market"):
         frame[column] = rel[column]
 
@@ -332,10 +364,16 @@ def ruler_frame(date: str, *, lake_daily: Path | None = None,
     frame["buyable_c1"] = buyable
 
     meta = {
-        "analysis_date": date, "day": day, "n_lake_days": len(days), "idx": idx,
+        "analysis_date": date, "day": day, "n_lake_days": len(inventory), "idx": idx,
+        "calendar_digest": resolved["calendar_digest"],
+        "calendar_quality": resolved["calendar_quality"],
+        "sector_benchmark": rel.attrs["sector_benchmark"],
+        "membership_hash": membership_doc.get("membership_hash"),
+        "entry_session": resolved["t1"],
+        "price_input_hashes": {d: hashlib.sha256(((Path(lake_daily) if lake_daily else ws.lake_root() / "daily") / f"{d}.parquet").read_bytes()).hexdigest() for d in window if d in inventory},
         "matures_on": {column: (days[idx + k] if idx + k < len(days) else None)
                        for column, k in RULER_HORIZON.items()},
-        "lake_reached": {column: bool(idx + k < len(days))
+        "lake_reached": {column: bool(idx + k < len(days) and days[idx + k] <= resolved["today"])
                          for column, k in RULER_HORIZON.items()},
         "n": int(len(frame)),
     }
@@ -375,13 +413,37 @@ def _attach_outcomes(table: pd.DataFrame, frame: pd.DataFrame | None, meta: dict
         table["buyable_c1"] = pd.array(buyable.to_numpy(), dtype="boolean")
     else:
         table["buyable_c1"] = pd.array([None] * len(table), dtype="boolean")
+    from autoresearch.common.outcome_sessions import LABEL_VERSION
+    table['label_version'] = LABEL_VERSION
+    table['venue'] = 'CN_A'
+    table['calendar_digest'] = meta.get('calendar_digest', '')
+    table['calendar_quality'] = meta.get('calendar_quality', '')
+    for column in rulers:
+        entry = meta.get('entry_session')
+        exit_ = meta.get('matures_on', {}).get(column)
+        hashes = {d: meta.get('price_input_hashes', {}).get(d) for d in (entry, exit_) if d}
+        table[f'entry_session_{column}'] = entry
+        table[f'exit_session_{column}'] = exit_
+        table[f'price_input_hashes_{column}'] = json.dumps(hashes, sort_keys=True)
+        table[f'missing_reasons_{column}'] = [json.dumps([] if state == MATURE else
+            [meta.get('reason') or ('NOT_MATURED' if state == PENDING else 'MISSING_PRICE_LEG')])
+            for state in table[f'status_{column}']]
+    hashes = meta.get('price_input_hashes', {})
+    mature_targets = [d for name,d in meta.get('matures_on', {}).items()
+                      if meta.get('lake_reached', {}).get(name)]
+    table['label_retryable'] = (meta.get('reason') not in {None, '', 'INVALID_ANALYSIS_DATE'}
+        or meta.get('calendar_quality') != 'trade_cal'
+        or any(d not in hashes for d in mature_targets + [meta.get('entry_session')]))
+    table["membership_hash"] = meta.get("membership_hash")
+    table["sector_benchmark_json"] = json.dumps(meta.get("sector_benchmark", {}), sort_keys=True)
+    table["ruler"] = MAIN
     return table
 
 
 # ───────────────────────── L0 eligible 最小表 ─────────────────────────
 
 def build_universe(run_dir: Path | str, *,
-                   lake_daily: Path | None = None) -> tuple[pd.DataFrame | None, dict]:
+                   lake_daily: Path | None = None, calendar=None, today=None) -> tuple[pd.DataFrame | None, dict]:
     """`L1_scored_full.csv`(= 全部 L0 过门股)→ L1 召回率的分母表。
 
     `in_l1` 的**权威来源是 `L1_recall_top1000.csv` 的成员集**,不是 scored_full 里的
@@ -401,7 +463,7 @@ def build_universe(run_dir: Path | str, *,
         missing.append("L1_recall_top1000.csv")
 
     sectors = {_z6(row.get("code")): str(row.get("industry") or "") for row in scored}
-    frame, meta = ruler_frame(date, lake_daily=lake_daily, sectors=sectors)
+    frame, meta = ruler_frame(date, lake_daily=lake_daily, sectors=sectors, calendar=calendar, today=today)
     if frame is None:
         missing.append(f"lake:{meta.get('reason')}")
 
@@ -473,6 +535,7 @@ def _l4_facts(src: FrozenSources) -> tuple[dict[str, str] | None, dict[str, dict
     base = src.find("decision_records.json", "_final_ratings.json")
     if base is None:
         return None, {}, ["decision_records.json"]
+    src.read_bytes(base)
     directory = base.parent
     src.origin["decision_records.json"] = src._label(base)
     missing: list[str] = []
@@ -534,15 +597,64 @@ def _terminal(flags: dict[str, object]) -> tuple[str, str]:
     return "L0", "UNKNOWN"
 
 
+def research_facts(src: FrozenSources):
+    """Read observed per-run research metadata; never infer it from current config."""
+    from autoresearch.scan.research_provenance import FILENAME, validate_provenance
+    doc = src.json(FILENAME)
+    if doc is None:
+        return {}, None, [FILENAME]
+    validate_provenance(doc)
+    if doc['run_id'] != src.capsule_run_id or doc['analysis_date'] != src.analysis_date:
+        raise ValueError('research provenance run identity mismatch')
+    from autoresearch.trace.read_observation import verify_read_bundle
+    missing = []
+    provenance_path = src.find(FILENAME)
+    for code, row in doc['candidates'].items():
+        reference = row.get('deep_read_proof')
+        if reference is None:
+            missing.append('deep_read_verified:BOUND_TRANSCRIPT_PROOF_MISSING')
+            continue
+        relative = Path(reference['path'])
+        if relative.is_absolute() or '..' in relative.parts:
+            raise ValueError('deep proof reference escapes frozen run')
+        proof_path = provenance_path.parent/relative
+        content = src.read_bytes(proof_path)
+        if hashlib.sha256(content).hexdigest() != reference['sha256']:
+            raise ValueError('deep proof hash mismatch')
+        proof = json.loads(content)
+        identity = proof['identity']
+        if (identity['run_id'] != src.capsule_run_id or identity['engine'] != ws.ENGINE
+                or str(identity['subject']).split('.')[0] != code or identity['role'] != 'scan.l4.card'
+                or not proof['artifact_id'].endswith('.deep')):
+            raise ValueError('deep proof candidate identity mismatch')
+        verify_read_bundle(proof, read_bytes=lambda relative, proof_path=proof_path:src.read_bytes(proof_path.parent/relative))
+        row['deep_read_verified'] = True
+    return doc['candidates'], doc['profile'], sorted(set(missing))
+
+
+def _research_columns(row, profile):
+    from autoresearch.scan.research_provenance import CANDIDATE_FIELDS
+    inputs = {'lane', 'conviction', 'n_channels', 'reserved'}
+    result = {('force_full_'+name if name in inputs else name): row.get(name) for name in CANDIDATE_FIELDS
+              if name not in {'initial_faces', 'final_faces', 'initial_raw_metrics', 'final_raw_metrics', 'deep_read_proof'}}
+    for name in ('initial_faces', 'final_faces', 'initial_raw_metrics', 'final_raw_metrics', 'deep_read_proof'):
+        value = row.get(name)
+        result[name+'_json'] = json.dumps(value, ensure_ascii=False, sort_keys=True) if value is not None else None
+    result['b3_research_profile'] = profile
+    result['deep_read_verified'] = row.get('deep_read_verified')
+    return result
+
+
 def build_population(run_dir: Path | str, *,
-                     lake_daily: Path | None = None) -> tuple[pd.DataFrame | None, dict]:
+                     lake_daily: Path | None = None, include_outcomes: bool = True,
+                     sources: FrozenSources | None = None, calendar=None, today=None) -> tuple[pd.DataFrame | None, dict]:
     """`L1_recall_top1000.csv` + 护照 + 任务簿 + 卡 + E6 → 一只票的完整路径 + 事后读数。
 
     行集合 = top1000 全体(`in_l1=True`)**加上**下游冒出来的孤儿(实测早期 run 有
     finalist/评级不在当日 L1 里)。孤儿以 `in_l1=False` 入表并计入 `counts.orphans`,
     不静默丢 —— 一只被 BUY 过的孤儿如果不进表,`e6_buy_minus_pool` 就少了它。
     """
-    src = FrozenSources(run_dir)
+    src = sources if sources is not None else FrozenSources(run_dir)
     date = src.analysis_date
     key = run_key(run_dir)
     l1_rows = src.rows("L1_recall_top1000.csv")
@@ -562,6 +674,13 @@ def build_population(run_dir: Path | str, *,
     tasks_doc = src.json("_l4_tasks.json")
     passport, has_passport = _passport_index(src)
     e6_cand, e6_buys, e6_tiers, has_e6 = _e6_index(src)
+    research, research_profile, research_missing = research_facts(src)
+    missing += research_missing
+    decision_facts = {}
+    decision_path = src.find("decision_records.json")
+    if decision_path is not None:
+        from autoresearch.scan.decision_record import load_decision_records
+        decision_facts = load_decision_records(decision_path)
 
     for name, present in (("L2_gbdt_top200.csv", l2_rows is not None),
                           ("_l3_pass1_kept.csv", kept_rows is not None),
@@ -599,7 +718,8 @@ def build_population(run_dir: Path | str, *,
     # 下游偶尔冒出 L1 之外的票(实测早期 run 有 45 只 finalist 不在当日 L2/L1 里)。
     # 不静默丢:以 `in_l1=False` 入表并计数 —— 一只被 BUY 过的孤儿如果不进表,
     # `e6_buy_minus_pool` 就少了它,而 counts 一切正常。
-    downstream = set(finalists or ()) | set(ratings or ()) | set(e6_buys) | set(e6_cand or ())
+    downstream = (set(finalists or ()) | set(ratings or ()) | set(e6_buys) | set(e6_cand or ())
+                  | set(dispatched_set or ()) | set(research))
     orphans = sorted(downstream - set(base))
 
     def maybe(value: bool | None) -> object:
@@ -654,7 +774,7 @@ def build_population(run_dir: Path | str, *,
             l4_dispatched = bool(l4_block["dispatched"])
         l4_rejected = None
         if l4_dispatched:
-            if rating is None and not stop and ratings is None:
+            if rating not in REJECT_RATINGS | COMPARABLE_RATINGS and not stop:
                 l4_rejected = None                      # 派了但读不到评级/早停 → 不知道
             else:
                 l4_rejected = bool(stop) or (rating in REJECT_RATINGS)
@@ -711,6 +831,11 @@ def build_population(run_dir: Path | str, *,
             "l3_guard": guard or None,
             "research_rating": rating or l4_block.get("research_rating"),
             "l4_early_stop_reason": (stop or {}).get("reason") if stop else None,
+            "l4_early_stop_phase": (stop or {}).get("phase") if stop else None,
+            "post_verify_rating": getattr(decision_facts.get(code), "post_verify_rating", None),
+            "review_required": getattr(decision_facts.get(code), "review_required", None),
+            "review_status": getattr(decision_facts.get(code), "review_status", "UNKNOWN"),
+            **_research_columns(research.get(code, {}), research_profile),
             "e6_rank": (cand or {}).get("rank"),
             # 非旗字符串列(2026-09-24 §2.7):不进 FLAG_COLUMNS —— 那个元组只装
             # 「正交身份旗」(见 `FLAG_COLUMNS` 旁注),A/R/None 三值不是布尔,
@@ -722,6 +847,7 @@ def build_population(run_dir: Path | str, *,
     for flag in FLAG_COLUMNS:
         table[flag] = pd.array(table[flag].tolist(), dtype="boolean")
     table["analysis_date"] = date
+    table["population_schema_version"] = POPULATION_SCHEMA_VERSION
     table["run_key"] = key
     table["report_dir_id"] = src.report_dir_id
     table["capsule_run_id"] = src.capsule_run_id
@@ -734,10 +860,17 @@ def build_population(run_dir: Path | str, *,
     table["l2_present"] = l2_set is not None
 
     sectors = {r["code"]: (r["sector"] or "") for r in records}
-    frame, meta = ruler_frame(date, lake_daily=lake_daily, sectors=sectors)
-    if frame is None:
-        missing.append(f"lake:{meta.get('reason')}")
-    table = _attach_outcomes(table, frame, meta, tuple(RULER_HORIZON))
+    if include_outcomes:
+        frame, meta = ruler_frame(date, lake_daily=lake_daily, sectors=sectors, calendar=calendar, today=today)
+        if frame is None:
+            missing.append(f"lake:{meta.get('reason')}")
+        table = _attach_outcomes(table, frame, meta, tuple(RULER_HORIZON))
+    else:
+        meta = {}
+        for ruler in RULER_HORIZON:
+            table[ruler] = np.nan
+            table[f'status_{ruler}'] = PENDING
+            table[f'matures_on_{ruler}'] = None
     table = table.sort_values("code", kind="stable").reset_index(drop=True)
 
     unknown = {flag: int(table[flag].isna().sum()) for flag in FLAG_COLUMNS}
@@ -800,6 +933,8 @@ def _has_pending(target: Path) -> bool:
     try:
         got = pd.read_parquet(target)
     except (OSError, ValueError):
+        return True
+    if "label_retryable" not in got or got["label_retryable"].fillna(True).any():
         return True
     cols = [c for c in got.columns if c.startswith("status_")]
     if not cols:
@@ -974,7 +1109,7 @@ def _winners(table: pd.DataFrame, ruler: str = MAIN) -> set[str] | None:
     values = pd.to_numeric(table.loc[usable, ruler], errors="coerce").dropna()
     if len(values) < MIN_CROSS_SECTION:
         return None
-    cut = float(values.quantile(WINNER_DECILE))
+    cut = float(values.quantile(__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["winner_decile"]))
     return set(table.loc[values.index[values >= cut], "code"])
 
 

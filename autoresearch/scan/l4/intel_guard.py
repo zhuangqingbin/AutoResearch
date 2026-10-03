@@ -54,6 +54,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts.scan_config import DEFAULT_INTEL_MAX_QUERIES
 from autoresearch.dataflows.symbol_utils import to_ts_code
 
 HARD_CAP_DEFAULT = 30
@@ -68,10 +69,14 @@ SOFT_TRIM_KEEP = 10
 _TRIM_MARK = "〔已裁·cap {cap}〕"
 
 
+#: 软顶缺省 —— 注册表单源(prompt 的「≤N 条」、本裁稿、self_review 限频 lint 三处共用)。
+DEFAULT_MAX_QUERIES = DEFAULT_INTEL_MAX_QUERIES
+
+
 def configured_soft_cap() -> int:
-    """`l4_intel.max_queries`(scan_config 单源;缺 → 内建 20)。"""
+    """`l4_intel.max_queries`(scan_config 单源;缺 → 注册表缺省)。"""
     from autoresearch.scan.user_config import knob
-    return int(knob("l4_intel", "max_queries", None, 20))
+    return int(knob("l4_intel", "max_queries", None, DEFAULT_MAX_QUERIES))
 
 
 def _mark_declaration(text: str, claimed: int, cap: int) -> str:
@@ -109,7 +114,14 @@ def _event_rows(text: str) -> list[int]:
     return [i for i, ln in enumerate(text.splitlines()) if _EVENT_ROW.match(ln)]
 
 
-def trim_by_recency(text: str, *, keep: int = 10) -> tuple[str, int]:
+def guard_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4_intel.{hard_cap, soft_trim_keep}`(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"hard_cap": int(knob("l4_intel", "hard_cap", None, HARD_CAP_DEFAULT, cfg)),
+            "soft_trim_keep": int(knob("l4_intel", "soft_trim_keep", None, SOFT_TRIM_KEEP, cfg))}
+
+
+def trim_by_recency(text: str, *, keep: int | None = None) -> tuple[str, int]:
     """按时效窗优先级把事件段裁到 ≤keep 行 → (新全文, 被砍行数)。
 
     Wave9 W9-B2:超硬顶从"整稿拒"改"按时效裁"——整稿拒会把 **T0 增量**(明天开盘
@@ -120,6 +132,7 @@ def trim_by_recency(text: str, *, keep: int = 10) -> tuple[str, int]:
     返回、cut=0 —— "裁不动"和"没什么可裁"用同一个信号面(cut),`guard_intel` 侧
     另用 `_event_rows` 区分"结构不可信"与"稿子本来就精简"两种 cut=0。
     """
+    keep = guard_cfg()["soft_trim_keep"] if keep is None else keep
     lines = text.splitlines()
     idx = _event_rows(text)
     if len(idx) <= keep:
@@ -245,42 +258,151 @@ def _apply_claims_lint(src: Path, text: str, *, self_code: str, trade_date: str)
     return {**meta, "orig_as": orig.name}
 
 
-def _extract_claim_events(src: Path, text: str, *, self_code: str, trade_date: str) -> dict:
+def _bind_frozen_event(frozen: dict, statement: str, claim_id: str, bundle: dict | None) -> dict:
+    from autoresearch.common.atomic import sha256_bytes
+    from autoresearch.news.material_claims import bind_material_claim, evaluate_material_claim
+    from autoresearch.trace.blobs import blob_path
+
+    handle = frozen["handle"]
+    urls = set(re.findall(r"https?://[^\s|)\]>]+", statement))
+    sources, quotes, reviews = [], [], []
+    for receipt in frozen["receipts"]:
+        if receipt["endpoint"] == "claim_fields.v1":
+            reviews.append(receipt["receipt_id"])
+            continue
+        params = receipt["normalized_params"]
+        source_url = params.get("url")
+        if source_url not in urls:
+            # Captured host requests are structured JSON; prose URLs never grant provenance.
+            try:
+                request = json.loads(params.get("request", "{}"))
+                source_url = request.get("url") if isinstance(request, dict) else None
+            except (ValueError, TypeError):
+                source_url = None
+        if source_url not in urls or receipt["status"] != "SUCCEEDED":
+            continue
+        sources.append(receipt["receipt_id"])
+        path = blob_path(handle.capsule, receipt["payload_hash"])
+        if path.is_file():
+            raw = path.read_bytes()
+            if sha256_bytes(raw) != receipt["payload_hash"]:
+                continue
+            try:
+                original = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if original:
+                quotes.append({"blob_hash": receipt["payload_hash"], "start": 0,
+                               "end": len(original), "text": original})
+    # Root-owned structured sources can bind without a URL in model prose.
+    # The producer admits only current task/accepted-ancestor receipts and frozen inputs.
+    if bundle is not None:
+        from autoresearch.news.source_fields import (
+            admissible_attempts,
+            matching_requests,
+            owner_entries,
+        )
+        try:
+            entries = owner_entries(Path(handle.capsule))
+            allowed = admissible_attempts(entries, frozen["task_id"], frozen["attempt"])
+        except (OSError, ValueError, KeyError):
+            allowed = {}
+        owner = {"engine":handle.engine,"run_id":handle.run_id,"allowed":allowed}
+        for request in matching_requests(handle.capsule, frozen["receipts"], bundle["event"], frame=frozen["frame"], owner=owner):
+            try:
+                if frozen.get("replay"):
+                    from autoresearch.news.source_fields import replay_review
+                    candidates = [row for row in frozen["receipts"]
+                        if row["task_id"] == frozen["task_id"] and row["attempt"] == frozen["attempt"]
+                        and row["endpoint"] == "claim_fields.v1"
+                        and all(row["normalized_params"].get(key) == val for key, val in request.items())]
+                    if len(candidates) != 1:
+                        continue
+                    produced = candidates[0]
+                    original = next(row for row in frozen["receipts"] if row["receipt_id"] == request["source_receipt_id"])
+                    replay_review(Path(handle.capsule), produced, original, frozen["frame"])
+                else:
+                    produced = frozen["produce_fields"](request)
+            except (OSError, ValueError, KeyError, RuntimeError):
+                continue
+            sources.append(request["source_receipt_id"])
+            reviews.append(produced["receipt_id"])
+    sidecar = bind_material_claim(handle.capsule, engine=handle.engine, run_id=handle.run_id,
+        task_id=frozen["task_id"],
+        attempt=frozen["attempt"], claim_id=claim_id, statement=statement, source_receipt_ids=sources,
+        quote_refs=quotes, calculation_ids=[], claim_event=bundle["event"] if bundle else None,
+        review_receipt_ids=reviews)
+    return evaluate_material_claim(handle.capsule, sidecar, decision_frame=frozen["frame"])
+
+
+def _unknown_claim_support(reason: str) -> dict:
+    return {"verdict": "UNKNOWN", "reason": reason,
+            "source": "UNKNOWN", "semantic": "UNKNOWN", "timing": "UNKNOWN",
+            "conflict": "UNKNOWN", "received_by_cutoff": "UNKNOWN"}
+
+
+def _extract_claim_events(src: Path, text: str, *, self_code: str, trade_date: str, rejected=False, source_context=None) -> dict:
     """B4(Q-B ③,2026-09-07)**影子**:把稿里关于**本票**的回购/增持/减持/中标行抽成
     ClaimEvidence v2 事件,经绑定器得结论后写侧车 `_l4_claims_<code>.json`。
 
     影子的含义:① 新增产物,不改稿件正文、不改 `claims_lint`、不改 `action`;② 没有任何
-    门读它;③ 现阶段没有绑定来源(观测/blob 为空),所以每条结论都是 `SOURCE_NOT_BOUND`
-    —— 它证明的是「抽取器在真稿上抽出了什么」,不是「断言被核实了」。B5 的 80 条人工标注
-    就在这些侧车上做;绑定真来源后同一条管线不用改。
+    门读它;③ 新 session 只绑定本 run 冻结 receipts/blobs 与 frame；legacy 无 frame 时仍为 UNKNOWN。
 
     「本票」= 行内不含**他票**六位代码(与 `lint_claims` 管的「他票」互补,两边不重叠)。
     一行事件都没有时不写侧车(与 `.orig` 同一立场:没有变化就没有审计价值)。
     """
-    from autoresearch.news.claim_binding import support_bound_claim
     from autoresearch.news.claim_extract import PREDICATES, bundle_from_extraction, extract_event
 
     self6 = str(self_code).strip().zfill(6)
     rows, errors = [], []
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        if not any(w in line for w in PREDICATES):
+    from autoresearch.trace.frozen_sources import intel_claim_sources
+    failed_binding = False
+    try:
+        frozen = source_context if source_context is not None else intel_claim_sources(src.parent)
+    except (OSError, ValueError, KeyError, RuntimeError) as exc:
+        failed_binding = True
+        frozen = None
+        errors.append({"reason": "FROZEN_SOURCES_UNAVAILABLE", "detail": str(exc)})
+    tracked = frozen is not None or failed_binding
+    # Preserve every original material event in the denominator, including trimmed rows.
+    source_text = text
+    pretrim = src.with_name(f"_l4_intel_{self6}.pretrim")
+    if tracked and pretrim.is_file():
+        source_text = pretrim.read_text(encoding="utf-8")
+    material_lines = set(_event_rows(source_text)) if tracked else set()
+    for line_no, line in enumerate(source_text.splitlines(), start=1):
+        if not any(w in line for w in PREDICATES) and line_no - 1 not in material_lines:
             continue
         if any(c != self6 for c in _CODE_RE.findall(line)):
             continue                                        # 他票的事归 lint_claims
         claim_id = f"cl_{self6}_{trade_date}_{line_no}"
+        bundle, extracted = None, None
         try:
             extracted = extract_event(line, subject_code=self6)
-            if extracted is None:
-                continue
-            bundle = bundle_from_extraction(extracted, claim_id=claim_id)
-            verdict = support_bound_claim(bundle["event"], bundle, observations={}, texts={},
-                                          trusted_fields=(), decision_at=None)
+            if frozen:
+                bundle = bundle_from_extraction(extracted, claim_id=claim_id) if extracted else None
+                verdict = _bind_frozen_event(frozen, line.strip(), claim_id, None if rejected else bundle)
+            elif failed_binding:
+                bundle = bundle_from_extraction(extracted, claim_id=claim_id) if extracted else None
+                verdict = _unknown_claim_support("FROZEN_SOURCES_UNAVAILABLE")
+            else:
+                if extracted is None:
+                    continue
+                bundle = bundle_from_extraction(extracted, claim_id=claim_id)
+                verdict = {"verdict": "UNKNOWN", "reason": "SOURCE_NOT_BOUND"}
             rows.append({"line_no": line_no, "line": line.strip(), "bundle": bundle,
-                         "extraction_notes": extracted["notes"],
-                         "verdict": verdict["verdict"], "reason": verdict["reason"]})
+                         "extraction_notes": extracted["notes"] if extracted else ["UNPARSED_MATERIAL_CLAIM"],
+                         "verdict": verdict["verdict"], "reason": verdict["reason"],
+                         **({"support": verdict, "retained": line.strip() in text} if tracked else {})})
         except Exception as exc:  # shadow instrumentation must not break the production guard
             errors.append({"line_no": line_no, "reason": "EXTRACTION_FAILED",
                            "detail": f"{type(exc).__name__}: {exc}"})
+            if tracked:
+                verdict = _unknown_claim_support("CLAIM_VERIFICATION_FAILED")
+                rows.append({"line_no": line_no, "line": line.strip(), "bundle": bundle,
+                             "extraction_notes": ["CLAIM_VERIFICATION_FAILED"],
+                             "verdict": "UNKNOWN", "reason": verdict["reason"],
+                             "support": verdict, "retained": line.strip() in text})
     if not rows:
         result = {"n": 0, "sidecar": None}
         if errors:
@@ -289,21 +411,39 @@ def _extract_claim_events(src: Path, text: str, *, self_code: str, trade_date: s
     sidecar = src.with_name(f"_l4_claims_{self6}.json")
     try:
         sidecar.write_text(json.dumps({
-            "schema_version": 1, "code": self6, "trade_date": trade_date,
-            "extraction": "regex_v1", "binding": "none", "events": rows,
+            "schema_version": 2 if tracked else 1, "code": self6, "trade_date": trade_date,
+            "extraction": "regex_v1", "binding": "frozen_run_sources" if frozen else "frozen_sources_unavailable" if failed_binding else "none", "events": rows,
+            **({"run_id": frozen["handle"].run_id if frozen else ws.active_run_id(), "engine": frozen["handle"].engine if frozen else ws.detect_engine(),
+                "knowledge_cutoff": frozen["frame"]["knowledge_cutoff"] if frozen else None, "coverage": {
+                "claims": len(rows), "supported": sum(r["verdict"] == "PASS" for r in rows),
+                "refuted": sum(r["verdict"] == "FAIL" for r in rows),
+                "unknown": sum(r["verdict"] == "UNKNOWN" for r in rows)}} if tracked else {}),
         }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    except Exception as exc:  # output is shadow-only; preserve guard action/verdict
+    except Exception as exc:  # Tracked populations are required decision inputs.
+        if tracked:
+            raise ValueError("material claim population could not be persisted") from exc
         errors.append({"reason": "SIDECAR_WRITE_FAILED", "detail": str(exc)})
         return {"n": len(rows), "sidecar": None, "errors": errors}
+    if errors and tracked:
+        raise ValueError("material claim population incomplete: " + json.dumps(errors, ensure_ascii=False))
+    if frozen is not None and frozen.get("freeze_context") is not None:
+        frozen["freeze_context"]()
     result = {"n": len(rows), "sidecar": sidecar.name}
+    if tracked:
+        dimensions = []
+        for field, label in (("source", "来源"), ("semantic", "语义"), ("timing", "时效"), ("conflict", "冲突")):
+            n_unknown = sum(row.get("support", {}).get(field, "UNKNOWN") == "UNKNOWN" for row in rows)
+            dimensions.append(f"{label} UNKNOWN {n_unknown}")
+        unknown = sum(row["verdict"] == "UNKNOWN" for row in rows)
+        result["diagnostic_note"] = f"材料断言 UNKNOWN {unknown}/{len(rows)}；" + "；".join(dimensions)
     if errors:
         result["errors"] = errors
     return result
 
 
 def guard_intel(scan_dir: Path | str, code: str, *,
-                hard_cap: int = HARD_CAP_DEFAULT,
-                soft_cap: int | None = None) -> dict:
+                hard_cap: int | None = None,
+                soft_cap: int | None = None, source_context=None) -> dict:
     """检查一份 intel 稿;超硬顶则按时效裁剪,裁无可裁才整拒。返回可直接 JSON 序列化的裁决。
 
     `action` ∈ `ABSENT`(无稿,presence-gated 安静通过)/ `KEPT`(未超顶)/
@@ -317,6 +457,7 @@ def guard_intel(scan_dir: Path | str, code: str, *,
     (`orig_as`,未标注则 `None`)。REJECTED(稿件已整体不可信)与 ABSENT(无稿)
     不再需要标注,没有此字段。
     """
+    hard_cap = guard_cfg()["hard_cap"] if hard_cap is None else hard_cap
     src = intel_path(scan_dir, code)
     trade_date = Path(scan_dir).name.replace("-", "")   # 'YYYY-MM-DD' → 'YYYYMMDD'
     if not src.exists():
@@ -333,11 +474,11 @@ def guard_intel(scan_dir: Path | str, code: str, *,
         claims_lint = _apply_claims_lint(src, text, self_code=code, trade_date=trade_date)
         return {"ok": True, "code": code, "action": "KEPT", "claimed": None,
                 "warn": "unreported", "claims_lint": claims_lint,
-                "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date)}
+                "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date, source_context=source_context)}
     if soft_cap is not None and claimed > soft_cap and claimed <= hard_cap and _event_rows(text):
         # 软顶(2026-09-24 批 0):cap 20 此前是指令级、无强制力(pr_20260714_007),每场 4–11 稿
         # 自报 21–55 条。确定性层按时效裁到 ≤SOFT_TRIM_KEEP 事件行并在声明行留痕;不拒稿不拒票。
-        trimmed, cut = trim_by_recency(text, keep=SOFT_TRIM_KEEP)
+        trimmed, cut = trim_by_recency(text, keep=guard_cfg()["soft_trim_keep"])
         trimmed = _mark_declaration(trimmed, claimed, soft_cap)
         pretrim_as = None
         if cut:
@@ -349,7 +490,7 @@ def guard_intel(scan_dir: Path | str, code: str, *,
         return {"ok": True, "code": code, "action": "TRIMMED", "claimed": claimed,
                 "soft_cap": soft_cap, "hard_cap": hard_cap, "dropped_rows": cut,
                 "pretrim_as": pretrim_as, "claims_lint": claims_lint,
-                "claim_events": _extract_claim_events(src, trimmed, self_code=code, trade_date=trade_date)}
+                "claim_events": _extract_claim_events(src, trimmed, self_code=code, trade_date=trade_date, source_context=source_context)}
     if claimed > hard_cap:
         trimmed, cut = trim_by_recency(text)
         if not _event_rows(text):
@@ -358,10 +499,12 @@ def guard_intel(scan_dir: Path | str, code: str, *,
             # 精简但结构完好的稿(事件行数本就 ≤keep)也会 cut=0,那不是不可信,
             # 是没什么可裁(002546/603893 实测两票正是这种:36/34 条自报超顶,
             # 事件段却只有 5/1 行)。误把它当 REJECTED 会重犯本任务要修的老毛病。
+            claim_events = _extract_claim_events(src, text, self_code=code, trade_date=trade_date, rejected=True, source_context=source_context)
             dst = src.with_name(f"_l4_intel_{code}.rejected.md")
             src.replace(dst)          # 改名不删除:证据留档,便于事后对账
             return {"ok": False, "code": code, "action": "REJECTED",
                     "claimed": claimed, "hard_cap": hard_cap, "kept_as": dst.name,
+                    "claim_events": claim_events,
                     "note": "事件段不可解析,整稿拒;card 回退卡内网查"}
         pretrim_as = None
         if cut:
@@ -394,14 +537,14 @@ def guard_intel(scan_dir: Path | str, code: str, *,
         return {"ok": True, "code": code, "action": "TRIMMED",
                 "claimed": claimed, "hard_cap": hard_cap, "dropped_rows": cut,
                 "pretrim_as": pretrim_as, "claims_lint": claims_lint,
-                "claim_events": _extract_claim_events(src, final_text, self_code=code, trade_date=trade_date),
+                "claim_events": _extract_claim_events(src, final_text, self_code=code, trade_date=trade_date, source_context=source_context),
                 "note": "T0/24h 增量保留;card 照常读 intel;"
                         + (f"裁前原文留档 {pretrim_as}(lint 审计用)" if pretrim_as
                            else "未真丢行,无需留档")}
     claims_lint = _apply_claims_lint(src, text, self_code=code, trade_date=trade_date)
     return {"ok": True, "code": code, "action": "KEPT", "claimed": claimed,
             "hard_cap": hard_cap, "claims_lint": claims_lint,
-            "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date)}
+            "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date, source_context=source_context)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -409,8 +552,8 @@ def main(argv: list[str] | None = None) -> int:
         description="intel 稿件硬顶守卫:自报网查数超硬顶则按时效裁稿,裁无可裁才整拒(只拒稿不拒票)")
     ap.add_argument("date", help="分析日 YYYY-MM-DD")
     ap.add_argument("code", help="6 位股票代码")
-    ap.add_argument("--hard-cap", type=int, default=HARD_CAP_DEFAULT,
-                    help=f"自报网查条数硬顶,超过即按时效裁剪(默认 {HARD_CAP_DEFAULT})")
+    ap.add_argument("--hard-cap", type=int, default=None,
+                    help=f"自报网查条数硬顶,超过即按时效裁剪(缺省 = scan_config l4_intel.hard_cap,内建 {HARD_CAP_DEFAULT})")
     ap.add_argument("--scan-dir", default=None, help="覆盖 context/scan/<date>")
     args = ap.parse_args(argv)
 

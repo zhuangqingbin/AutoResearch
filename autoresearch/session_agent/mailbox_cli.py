@@ -18,7 +18,7 @@ def _handle(run_id: str):
 
 
 def resolve_max_parallel(handle, explicit: int | None) -> int:
-    """``--max-parallel`` else the frozen ``budgets.concurrency.l4_stock`` (else 4)."""
+    """``--max-parallel`` else the frozen ``budgets.concurrency.l4_stock`` (else the registry default)."""
     if explicit is not None:
         if explicit < 1:
             raise ValueError("--max-parallel must be a positive integer")
@@ -29,7 +29,9 @@ def resolve_max_parallel(handle, explicit: int | None) -> int:
         from autoresearch.scan.user_config import knob
 
         value = (knob("budgets", "concurrency", None, {}) or {}).get("l4_stock")
-    return value if type(value) is int and value > 0 else 4
+    from autoresearch.contracts.scan_config import DEFAULT_CONCURRENCY
+
+    return value if type(value) is int and value > 0 else DEFAULT_CONCURRENCY["l4_stock"]
 
 
 def _build_executor(args, handle) -> tuple[object, dict | None]:
@@ -47,7 +49,8 @@ def _build_executor(args, handle) -> tuple[object, dict | None]:
                 f"{args.run_id} is a {handle.engine} run (Codex headless is out of scope)")
         executor = headless_claude.HeadlessClaudeExecutor(
             handle.staging, claude_bin=args.claude_bin)
-        return executor, dict(headless_claude.HEADLESS_TIMEOUTS)
+        from autoresearch.session_agent.config import session_cfg
+        return executor, {**dict(headless_claude.HEADLESS_TIMEOUTS), **session_cfg()["timeouts"]["headless"]}
     raise ValueError(f"unknown executor: {args.executor}")  # pragma: no cover - argparse
 
 
@@ -86,6 +89,15 @@ def mailbox_command(args) -> dict:
     from autoresearch.session_agent.executors import mailbox
 
     handle = _handle(args.run_id)
+    if args.mailbox_command == "bind-access":
+        from autoresearch.session_agent.task_access import REPO_ROOT, bind_context, bound_commands
+        service._task(handle, args.task_id)  # Task identity comes from the canonical owner.
+        path = Path(handle.workspace) / 'session/dispatch' / f"{args.task_id}-a{args.attempt}.json"
+        profile = json.loads((service._session_dir(handle) / 'host_profile.json').read_text())
+        session_id = args.session_ref or profile['session_ref']
+        binding = bind_context(path, session_id=session_id, agent_id=args.context_ref, repo_root=REPO_ROOT)
+        return {'kind': 'ACCESS_BOUND', 'binding_path': str(binding), 'enforcement': 'UNVERIFIED',
+                **bound_commands(path, session_id, args.context_ref)}
     if args.mailbox_command == "wait":
         return mailbox.wait_request(
             handle.staging, timeout=args.timeout, include_taken=args.include_taken)
@@ -140,17 +152,25 @@ def add_parsers(subparsers) -> None:
     run.add_argument("--claude-bin", help="headless only: claude CLI path "
                      "(default $AUTORESEARCH_CLAUDE_BIN, PATH, ~/.local/bin/claude)")
     run.add_argument("--max-parallel", type=int)
-    run.add_argument("--poll-seconds", type=float, default=5.0)
-    run.add_argument("--timeout-multiplier", type=float, default=1.0)
-    run.add_argument("--max-rounds", type=int, default=20000)
+    from autoresearch.session_agent.config import session_cfg   # session.runner / session.mailbox 缺省
+    _rn = session_cfg()["runner"]
+    run.add_argument("--poll-seconds", type=float, default=_rn["poll_seconds"])
+    run.add_argument("--timeout-multiplier", type=float, default=_rn["timeout_multiplier"])
+    run.add_argument("--max-rounds", type=int, default=_rn["max_rounds"])
     box = subparsers.add_parser("mailbox")
     commands = box.add_subparsers(dest="mailbox_command", required=True)
     wait = commands.add_parser("wait")
     wait.add_argument("--run-id", required=True)
-    wait.add_argument("--timeout", type=float, default=90.0)   # < host Bash 120 s cap
+    wait.add_argument("--timeout", type=float, default=session_cfg()["mailbox"]["wait_s"])   # < host Bash 120 s cap
     wait.add_argument("--include-taken", action="store_true")
     pending = commands.add_parser("pending")
     pending.add_argument("--run-id", required=True)
+    binding = commands.add_parser("bind-access")
+    binding.add_argument("--run-id", required=True)
+    binding.add_argument("--task-id", required=True)
+    binding.add_argument("--attempt", required=True, type=int)
+    binding.add_argument("--context-ref", required=True)
+    binding.add_argument("--session-ref")
     complete = commands.add_parser("complete")
     complete.add_argument("--run-id", required=True)
     complete.add_argument("--task-id", required=True)

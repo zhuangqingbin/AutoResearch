@@ -46,12 +46,49 @@ _ECHO_LS = re.compile(r"^\*\*一行多空\*\*:\s*(.+)$", re.M)
 _ECHO_WIRE = re.compile(r"^-?\s*\[价格线\][^\n]*$", re.M)
 
 
+def configured_echo_lookback() -> int:
+    """`scan_config.l4.brief.echo_lookback_days`:昨卡回声回看自然日(缺省 5)。"""
+    from autoresearch.scan.user_config import knob
+    return int((knob("l4", "brief", None, {}) or {}).get("echo_lookback_days", 5))
+
+
+def slim_hint() -> str:
+    """任务包里 slim 可信地板那句话,阈值来自 `l4.slim.min_bytes`(与 producers / l4_tasks 同源)。"""
+    from autoresearch.scan.l4.producers import slim_min_bytes
+    kb = slim_min_bytes() / 1024
+    return f"**≥{kb:g}KB 才可信**,更小 = NO_DATA 须重拉"
+
+
+def params_block() -> str:
+    """任务包「本次参数」块:与代码同源的数字一次性告诉 l4-card(评分卡档位 / 强制满卡 / 引用行数 / 执行线 / slim 地板 / intel 软顶)。
+
+    agent 定义文件里的对应句子只写缺省并注明「以任务包为准」,值只住 scan_config(2026-09-27 Q5)。
+    """
+    from autoresearch.contracts.agent_output import exec_line_thresholds
+    from autoresearch.scan.l4.intel_guard import configured_soft_cap
+    from autoresearch.scan.l4.rubric import rubric_cfg
+    from autoresearch.scan.self_review import self_review_cfg
+    rc = rubric_cfg()
+    bands, ff = rc["rating_bands"], rc["force_full"]
+    pct_max, pos_max = exec_line_thresholds()
+    return "\n".join([
+        "## 本次参数(来自 scan_config,与机检代码同源;定义文件里的缺省句以此为准)",
+        f"- 评分卡档位:Buy≥{bands['Buy']:+g} / OW≥{bands['Overweight']:+g} / Hold≥{bands['Hold']:+g} / UW≥{bands['Underweight']:+g},其余 Sell".replace("≥+", "≥"),
+        f"- 满卡强制线:conviction≥{ff['conviction_min']:g} ∧ 通道≥{ff['channels_min']}(保送票恒满卡)",
+        f"- 满卡带日期引用 ≥{int(self_review_cfg()['citation_min'])} 行",
+        f"- 执行线(照抄两行):`[执行线] pct_chg <= {pct_max:g} → 当日涨超 {pct_max:g}% 放弃本次尾盘入场`;"
+        f"`[执行线] pos_in_range < {pos_max:g} → 收盘在当日区间上 {100 - pos_max * 100:g}% 放弃入场`",
+        f"- slim 可信地板:{slim_hint()}",
+        f"- intel 网查软顶 {configured_soft_cap()} 条",
+    ])
+
+
 def yesterday_echo(
     code6: str,
     name: str,
     analysis_date: str,
     *,
-    lookback_days: int = 5,
+    lookback_days: int | None = None,
     reports_root=_WS_REPORTS_SCAN,
 ) -> str:
     """昨卡回声(Wave9 B-1b):最近 ≤N 日已发布卡的 3 行摘要,注入任务包逐票段。
@@ -66,6 +103,7 @@ def yesterday_echo(
     交易日:长假后(如国庆/春节)窗口内可能没有任何已发布交易日,此时静默回退空串
     (总比拿一个跨越长假、语境已过期的旧判断当"昨天"强)。
     """
+    lookback_days = configured_echo_lookback() if lookback_days is None else lookback_days
     from datetime import datetime, timedelta
 
     root = Path(reports_root)
@@ -254,7 +292,14 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             "conviction": r.get("conviction"),
             "lane": r.get("lane"),
         }
-        if force_full_card(priors):
+        from autoresearch.scan.l4.rubric import rubric_cfg
+        from autoresearch.scan.research_provenance import freeze_force_full
+        ff_rule = rubric_cfg()['force_full']
+        full_required = force_full_card(priors, conv_min=float(ff_rule['conviction_min']),
+                                       channels_min=int(ff_rule['channels_min']))
+        freeze_force_full(scan_dir/'_l4_force_full'/f'{code6}.json', code=code6,
+                          decision=full_required, priors=priors, rule=ff_rule)
+        if full_required:
             why = (
                 "📌 保送持仓票"
                 if is_pinned
@@ -295,7 +340,9 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             *body,
             "",
             "---",
-            f"- slim 数据:`{slim_path}`(P1–P3 表面块;**>8KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
+            params_block(),
+            "",
+            f"- slim 数据:`{slim_path}`(P1–P3 表面块;{slim_hint()})",
             f"- deep 深核:`{deep_path}`(**survivor 进 P4 才 Read**;早停卡不读;缺文件=陷阱维标「未核」)",
             f"- 活体情报:`{intel_path}`(若存在:P3 先读它作催化/题材/机构主料、"
             f"自发网查降 ≤1 条验证;缺文件=回退卡内网查,cap 原规则)",

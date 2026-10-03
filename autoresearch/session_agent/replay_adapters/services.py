@@ -60,7 +60,6 @@ def _render_prewarm(parameters: dict, inputs: dict[str, bytes], scratch: Path):
 
 
 def _render_dossier(parameters: dict, inputs: dict[str, bytes], scratch: Path):
-    del scratch
     from autoresearch.dossier.reconcile import render_reconcile_candidate
 
     opening = inputs["dossier.opening"].decode("utf-8")
@@ -72,6 +71,13 @@ def _render_dossier(parameters: dict, inputs: dict[str, bytes], scratch: Path):
         parameters["today"],
         actual,
     )
+    if "dossier.fact_context" in inputs:
+        from autoresearch.dossier.facts import apply_fact_context
+        from autoresearch.dossier.schema import lint_dossier
+
+        text, result['fact_delta'] = apply_fact_context(
+            text, json.loads(inputs['dossier.fact_context']), scratch_root=scratch)
+        result['issues'] = lint_dossier(text)
     effects = [
         {
             "kind": "DOSSIER_PATCH",
@@ -84,6 +90,24 @@ def _render_dossier(parameters: dict, inputs: dict[str, bytes], scratch: Path):
         "dossier.candidate": text.encode("utf-8"),
         "dossier.result": _payload(result),
     }, effects
+
+
+def _render_dossier_delta(parameters: dict, inputs: dict[str, bytes], scratch: Path):
+    from autoresearch.dossier.delta import render_scan_delta_snapshot
+    from autoresearch.dossier.facts import apply_fact_context
+    from autoresearch.dossier.schema import lint_dossier
+
+    opening = inputs['dossier.opening'].decode('utf-8')
+    text, result = render_scan_delta_snapshot(
+        opening, parameters, json.loads(inputs['dossier.scan_inputs']), scratch_root=scratch)
+    if 'dossier.fact_context' in inputs:
+        text, result['fact_delta'] = apply_fact_context(
+            text, json.loads(inputs['dossier.fact_context']), scratch_root=scratch)
+        result['issues'] = lint_dossier(text)
+    return {'dossier.candidate': text.encode('utf-8'), 'dossier.result': _payload(result)}, [
+        {'kind': 'DOSSIER_PATCH', 'code': parameters['code'],
+         'before_sha256': sha256_bytes(inputs['dossier.opening']),
+         'after_sha256': sha256_bytes(text.encode('utf-8'))}]
 
 
 def _render_broker_ingest(parameters: dict, inputs: dict[str, bytes], scratch: Path):
@@ -138,6 +162,7 @@ def _render_research(parameters: dict, inputs: dict[str, bytes], scratch: Path):
 _RENDERERS = {
     "prewarm": _render_prewarm,
     "dossier.reconcile": _render_dossier,
+    "dossier.delta": _render_dossier_delta,
     "broker.ingest": _render_broker_ingest,
     "broker.reconcile": _render_broker_reconcile,
     "research.evaluate": _render_research,

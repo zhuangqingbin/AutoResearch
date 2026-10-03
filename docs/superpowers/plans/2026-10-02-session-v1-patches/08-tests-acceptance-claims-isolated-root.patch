@@ -1,0 +1,18 @@
+--- a/tests/forensics/test_acceptance_claims.py
++++ b/tests/forensics/test_acceptance_claims.py
+@@ -13,6 +13,15 @@
+ from tests.contracts.test_replay_contracts import _plan, _result
+ 
+ 
++@pytest.fixture(autouse=True)
++def _isolated_audit_root(tmp_path, monkeypatch):
++    """Every test here states a rule about records and proofs; none is about whatever real
++    boundary proofs this engine root happens to hold. Without this, the gate reads
++    ``reports_<engine>/_acceptance`` on the developer's machine: the day real proofs were
++    first imported (2026-10-01) one test went red under codex and another under claude."""
++    monkeypatch.setattr(evaluation.ws, "reports_root", lambda: tmp_path / "isolated-reports")
++
++
+ def _record(
+     engine: str,
+     workflow: str,

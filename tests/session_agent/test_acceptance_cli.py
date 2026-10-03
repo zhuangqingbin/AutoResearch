@@ -1,0 +1,372 @@
+"""accept-run / acceptance-import: SYNTHETIC tmp roots only, never host acceptance evidence."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from autoresearch.common.atomic import canonical_json, sha256_bytes
+from autoresearch.contracts.publication import publication_bundle_hash, publication_receipt_hash
+from autoresearch.contracts.replay import replay_plan_hash
+from autoresearch.session_agent import acceptance_cli, evaluation
+from autoresearch.session_agent.__main__ import main
+from autoresearch.trace.offline import create_offline_layout
+from tests.contracts.test_publication_contracts import _bundle, _receipt
+from tests.contracts.test_replay_contracts import _plan, _result
+from tests.forensics.test_acceptance_claims import _record
+
+RUN_ID = "20260914T120000000000Z"
+
+
+@pytest.fixture
+def roots(tmp_path, monkeypatch):
+    monkeypatch.setattr(acceptance_cli.ws, "ENGINE", "codex")
+    monkeypatch.setattr(acceptance_cli.ws, "reports_root", lambda: tmp_path / "reports_codex")
+    (tmp_path / "reports_codex").mkdir()
+    return tmp_path
+
+
+def _portable(engine="codex", workflow="macro-research", scenario="lite", mode="LITE"):
+    """A proof whose identity links all agree (same construction as test_acceptance_claims)."""
+    record = _record(engine, workflow, scenario, mode)
+    plan = _plan()
+    plan["engine"] = engine
+    plan["replay_plan_hash"] = replay_plan_hash(plan)
+    record["code_tree_hash"] = plan["code_tree_hash"]
+    replay = _result()
+    replay.update(replay_plan_hash=plan["replay_plan_hash"], requested_scope=record["replay_scope"],
+                  run_mode=mode, engine=engine)
+    origin = {"schema_version": 1, "engine": engine, "run_id": record["run_id"],
+              "run_kind": workflow, "orchestration": "session_v1",
+              "entrypoint": "autoresearch.session_agent.begin", "plan_hash": plan["plan_hash"],
+              "host_profile_hash": "e" * 64, "legacy_reason": None,
+              "created_at": "2026-09-14T12:00:00Z"}
+    bundle = _bundle()
+    bundle.update(engine=engine, run_kind=workflow,
+                  origin_hash=sha256_bytes(canonical_json(origin).encode("utf-8")),
+                  plan_hash=plan["plan_hash"], evidence_plan_hash=plan["evidence_plan_hash"])
+    bundle["bundle_hash"] = publication_bundle_hash(bundle)
+    receipt = _receipt()
+    receipt.update(engine=engine, bundle_hash=bundle["bundle_hash"],
+                   capsule_root_hash=record["root_hash"])
+    receipt["receipt_hash"] = publication_receipt_hash(receipt)
+    verification = {
+        "schema_version": 1, "engine": engine, "run_id": record["run_id"],
+        "report_path": bundle["business_files"][0]["relative_path"],
+        "report_sha256": bundle["business_files"][0]["sha256"], "publication_id": "p1",
+        "orchestration": "session_v1", "orchestration_verified": True, "report_covered": True,
+        "integrity_ok": True, "publication_ok": True, "completeness_ok": True,
+        "compute_status": "FULL", "model_status": "EVIDENCE_ONLY", "scope": ["all"],
+        "missing": [], "diffs": []}
+    proof = {"schema_version": 1, "record": record, "verification": verification,
+             "replay_plan": plan, "replay_result": replay, "publication_bundle": bundle,
+             "publication_receipt": receipt, "execution_origin": origin, "proof_hash": "0" * 64}
+    proof["proof_hash"] = evaluation._proof_hash(proof)
+    evaluation.validate_acceptance_proof(record, proof)   # the fixture itself must be valid
+    return proof
+
+
+# ───────────────────────────── records index ─────────────────────────────
+
+def test_upsert_replaces_only_its_cell_and_keeps_the_previous_bytes(roots):
+    first = _record("codex", "macro-research", "lite", "LITE")
+    other = _record("codex", "macro-research", "full", "FULL")
+    path = acceptance_cli.upsert_record(first)
+    assert json.loads(path.read_text()) == [first]
+    assert not (path.parent / "record-history").exists()          # nothing to archive yet
+    acceptance_cli.upsert_record(other)
+    before = path.read_bytes()
+    newer = {**first, "notes": "second real run"}
+    acceptance_cli.upsert_record(newer)
+    assert json.loads(path.read_text()) == [other, newer]
+    archived = sorted((path.parent / "record-history").iterdir())
+    assert [item.read_bytes() for item in archived][-1] == before
+    count = len(archived)
+    acceptance_cli.upsert_record(newer)                            # identical → no new archive
+    assert len(list((path.parent / "record-history").iterdir())) == count
+
+
+def test_upsert_rejects_an_invalid_record_before_touching_the_index(roots):
+    path = acceptance_cli.upsert_record(_record("codex", "macro-research", "lite", "LITE"))
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        acceptance_cli.upsert_record({**_record("codex", "macro-research", "full", "FULL"), "status": "PASS"})
+    assert path.read_bytes() == before
+
+
+# ───────────────────────────── acceptance-import ─────────────────────────────
+
+def test_import_revalidates_the_proof_then_indexes_it(roots):
+    proof = _portable(engine="claude")                              # the other host's portable proof
+    staged = roots / "reports_codex/_acceptance/imports/claude-lite.json"
+    staged.parent.mkdir(parents=True)
+    staged.write_text(canonical_json(proof), encoding="utf-8")
+    result = acceptance_cli.import_proof(staged)
+    target = roots / "reports_codex/_acceptance/proofs/claude/macro-research" / RUN_ID / "lite.json"
+    assert result["proof_path"] == str(target) and json.loads(target.read_text()) == proof
+    status = evaluation.acceptance_status_from_paths(
+        records_file=roots / "reports_codex/_acceptance/records.json")
+    assert status["workflows"]["macro-research"]["accepted_records"] == ["claude:lite"]
+    assert acceptance_cli.import_proof(staged)["proof_path"] == str(target)   # idempotent
+
+
+@pytest.mark.parametrize("damage", ["hash", "record", "scenario"])
+def test_import_refuses_a_proof_whose_links_disagree(roots, damage):
+    proof = _portable(engine="claude")
+    if damage == "hash":
+        proof["verification"]["completeness_ok"] = False
+    elif damage == "record":
+        proof["record"] = {**proof["record"], "root_hash": "f" * 64}
+    else:   # internally consistent, but names a cell the fixed denominator does not have
+        proof["record"] = {**proof["record"], "scenario": "weekly"}
+        proof["proof_hash"] = evaluation._proof_hash(proof)
+    staged = roots / "staged.json"
+    staged.write_text(canonical_json(proof), encoding="utf-8")
+    with pytest.raises(ValueError, match="fixed denominator" if damage == "scenario" else "mismatch"):
+        acceptance_cli.import_proof(staged)
+    assert not (roots / "reports_codex/_acceptance").exists()
+
+
+@pytest.mark.parametrize("damage", ["completeness", "orchestration", "mode", "drill", "partial", "scope"])
+def test_import_applies_the_same_gate_as_collection(roots, damage):
+    """A self-consistent proof of incomplete evidence must not reach the proofs store or the index."""
+    proof = _portable(engine="claude")
+    if damage == "completeness":
+        proof["verification"]["completeness_ok"] = proof["record"]["completeness_ok"] = False
+    elif damage == "orchestration":
+        proof["verification"]["orchestration_verified"] = proof["record"]["orchestration_verified"] = False
+    elif damage == "mode":
+        proof["record"]["mode"] = proof["replay_result"]["run_mode"] = "FULL"
+    elif damage == "drill":
+        proof["record"]["evidence_kind"] = "REAL_SESSION_DRILL"
+    elif damage == "partial":
+        proof["record"]["compute_status"] = proof["replay_result"]["compute_status"] = "PARTIAL"
+    else:
+        proof["record"]["replay_scope"] = proof["replay_result"]["requested_scope"] = ["stock-research"]
+    proof["proof_hash"] = evaluation._proof_hash(proof)
+    staged = roots / "staged.json"
+    staged.write_text(canonical_json(proof), encoding="utf-8")
+    with pytest.raises(ValueError):
+        acceptance_cli.import_proof(staged)
+    assert not (roots / "reports_codex/_acceptance").exists()
+
+
+@pytest.mark.parametrize("name", ["report_covered", "publication_ok", "orchestration_verified", "integrity_ok"])
+def test_every_verified_boolean_blocks(roots, monkeypatch, name):
+    run = _Run(roots, monkeypatch)
+    run.verification[name] = False
+    assert any(f"verification.{name}=False" in item for item in acceptance_cli.collect(RUN_ID, "lite")["blockers"])
+
+
+def test_import_never_reads_the_other_engine_tree_or_a_redirect(roots):
+    proof = _portable(engine="claude")
+    foreign = roots / "reports_claude/_acceptance/proofs/claude/macro-research" / RUN_ID / "lite.json"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text(canonical_json(proof), encoding="utf-8")
+    with pytest.raises(ValueError, match="stage the proof"):
+        acceptance_cli.import_proof(foreign)
+    link = roots / "link.json"
+    link.symlink_to(foreign)
+    with pytest.raises(ValueError):
+        acceptance_cli.import_proof(link)
+
+
+def test_import_conflict_keeps_the_admitted_proof(roots):
+    proof = _portable(engine="claude")
+    staged = roots / "staged.json"
+    staged.write_text(canonical_json(proof), encoding="utf-8")
+    target = acceptance_cli.import_proof(staged)["proof_path"]
+    other = _portable(engine="claude")
+    other["record"] = {**other["record"], "notes": "a different claim for the same cell"}
+    other["proof_hash"] = evaluation._proof_hash(other)
+    staged.write_text(canonical_json(other), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="conflict"):
+        acceptance_cli.import_proof(staged)
+    assert json.loads(Path(target).read_text(encoding="utf-8")) == proof
+
+
+# ───────────────────────────── accept-run ─────────────────────────────
+
+class _Run:
+    """A committed publication on disk plus stand-ins for the heavy recomputations."""
+
+    def __init__(self, roots, monkeypatch, *, workflow="macro-research", run_mode="LITE", files=1):
+        self.calls = []
+        self.proof = _portable(workflow=workflow, scenario="lite", mode=run_mode)
+        reports = roots / "reports_codex" / acceptance_cli.ws.RUN_REPORT_DIRS[workflow]
+        canonical = reports / "runs" / RUN_ID / "p1"
+        bundle = self.proof["publication_bundle"]
+        if files > 1:
+            bundle = {**bundle, "business_files": bundle["business_files"] + [
+                {**bundle["business_files"][0], "relative_path": "report/extra.md"}]}
+        for relative, value in (
+                ("_publication/publication_bundle.json", bundle),
+                ("capsule/identity/execution_origin.json", self.proof["execution_origin"]),
+                ("capsule/verification/ROOT.json", {"root_hash": self.proof["record"]["root_hash"]}),
+                ("capsule/identity/source_tree_manifest.json",
+                 {"code_tree_hash": self.proof["record"]["code_tree_hash"]})):
+            path = canonical / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value), encoding="utf-8")
+        receipt = reports / "_publications" / RUN_ID / "p1.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps(self.proof["publication_receipt"]), encoding="utf-8")
+        self.canonical = canonical
+        self.verification = dict(self.proof["verification"])
+        self.replay = dict(self.proof["replay_result"])
+
+        def verify(path, *, expected_run_id, level):
+            self.calls.append(("verify", str(path), expected_run_id, level))
+            return self.verification
+
+        def plan(handle):
+            self.calls.append(("plan", str(handle.capsule), handle.engine, handle.run_id))
+            return self.proof["replay_plan"]
+
+        def replay(plan, frozen, output, runner):
+            # The real on-disk contract, not a stand-in for it: the layout refuses a
+            # directory that already holds an earlier replay.
+            create_offline_layout(output)
+            self.calls.append(("replay", str(frozen), str(output), runner.timeout))
+            return self.replay
+
+        def write(record, **parts):
+            self.calls.append(("write", record, parts))
+            return roots / "proof.json"
+
+        class Runner:
+            def __init__(self, capsule, *, timeout="RUNNER_DEFAULT"):
+                self.capsule, self.timeout = capsule, timeout
+
+        monkeypatch.setattr("autoresearch.trace.verification.verify_report", verify)
+        monkeypatch.setattr("autoresearch.session_agent.replay_registry.build_replay_plan", plan)
+        monkeypatch.setattr("autoresearch.trace.replay.execute_replay", replay)
+        monkeypatch.setattr("autoresearch.session_agent.replay_adapters.DomainReplayRunner", Runner)
+        monkeypatch.setattr(evaluation, "write_acceptance_proof", write)
+
+
+def test_dry_run_recomputes_everything_and_records_nothing(roots, monkeypatch):
+    run = _Run(roots, monkeypatch)
+    result = acceptance_cli.collect(RUN_ID, "lite", notes="real run", replay_timeout=900.0)
+    assert result["ready"] is True and result["blockers"] == [] and result["written"] is False
+    assert result["record"] == {**run.proof["record"], "notes": "real run"}
+    report = run.canonical / run.proof["verification"]["report_path"]
+    assert [call[0] for call in run.calls] == ["verify", "plan", "replay"]
+    assert run.calls[0] == ("verify", str(report), RUN_ID, "full")
+    assert run.calls[1] == ("plan", str(run.canonical / "capsule"), "codex", RUN_ID)
+    assert run.calls[2] == ("replay", str(run.canonical / "capsule"),
+                            str(roots / "reports_codex/_acceptance/replays" / RUN_ID / "lite"), 900.0)
+    audit = roots / "reports_codex/_acceptance"
+    assert sorted(item.name for item in audit.iterdir()) == ["replays"]   # no proof, no index
+    run.calls.clear()
+    acceptance_cli.collect(RUN_ID, "lite")
+    assert run.calls[2][3] == "RUNNER_DEFAULT"      # no timeout of its own unless the caller gives one
+
+
+def test_every_collection_replays_into_a_directory_of_its_own(roots, monkeypatch):
+    """The documented sequence is a dry run and then ``--write`` on the same cell. The offline
+    layout never merges with an earlier replay, so the second collection must not be handed
+    the first one's directory, and the first one's bytes stay as they were."""
+    _Run(roots, monkeypatch)
+    cell = roots / "reports_codex/_acceptance/replays" / RUN_ID
+    first = acceptance_cli.collect(RUN_ID, "lite")
+    assert first["replay_dir"] == str(cell / "lite")
+    marker = cell / "lite/audit/kept.txt"
+    marker.write_text("first replay", encoding="utf-8")
+    second = acceptance_cli.collect(RUN_ID, "lite", write=True)
+    assert second["written"] is True and second["replay_dir"] == str(cell / "lite.2")
+    assert acceptance_cli.collect(RUN_ID, "lite")["replay_dir"] == str(cell / "lite.3")
+    assert marker.read_text(encoding="utf-8") == "first replay"
+    (cell / "full").mkdir()                                   # an empty leftover is simply used
+    assert acceptance_cli.collect(RUN_ID, "full")["replay_dir"] == str(cell / "full")
+
+
+@pytest.mark.parametrize("field,value,needle", [
+    ("verification:completeness_ok", False, "verification.completeness_ok=False"),
+    ("verification:missing", ["TRANSCRIPT_MISSING:stock.card:a1"], "verification.missing="),
+    ("verification:diffs", ["STORED_COMPLETENESS_DIFFERS"], "verification.diffs="),
+    ("replay:compute_status", "PARTIAL", "replay.compute_status='PARTIAL'"),
+    ("replay:isolation_status", "UNKNOWN", "replay.isolation_status='UNKNOWN'"),
+    ("replay:diffs", ["OUTPUT_MISMATCH:stock.publish"], "replay.diffs="),
+    ("replay:run_mode", "FULL", "does not match scenario mode 'LITE'"),
+])
+def test_incomplete_evidence_is_reported_and_never_written(roots, monkeypatch, field, value, needle):
+    run = _Run(roots, monkeypatch)
+    owner, name = field.split(":")
+    getattr(run, owner)[name] = value
+    result = acceptance_cli.collect(RUN_ID, "lite")
+    assert result["ready"] is False and any(needle in item for item in result["blockers"]), result["blockers"]
+    with pytest.raises(ValueError, match="incomplete"):
+        acceptance_cli.collect(RUN_ID, "lite", write=True)
+    assert "write" not in [call[0] for call in run.calls]
+    assert not (roots / "reports_codex/_acceptance/records.json").exists()
+
+
+def test_write_hands_the_recomputed_parts_to_the_proof_writer_then_indexes(roots, monkeypatch):
+    run = _Run(roots, monkeypatch)
+    result = acceptance_cli.collect(RUN_ID, "lite", write=True)
+    name, record, parts = run.calls[-1]
+    assert name == "write" and record == run.proof["record"] | {"notes": ""}
+    assert parts == {"verification": run.verification, "replay_plan": run.proof["replay_plan"],
+                     "replay_result": run.replay,
+                     "publication_bundle": run.proof["publication_bundle"],
+                     "publication_receipt": run.proof["publication_receipt"],
+                     "execution_origin": run.proof["execution_origin"]}
+    assert result["written"] is True and result["proof_path"] == str(roots / "proof.json")
+    assert json.loads((roots / "reports_codex/_acceptance/records.json").read_text()) == [record]
+
+
+def test_scenario_and_evidence_kind_are_checked_before_any_recomputation(roots, monkeypatch):
+    run = _Run(roots, monkeypatch)
+    with pytest.raises(ValueError, match="unknown macro-research scenario"):
+        acceptance_cli.collect(RUN_ID, "weekly")
+    with pytest.raises(ValueError, match="does not admit drill"):
+        acceptance_cli.collect(RUN_ID, "lite", evidence_kind="REAL_SESSION_DRILL")
+    with pytest.raises(ValueError, match="exactly one committed publication"):
+        acceptance_cli.collect("20260914T120000000001Z", "lite")
+    assert run.calls == []
+
+
+def test_drill_evidence_is_admitted_only_where_the_denominator_allows(roots, monkeypatch):
+    run = _Run(roots, monkeypatch, workflow="scan-market", run_mode="SENTINEL_EMPTY")
+    result = acceptance_cli.collect(RUN_ID, "sentinel-empty", evidence_kind="REAL_SESSION_DRILL")
+    assert result["ready"] is True and result["record"]["evidence_kind"] == "REAL_SESSION_DRILL"
+    with pytest.raises(ValueError, match="does not admit drill"):
+        acceptance_cli.collect(RUN_ID, "full", evidence_kind="REAL_SESSION_DRILL")
+    assert any("does not match scenario mode 'FULL'" in item
+               for item in acceptance_cli.collect(RUN_ID, "full")["blockers"])
+    assert run.calls
+
+
+def test_several_business_files_need_an_explicit_report(roots, monkeypatch):
+    run = _Run(roots, monkeypatch, files=2)
+    with pytest.raises(ValueError, match="pass --report"):
+        acceptance_cli.collect(RUN_ID, "lite")
+    with pytest.raises(ValueError, match="not a business file"):
+        acceptance_cli.collect(RUN_ID, "lite", report="report/elsewhere.md")
+    assert run.calls == []
+    chosen = run.proof["verification"]["report_path"]
+    assert acceptance_cli.collect(RUN_ID, "lite", report=chosen)["report_file"] == str(run.canonical / chosen)
+
+
+# ───────────────────────────── CLI ─────────────────────────────
+
+def test_cli_runs_offline_and_never_adopts_the_run_as_active(roots, monkeypatch, capsys):
+    _Run(roots, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_ENGINE", "codex")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    assert main(["accept-run", "--run-id", RUN_ID, "--scenario", "lite"]) == 0
+    assert json.loads(capsys.readouterr().out)["ready"] is True
+    assert "AUTORESEARCH_RUN_ID" not in os.environ
+    assert main(["accept-run", "--run-id", RUN_ID, "--scenario", "weekly"]) == 2
+    error = json.loads(capsys.readouterr().out)["errors"][0]
+    assert error["code"] == "CONTRACT_ERROR" and "unknown macro-research scenario" in error["message"]
+
+
+def test_cli_import_reports_contract_errors(roots, monkeypatch, capsys):
+    monkeypatch.setenv("AUTORESEARCH_ENGINE", "codex")
+    missing = roots / "nope.json"
+    assert main(["acceptance-import", "--proof", str(missing)]) == 2
+    assert json.loads(capsys.readouterr().out)["errors"][0]["code"] == "CONTRACT_ERROR"

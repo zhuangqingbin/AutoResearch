@@ -40,7 +40,12 @@ def test_review2_only_runs_for_buy_or_pinned_sell_candidates(tmp_path):
         "l4.300750.a1.review2",
     ]
     assert all(task["independent_context"] is True for task in reviewers)
-    assert all(task["input_artifact_ids"] == [f"scan.l4.{task['subject']}.a1.prompt"] for task in reviewers)
+    for task in reviewers:
+        assert set(task["input_artifact_ids"]) == {
+            *(f"scan.l4.{task['subject']}.a1.{kind}" for kind in ("prompt", "slim", "deep", "intel_status")),
+            "scan.finalists",
+        }
+        assert not any(item.endswith((".card", ".review2", ".review3")) for item in task["input_artifact_ids"])
     decide = next(task for task in expansion["tasks"] if task["task_id"] == "scan.review.decide")
     assert set(decide["dependencies"]) == {
         "scan.review.none.600519",
@@ -119,7 +124,11 @@ def test_reviews_follow_the_authoritative_second_ticket_attempt(tmp_path):
     review = next(task for task in expansion["tasks"] if task["kind"] == "INFERENCE")
     assert review["task_id"] == "l4.000001.a2.review2"
     assert review["parent_task"]["attempt"] == 2
-    assert review["input_artifact_ids"] == ["scan.l4.000001.a2.prompt"]
+    assert set(review["input_artifact_ids"]) == {
+        *(f"scan.l4.000001.a2.{kind}" for kind in ("prompt", "slim", "deep", "intel_status")),
+        "scan.finalists",
+    }
+    assert not any(item.endswith((".card", ".review2", ".review3")) for item in review["input_artifact_ids"])
 
 
 def test_no_review_candidate_still_gets_one_ticket_finalizer(tmp_path):

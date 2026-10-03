@@ -14,6 +14,17 @@ export const meta = {
 // 为什么每股一个 workflow(而非 scan-market.js 内批量派发):①每个 workflow 有独立并发帽,N 股真并行;
 // ②intel→card 在股内链式衔接,股间零 barrier(旧批量版全体 intel 完才派卡);③单股失败只废单股,
 // 主会话对该股单独重跑即可 —— 2026-07-14 GATE3 差 16 字节毙掉 60min/1.6M token 全流水线的教训。
+// BEGIN GENERATED RESEARCH TEMPLATES
+// Owner: autoresearch/common/research_prompts.py; regenerate with python -m scripts.sync_research_prompts
+const RESEARCH_TEMPLATES = {"scan.l4.card": "执行 {prompt}:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 {output}。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 \"SELL\")。", "scan.l4.review": "独立复核 run{run_index}(不知道其它 run 结论):执行 {prompt} 的任务包,按人设走渐进深度 DD,决策卡写到 {output}(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。"}
+const researchPrompt = (role, values) => {
+  const template = RESEARCH_TEMPLATES[role]
+  if (!template) throw new Error('unknown research template')
+  const keys = [...new Set([...template.matchAll(/\{(\w+)\}/g)].map(m => m[1]))].sort()
+  if (JSON.stringify(keys) !== JSON.stringify(Object.keys(values).sort())) throw new Error('research template arguments mismatch')
+  return template.replace(/\{(\w+)\}/g, (_, key) => String(values[key]))
+}
+// END GENERATED RESEARCH TEMPLATES
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const { date, code } = A
 const validDate = (value) => {
@@ -68,7 +79,10 @@ const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行�
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 // 引擎隔离根:engine 随每股 args.engine 或 cfg 透传(缺省 claude;只有 Claude 会执行本 js)
 const ENGINE = (A.engine || (A.cfg && A.cfg.engine) || 'claude')
+// shells(scan_config.shells):中继壳的轮数 / 等待 / 失联判定 / 取证壳数 / 尾行数
+const SHELLS = cfg.shells || {}
 if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:${ENGINE}`)
+throw new Error('HOST_CAPABILITY_REQUIRED: legacy research has no C4 task-bound dispatch transport; explicit session_v1 remains PILOT') // C4_LEGACY_GUARD
 const SD = `context_${ENGINE}/scan_runs/${RUN_ID}/staging/${date}`
 const PY = (stage, invocation, attempt = 1, subject = null) =>
   `AUTORESEARCH_ENGINE=${ENGINE} AUTORESEARCH_RUN_ID=${RUN_ID} ` +
@@ -114,14 +128,14 @@ const CONTROL_EVENT_ROW = { ...AGENT_EVENT_ROW, properties: {
 const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
   additionalProperties: false,
   properties: { ok: { type: 'boolean' }, event: AGENT_EVENT_ROW,
-    control_events: { type: 'array', minItems: 2, maxItems: 2,
+    control_events: { type: 'array', minItems: SHELLS.trace_calls_per_target ?? 2, maxItems: SHELLS.trace_calls_per_target ?? 2,
       items: CONTROL_EVENT_ROW } } }
 const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
 // Workflow runtime 没有非 agent 的 shell primitive。trace-control 只能在获调度后的第一条
 // 精确命令里自登记；该命令原子追加 control dispatch → 目标边界 → control terminal，
 // 不递归套 tracedAgent。若它连命令都未执行，外层只可 best-effort 报警，后续完整性门报缺。
 // 每个目标 agent 固定承担两次 trace-control 调用开销(dispatch 前一次、terminal 后一次)。
-const TRACE_CONTROL_CALLS_PER_TARGET = 2
+const TRACE_CONTROL_CALLS_PER_TARGET = SHELLS.trace_calls_per_target ?? 2
 const EVENT_HASH_RE = /^[0-9a-f]{64}$/
 const EVENT_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
 const validateAgentEventAck = (ack, eventType, invocationId, role, controlInvocationId) => {
@@ -240,7 +254,7 @@ const gpJson = (cmd, label, schema) => tracedAgent(
 // 生成前就抛了),结果是一张决策卡都出不来。与 scan-market.js:35 的 bash() 同语义、同签名。
 const bash = (cmd, label, phaseName) => tracedAgent(
   `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
-  '在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。' +
+  `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 ${SHELLS.tail_lines ?? 15} 行。` +
   '不要做别的、不要判断、不要解释。\n' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
   '**前台执行**:Bash 调用不要设 run_in_background —— 后台任务会在你交卷时被 harness 连进程树杀掉' +
@@ -261,9 +275,9 @@ const DETACHED = { type: 'object', required: ['state', 'key'], additionalPropert
     stderr_tail: { type: 'string' }, result: {},
     expect_file: { type: ['boolean', 'null'] }, reason: { type: 'string' } } }
 const DETACH_TERMINAL = ['COMPLETED', 'FAILED', 'LOST']
-async function detached(key, cmd, label, phaseName, maxRounds = 20) {
+async function detached(key, cmd, label, phaseName, maxRounds = SHELLS.detached_max_rounds_l4 ?? 20) {
   const call = `AUTORESEARCH_ENGINE=${ENGINE} uv run --no-sync python -m autoresearch.trace.detach ` +
-    `--run-id ${RUN_ID} --key ${key} --wait-seconds 100 --shell ${shq(cmd)}`
+    `--run-id ${RUN_ID} --key ${key} --wait-seconds ${SHELLS.wait_seconds ?? 100} --shell ${shq(cmd)}`
   let misses = 0
   // Workflow 运行时禁用 Date.now()(破坏 resume;09-26 探针实测)→ 用轮数封顶,每轮 ≤~100s 有界等待。
   for (let i = 1; i <= maxRounds; i++) {
@@ -277,7 +291,7 @@ async function detached(key, cmd, label, phaseName, maxRounds = 20) {
       .catch(() => null)
     if (res && DETACH_TERMINAL.includes(res.state)) return res
     misses = (res && typeof res.state === 'string') ? 0 : misses + 1   // 形状不对 = 没回报
-    if (misses >= 3) return { state: 'LOST', key, exit_code: null, tail: '', reason: '中继壳连续 3 次无有效回报' }
+    if (misses >= (SHELLS.misses_lost ?? 3)) return { state: 'LOST', key, exit_code: null, tail: '', reason: `中继壳连续 ${SHELLS.misses_lost ?? 3} 次无有效回报` }
   }
   return { state: 'TIMEOUT', key, exit_code: null, tail: '', reason: `${maxRounds} 轮有界等待内未到终态` }
 }
@@ -335,7 +349,7 @@ const intelResume = !!(taskPreflight && taskPreflight.intel_resume)
 // ── Slim ∥ Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────
 phase('Intel')
 const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
-const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 15
+const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 20   // 缺省与注册表 DEFAULT_INTEL_MAX_QUERIES 同值
 const INTEL = { type: 'object', required: ['code'],
   properties: { code: { type: 'string' }, events: { type: 'integer' } } }
 const knownBase = dossierSummary
@@ -364,8 +378,9 @@ const errClass = (e) => {
   const m = String((e && e.message) || e || '').toUpperCase()
   return TRANSIENT.find((t) => m.includes(t)) || 'OTHER'
 }
+const intelMaxAttempts = (cfg.l4_intel && cfg.l4_intel.max_attempts) ?? 3   // l4_intel.max_attempts
 async function intelLeg() {
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= intelMaxAttempts; i++) {
     intelAttempts = i
     try {
       return await tracedAgent(
@@ -466,7 +481,7 @@ let card
 try {
   card = await tracedAgent(
     `l4-card-${code}-${taskAttempt}`, 'l4-card',
-    `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
+    researchPrompt('scan.l4.card', {prompt: `${SD}/_l4_prompt_${code}.md`, output: `${SD}/details/${code}.md`}),
     { agentType: 'l4-card', ...AG('l4_card'),
       label: `card:${code}`, phase: 'Card', schema: CARD })
 } catch (error) {
@@ -488,9 +503,14 @@ log(`L4 卡 ✓ ${code} → ${card.rating}`)
 
 // ── Verify:≥OW 双复核(防追高误买)∥ pinned 卖出双复核(防误卖持仓,Wave1 ⑤-3)──
 // 取中位;ow_review 只向下折、sell_review 只向温和折(assemble 侧 _apply_ensemble_fold 按 trigger 再折一遍=权威)。
-const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
+// l4.review(scan_config;Python 侧同一份规则在 decision_finalize.review_trigger)
+const REVIEW = (cfg.l4 && cfg.l4.review) || {}
+const owRatings = (REVIEW.ow_ratings || ['Buy', 'Overweight', '增持', '买入']).map((x) => String(x).toLowerCase())
+const isOW = (r) => owRatings.includes(String(r || '').toLowerCase())
+const sellReviewPinnedOnly = REVIEW.sell_review_pinned_only ?? true
+const maxRuns = REVIEW.max_runs ?? 3
 const isSellish = (card) => /sell/i.test(card.rating || '') || /sell/i.test(card.proposal || '')
-const trigger = isOW(card.rating) ? 'ow_review' : (pinned && isSellish(card) ? 'sell_review' : null)
+const trigger = isOW(card.rating) ? 'ow_review' : ((pinned || !sellReviewPinnedOnly) && isSellish(card) ? 'sell_review' : null)
 let final = card.rating
 if (trigger) {
   phase('Verify')
@@ -500,7 +520,7 @@ if (trigger) {
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
   const rerun = (i) => tracedAgent(
     `ens-review-${code}-${taskAttempt}-reviewer-${i}`, 'ens-review',
-    `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。`,
+    researchPrompt('scan.l4.review', {prompt: `${SD}/_l4_prompt_${code}.md`, output: `${SD}/ensemble/${code}.run${i}.md`, run_index: i}),
     { agentType: 'l4-card', ...AG('ens_review'),
       label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })
   // Wave6 T2 同档早止:run1==run2 时三票中位**数学上已定**(两票同档 → 排序中位恒为该档,
@@ -508,7 +528,7 @@ if (trigger) {
   // 分歧则照常跑 run3 当裁决票。代价:串行化后分歧场景墙钟略长,同档场景反而更短。
   const r2 = await rerun(2)
   const sameTier = !!r2 && tier(r2.rating) === tier(card.rating)
-  const r3 = sameTier ? null : await rerun(3)
+  const r3 = (sameTier || maxRuns < 3) ? null : await rerun(3)
   // Wave12-T34:**派发次数**(不是成功次数)——失败的 run 一样烧了 token、一样在
   // harvest 里留一行,所以归因普查要数"派了几次"。r2 恒派;r3 仅在分歧时派。
   const ensDispatched = sameTier ? 1 : 2

@@ -47,7 +47,17 @@ _PANEL_LOOKBACK = 60        # 2026-08-21 低位转强波:20→60。20 日组**�
 _TURNUP_MIN_DAYS = 40       # 低位转强面板列(turnup.PANEL_COLS)的 B 级底线:不足 → 整列 NaN + record_degradation,不阻断
 
 
-def _harvest_vol_series(codes, analysis_date: str, lookback: int = _PANEL_LOOKBACK) -> pd.DataFrame:
+def panel_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.funnel.{panel_lookback_days, panel_min_days}`(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    md = knob("funnel", "panel_min_days", None, {}, cfg) or {}
+    if not isinstance(md, dict):
+        md = {}
+    return {"lookback_days": int(knob("funnel", "panel_lookback_days", None, _PANEL_LOOKBACK, cfg)),
+            "min_days": {"vol": int(md.get("vol", _VOL_MIN_DAYS)), "turnup": int(md.get("turnup", _TURNUP_MIN_DAYS))}}
+
+
+def _harvest_vol_series(codes, analysis_date: str, lookback: int | None = None) -> pd.DataFrame:
     """拉近 ~lookback 交易日 daily(high/low/close/amount)→ vol_series 算多日量价因子 per code。
 
     供 L1 召回的 **volprice 组**(快照层本来无序列)。tushare bulk by date(~lookback 次)→ pivot。
@@ -57,7 +67,7 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = _PANEL_LOOKBA
     `tests/scan/test_frame.py::test_harvest_vol_series_lookback60_keeps_20d_factors_identical`);
     多出来的历史只喂 `turnup.PANEL_COLS`(dist_low/high_60、days_no_new_low、vol_ma*_prev、
     pct_5d/20d、above_ma20、ma5_gt_ma10)。已结算日全部湖命中零网络。**面板列是 B 级**:
-    不足 `_TURNUP_MIN_DAYS` 个交易日 → 整列 NaN + `record_degradation`,**不抛**(A 级只有
+    不足 `panel_cfg()["min_days"]["turnup"]` 个交易日 → 整列 NaN + `record_degradation`,**不抛**(A 级只有
     20 日 volprice 组那一道,见下)。
 
     **失败即抛 `DataContractError`,不再静默返回空帧**(2026-07-12 用户裁定 + 事故复盘)。
@@ -68,6 +78,7 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = _PANEL_LOOKBA
 
     volprice 是 A 级地基(10 组因子之一,且是唯一的多日序列组)——**它死了这次扫描就不该发布**。
     """
+    lookback = panel_cfg()["lookback_days"] if lookback is None else lookback
     from datetime import datetime, timedelta
 
     import autoresearch.common.vol_series as vol_series
@@ -108,9 +119,9 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = _PANEL_LOOKBA
             f"           剔除、放大其余组权重 → 打分照样输出 0–100,**残废得看不出来**。\n"
             f"  怎么办:若是湖里的 daily 损坏 → `python -m autoresearch.data.contracts doctor --purge`") from e
 
-    if len(recs) < _VOL_MIN_DAYS:
+    if len(recs) < panel_cfg()["min_days"]["vol"]:
         raise DataContractError(
-            f"[数据契约·A级] volprice 组只取到 {len(recs)} 个交易日(需 ≥{_VOL_MIN_DAYS})"
+            f"[数据契约·A级] volprice 组只取到 {len(recs)} 个交易日(需 ≥{panel_cfg()["min_days"]["vol"]})"
             f" —— 20 日 CMF/OBV 算不出来,拒绝用残缺序列打分。\n"
             f"  多半是 lake 里这段日期的 daily 缺失/损坏 → "
             f"`python -m autoresearch.data.contracts doctor --purge` 后重跑。")
@@ -127,12 +138,12 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = _PANEL_LOOKBA
     out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win20).to_numpy()
     out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win20).to_numpy()
     from autoresearch.common import turnup
-    if len(win) >= _TURNUP_MIN_DAYS:                    # 低位转强面板列(B 级增强,不进 A 级出帧契约)
+    if len(win) >= panel_cfg()["min_days"]["turnup"]:                    # 低位转强面板列(B 级增强,不进 A 级出帧契约)
         tp = turnup.panel_factors(piv, win)
         out = out.merge(tp, left_on="code", right_index=True, how="left")
     else:
         from autoresearch.data.contracts import record_degradation
-        record_degradation("daily", f"低位转强面板仅 {len(win)} 个交易日(<{_TURNUP_MIN_DAYS}),"
+        record_degradation("daily", f"低位转强面板仅 {len(win)} 个交易日(<{panel_cfg()["min_days"]["turnup"]}),"
                            f"{'/'.join(turnup.PANEL_COLS[:3])}… 整列缺省(B 级,不阻断)",
                            key="turnup_panel")
         for c in turnup.PANEL_COLS:

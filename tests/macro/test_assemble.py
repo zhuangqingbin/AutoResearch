@@ -53,7 +53,13 @@ def test_main_reports_missing_when_core_files_absent(tmp_path, capsys):
 def test_main_assembles_and_validates_both_tables(tmp_path, capsys):
     # minimal required set
     _write(tmp_path, "1_spine/decision.md",
-           "**配置表**\n- OVERALL 风险档: **Rating**: Hold\n- 美债: **Rating**: Overweight\n")
+           "**配置表**\n" + "\n".join(
+               f"- {key}: **Rating**: {'Overweight' if key == '美债' else 'Hold'}"
+               for key in assemble_macro.CROSS_ASSET_KEYS
+           ))
+    _write(tmp_path, "data.md",
+           "**行业资金净流入(tushare)**:\n| 行业 | 主力净流入(亿) | 领涨股 |\n"
+           "|---|---:|---|\n| 电子 | 1 | 示例甲 |\n| 地产 | -1 | 示例乙 |\n")
     for rel in ("1_spine/variant.md", "1_spine/crossfire.md", "1_spine/calendar.md",
                 "1_spine/premortem.md", "2_meso/flows.md", "2_meso/sentiment.md",
                 "2_meso/themes.md", "3_regional/us.md", "3_regional/china.md",
@@ -81,7 +87,62 @@ def test_main_assembles_and_validates_both_tables(tmp_path, capsys):
         assert produced.exists()
         assert produced.name.endswith("_summary.md")
         assert produced.parent.name == tmp_path.name.replace("-", "")
-        assert "cross-asset (2)" in out          # OVERALL + 美债
+        assert "cross-asset (11)" in out         # deterministic FULL scope
         assert "A股 sectors (2)" in out           # 电子 + 地产
     finally:
         shutil.rmtree(produced.parent, ignore_errors=True)
+
+
+@pytest.mark.parametrize("text", [
+    "- 美债: **Rating**: Strong Buy",
+    "- 美债: **Rating**: Buyish",
+    "- 美债: **Rating**: Hold/Buy",
+    "- 美债: **Rating**: Hold\n- 美债: **Rating**: Hold",
+    "- : **Rating**: Hold",
+    "- **美债**: **Rating**: Hold",
+    "美债: **Rating**: Hold",
+    "- 美债 **Rating**: Hold",
+    "- 美债: **Rating**:",
+])
+def test_allocation_rejects_malformed_rating_rows(text):
+    with pytest.raises(ValueError):
+        assemble_macro.parse_allocation(text)
+
+
+def test_allocation_checks_only_declared_keys():
+    text = "- 电子: **Rating**: Hold\n- 煤炭: **Rating**: Sell"
+    assert assemble_macro.parse_allocation(text, expected_keys=["电子", "煤炭"]) == {
+        "电子": "Hold", "煤炭": "Sell",
+    }
+    for expected in (["电子"], ["电子", "煤炭", "银行"], ["电子", "电子"], [""]):
+        with pytest.raises(ValueError):
+            assemble_macro.parse_allocation(text, expected_keys=expected)
+    with pytest.raises(ValueError):
+        assemble_macro.parse_allocation("", expected_keys=["电子"])
+    assert assemble_macro.parse_allocation("", expected_keys=[]) == {}
+
+
+@pytest.mark.parametrize("decision,expected", [
+    ("- 美债: **Rating**: Invalid", None),
+    ("", None),
+    ("- 美债: **Rating**: Hold", {assemble_macro.DECISION_REL: ["美债", "黄金"]}),
+])
+def test_macro_assembly_checks_allocation_before_any_publication(tmp_path, decision, expected):
+    root = tmp_path / "drafts"
+    _write(root, assemble_macro.DECISION_REL, decision)
+    for _, sections in assemble_macro.SPINE + assemble_macro.MESO + assemble_macro.APPENDIX:
+        for _, relative, optional in sections:
+            if not optional:
+                _write(root, relative, "content")
+    _write(root, assemble_macro.SECTOR_MAP_REL, "- 电子: **Rating**: Hold")
+    output = tmp_path / "report"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    previous = state_dir / "macro_state.json"
+    previous.write_text('{"as_of": "2026-01-01"}')
+    before = previous.read_bytes()
+    assert assemble_macro.main([
+        str(root), "--output-dir", str(output), "--state-out-dir", str(state_dir),
+    ], expected_keys=expected) == 1
+    assert not output.exists()
+    assert previous.read_bytes() == before

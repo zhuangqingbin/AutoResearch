@@ -30,6 +30,8 @@ TEMPLATE_MARKET_VIEW = """# 市场研判 — 2026-09-24
 
 class _WritesMarketView:
     name = "fake"
+    from autoresearch.session_agent.roles import EXECUTOR_CAPABILITIES
+    capabilities = EXECUTOR_CAPABILITIES["mailbox"]
 
     def __init__(self, text: str):
         self.text = text

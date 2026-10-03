@@ -12,8 +12,10 @@
 五类入口现在共用 `uv run --no-sync python -m autoresearch.session_agent`。显式设置
 `AUTORESEARCH_ENGINE=claude` 后，宿主循环为
 `begin → next → claim → execute/Claude 推理 → submit → finish`。冻结计划、artifact、attempt、
-回执和发布由 Python 验证，推理仍发生在本 Claude Code 订阅会话。真实 Claude 验收未记录的
-场景继续使用标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow；切换状态见
+回执和发布由 Python 验证，推理仍发生在本 Claude Code 订阅会话。C4 下旧 Workflow 缺少任务绑定，
+研究启动前返回 `HOST_CAPABILITY_REQUIRED`；新入口仍须显式选 PILOT。取数前运行
+`session_agent.task_access preflight --orchestration session_v1`，并按 `docs/session-agent/access-boundary.md`
+绑定实际研究身份。配置存在不表示宿主已加载，hook 更新须新会话重载。切换状态见
 `docs/session-agent/acceptance.md`，操作方法见 `docs/session-agent/README.md`。
 `finish` 后以返回的 canonical 路径运行 `session_agent verify-report --level full`；只有
 `report_covered/publication_ok/orchestration_verified/completeness_ok` 的机器结果可以用于交付说明。
@@ -28,7 +30,8 @@
 - **全 A 扫描**：`scan-market` skill —— "扫描全 A 股 / 全市场选股 / 哪些板块值得买"。确定性漏斗 L0→L1→L2 + Claude 在 L3/L4/L5 做研究/辩论/整合。
   - 漏斗：`python -m autoresearch.scan.prelude <date>`（确定性前奏一键：L0→L2 + 日历/观察单/菜单/账本；staging `context_claude/scan/<date>/*.csv`；发布产物 `reports_claude/scan/<run_id>/` 由 assemble 生成）。
   - 整合：`python -m autoresearch.scan.assemble <date>`。**闭环复盘已整体退役**（2026-08-21 用户裁定：`autoresearch/learning/` 整包 + `scan-retro`/`feedback` 两个 skill 删除；细节见 scan-market 的 `STAGES.md`「行为变更的入口」节）。
-  - 常备覆盖档案（`context_claude/knowledge/dossiers/`）：池日检在 prelude 内；首覆走 `dossier-init` skill；**中报/年报披露后**跑季度对账 `python -m autoresearch.dossier.reconcile <period>`（如 `20260630`；prelude 的 dossier_pool 行会在该期未对账时打 📐 提醒）。
+  - **配置标准**:改 scan-market skill 或 `scan_config.jsonc` 前先读其 SKILL.md「配置」节的九条标准;键的事实源是注册表 `autoresearch/contracts/scan_config.py`,PostToolUse hook 会跑 `autoresearch.scan.config_standard`,违规即拦。
+  - 常备覆盖档案（`context_claude/knowledge/dossiers/`）：池日检在 prelude 内；首覆由主会话显式调用 `session_v1` 的 `dossier-init / INIT`（请求模板 `docs/session-agent/examples/dossier.request.json`），研究角色只接收派发任务包；宿主验收状态仍按上方 PILOT 规则处理。**中报/年报披露后**跑季度对账 `python -m autoresearch.dossier.reconcile <period>`（如 `20260630`；prelude 的 dossier_pool 行会在该期未对账时打 📐 提醒）。
 - **宏观**：`macro-research` skill（**full/lite 两档**）—— full："研究全球宏观 / 现在该超配什么资产 / A股哪些行业值得配";lite = **市场研判**(原首席策略师,scan-market Stage 0 调用或"今天大盘怎么看",读 `python -m autoresearch.scan.frame <date> --json` 的湖派生 market_pack 写 market_view.md)。
   - 取数：`python -m autoresearch.macro.harvest [date]`；组装：`python -m autoresearch.macro.assemble context_claude/macro/<date>`。
 

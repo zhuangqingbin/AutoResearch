@@ -76,6 +76,45 @@ ROLE_STAGES: dict[str, str] = vocab.ROLE_STAGES
 SENTINEL_SKIPPED_ROLES: frozenset[str] = vocab.roles_in_stages(vocab.L4_STAGES)
 
 
+LEGACY_CARD_RULES = "legacy-v1"
+PREVIOUS_CARD_RULES = "skills-gap-v2"
+CURRENT_CARD_RULES = "skills-gap-v3"
+STRICT_CARD_RULES = (PREVIOUS_CARD_RULES, CURRENT_CARD_RULES)
+CARD_RULE_VERSIONS = (LEGACY_CARD_RULES, *STRICT_CARD_RULES)
+CARD_RESEARCH_PROFILES = ("single-stage-v1", "two-stage-v1")
+
+CARD_RATING_BANDS_DEFAULT = {"Buy": 4, "Overweight": 2, "Hold": -1, "Underweight": -3}
+
+
+def validate_card_rating_bands(value: dict) -> dict:
+    import math
+    if not isinstance(value, dict) or set(value) != set(CARD_RATING_BANDS_DEFAULT):
+        raise ValueError("invalid frozen card rating bands")
+    values = [value[key] for key in CARD_RATING_BANDS_DEFAULT]
+    if any(type(item) not in (int, float) or not math.isfinite(item) for item in values):
+        raise ValueError("card rating bands must be finite numbers")
+    if any(a <= b for a, b in zip(values, values[1:], strict=False)):
+        raise ValueError("card rating bands must be strictly descending")
+    return dict(value)
+
+
+def card_rating_bands_from_config(config: dict | None) -> dict:
+    overrides = ((config or {}).get("l4", {}).get("rubric", {}).get("rating_bands") or {})
+    return validate_card_rating_bands({**CARD_RATING_BANDS_DEFAULT, **overrides})
+
+
+def validate_card_research_profile(value: str) -> str:
+    if not isinstance(value, str) or value not in CARD_RESEARCH_PROFILES:
+        raise ValueError(f"unknown card_research_profile: {value!r}")
+    return value
+
+
+def validate_card_rules_version(value: str) -> str:
+    if value not in CARD_RULE_VERSIONS:
+        raise ValueError(f"unknown card_rules_version: {value!r}")
+    return value
+
+
 @dataclass(frozen=True)
 class ArtifactRule:
     """One declarative evidence rule.
@@ -125,9 +164,15 @@ class RunProfile:
     #: = 双产物只比较不消费;`research_json_v1` = JSON 权威(D5,解冻后)。冻进 run 契约 hash,
     #: 缺字段的历史 run 按 legacy_md 读,未知值失败。
     card_source: str = "legacy_md"
+    card_rules_version: str = CURRENT_CARD_RULES
+    card_research_profile: str = "single-stage-v1"
     #: Session orchestration may use logical roles that are not part of the legacy
     #: global role table.  ``None`` preserves the historical lookup exactly.
     role_stages: dict[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        validate_card_rules_version(self.card_rules_version)
+        validate_card_research_profile(self.card_research_profile)
 
     def owes_captured_logs(self, stage: str) -> bool:
         """这个阶段该不该有被捕获的 stdout/stderr。"""

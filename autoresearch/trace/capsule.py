@@ -15,7 +15,7 @@ import shutil
 import stat
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -560,6 +560,10 @@ def begin_run(
         _create_run_layout(handle)
         phase = "contract"
         _write_contract_copies(handle)
+        phase = "card_rules"
+        from autoresearch.trace.completeness import freeze_card_rules
+
+        freeze_card_rules(capsule, kind=handle.contract.run_kind, config=handle.contract.user_config)
         phase = "event"
         append_event(capsule / "events/events.jsonl", **_run_started_fields(handle))
     except Exception as exc:
@@ -2048,7 +2052,10 @@ def _archive_bound_transcripts(
         normalized = stats.normalized
         usage = stats.usage
         raw_path = raw_root / f"{snapshot.snapshot_id}.jsonl.gz"
-        normalized_path = normalized_root / f"{invocation_id}.json"
+        # Host receipts freeze this path and its hash before finalization. A
+        # growing source changes snapshot_id even for a closed ordinal range;
+        # keep that later archive from overwriting the already-bound evidence.
+        normalized_path = normalized_root / f"{invocation_id}-{snapshot.snapshot_id}.json"
         if snapshot.snapshot_id not in written_raw:
             atomic_write_bytes(raw_path, snapshot.archive_bytes)
             written_raw.add(snapshot.snapshot_id)
@@ -2942,6 +2949,10 @@ def _finalize_unlocked(
         business_status=resolved_status.value,
         last_stage=_last_reliable_checkpoint(handle.capsule),
     )
+    resolved_profile = replace(
+        resolved_profile, card_rules_version=completeness_mod.card_rules_from_capsule(handle.capsule),
+        card_research_profile=completeness_mod.card_research_profile_from_capsule(handle.capsule),
+    )
     completeness_mod.write_expected(handle.capsule, resolved_profile)
     replay_mod.replay(
         handle.run_id,
@@ -3310,6 +3321,12 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 DEFAULT_STALE_AFTER = timedelta(minutes=5)
 
 
+def stale_after() -> timedelta:
+    """`scan_config.retention.capsule_stale_after_min`(缺省 = DEFAULT_STALE_AFTER;trace 层经注册表级 knob 读)。"""
+    from autoresearch.contracts import scan_config as _cfg_registry
+    return timedelta(minutes=int(_cfg_registry.knob("retention", "capsule_stale_after_min", None, 5)))
+
+
 def read_lease(workspace: Path | str) -> dict | None:
     path = Path(workspace) / "state.json"
     if not path.is_file():
@@ -3382,7 +3399,7 @@ class RecoveryResult:
 def recover_stale_runs(
     *,
     now: datetime | None = None,
-    stale_after: timedelta = DEFAULT_STALE_AFTER,
+    stale_after: timedelta | None = None,
     engine_root: Path | None = None,
 ) -> list[RecoveryResult]:
     """Freeze runs whose owning process is gone, and only those.
@@ -3392,6 +3409,7 @@ def recover_stale_runs(
     matches a live process.  Either one alone produces false positives — a
     paused run looks silent, and a recycled pid looks alive.
     """
+    stale_after = globals()['stale_after']() if stale_after is None else stale_after
     # `engine_root` 显式给了就只扫那一个(测试与运维定点用);否则**每个 kind 的池子
     # 都要扫** —— 一趟中断的单票研究和一趟中断的扫描一样会占着 ACTIVE 状态,漏扫等于
     # 它永远不会被冻结。
@@ -3732,6 +3750,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "begin":
+            from autoresearch.contracts.research_access import require_legacy_access
+            require_legacy_access()
             from autoresearch.common.scan_lock import EXIT_HELD, begin_refusal
 
             refusal = begin_refusal(args.kind, ignore=args.ignore_scan_lock)

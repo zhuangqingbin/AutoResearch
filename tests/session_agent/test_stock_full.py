@@ -55,3 +55,15 @@ def test_full_pm_atomically_owns_four_required_products(tmp_path):
         "stock.full.2_research.variant",
         "stock.full.2_research.faceoff",
     }
+
+
+def test_full_assemble_writes_under_the_operation_its_plan_registers(tmp_path):
+    """domain_ops 传给装配器的写身份,必须就是计划里 `stock.assemble` 任务登记的那个操作。"""
+    import inspect
+
+    from autoresearch.session_agent import domain_ops
+
+    plan = build_stock_plan(_full_request(), _context(tmp_path))
+    operation = next(task["operation"] for task in plan["tasks"] if task["task_id"] == "stock.assemble")
+    assert operation == domain_ops.FULL_ASSEMBLE_OPERATION
+    assert "write_operation=FULL_ASSEMBLE_OPERATION" in inspect.getsource(domain_ops.stock_full_assemble)

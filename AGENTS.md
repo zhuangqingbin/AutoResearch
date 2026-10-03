@@ -1,10 +1,12 @@
 # AGENTS.md — 给 Codex 等非 Claude agent 的项目操作手册
 
-本仓的完整操作手册在 `CLAUDE.md`(主会话先读它)+ `.claude/skills/*/SKILL.md`(六个项目技能,每个是一份可执行的流程说明书)。本文件只做两件事:告诉你技能在哪、以及非 Claude harness 下怎么适配。**研究子 agent 不适用这句**,见下一节。
+本仓的完整操作手册在 `CLAUDE.md`(主会话先读它)+ `.claude/skills/*/SKILL.md`(四个项目技能,每个是一份可执行的流程说明书)。本文件只做两件事:告诉你技能在哪、以及非 Claude harness 下怎么适配。**研究子 agent 不适用这句**,见下一节。
 
-## 研究子 agent 的输入边界(2026-09-15)
+## 研究子 agent 的输入边界（2026-09-30 C4）
 
-`.codex/agents/` 里的研究角色(L4 card、L3 rank、L3 repair、L4 intel、ensemble review、sector brief、scan strategist、dossier init)**不读 CLAUDE.md 和技能说明书**:契约只看角色说明点名的 `.claude/agents/<role>.md` 与派发的任务包。它们也不读项目源码、测试、脚本、workflow、docs、lake、Claude 引擎目录和其它 run 的产物——解析、lint、对账在产物交付后由确定性层执行。`.codex/hooks.json` 的 PreToolUse hook(`scripts/hooks/agent_input_boundary.sh codex`)会直接拒绝越界的 shell 读;主会话与确定性命令壳不受影响。hook 首次出现或改动后,Codex 启动时会要求审查,**批准一次**才会生效。
+研究角色只读编排器冻结的角色指令片段与本阶段任务输入，只写当前 attempt 声明的输出；不自行读 CLAUDE.md、技能说明、源码或未登记材料。`session_v1` 的 DispatchRequest 冻结任务清单，宿主 session/agent 身份由根会话绑定；缺少绑定、清单损坏或过期 attempt 均拒绝。根会话、未绑定的明确开发角色（worker / explorer）与确定性命令壳沿职责例外运行；已有研究绑定始终优先。
+
+`.codex/hooks.json` 的 PreToolUse hook 检查结构化文件路径与固定任务 broker；研究角色不能使用通用 shell 扩大访问。配置存在与本地测试通过均不表示当前宿主已经加载。hook 更新后须新宿主重载，并完成启动时要求的一次性审查；实际允许/拒绝证据尚未验收时保持 `UNVERIFIED` 与 PILOT。绑定步骤、工具协议和已知限制见 `docs/session-agent/access-boundary.md`。
 
 
 ## 统一 Session Agent 入口

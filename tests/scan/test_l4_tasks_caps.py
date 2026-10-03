@@ -178,7 +178,7 @@ def test_prepare_slim_records_failure_when_caps_missing_tushare_key(tmp_path):
     code = r["codes"][0]
     book = tmp_path / "2026-08-06" / "_l4_tasks.json"
     payload = json.loads(book.read_text())
-    payload["caps"] = {"web_search": 4, "web_fetch": 4, "l4_stock": 64}  # 缺 tushare 键
+    payload["caps"] = {"l4_stock": 64}  # 缺 tushare 键
     book.write_text(json.dumps(payload))
 
     calls = []

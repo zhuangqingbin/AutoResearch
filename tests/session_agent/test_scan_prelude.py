@@ -55,6 +55,7 @@ def test_scan_plan_starts_with_parallel_safe_fixed_prelude(tmp_path):
         "scan.l4",
         "scan.reviews",
         "scan.review3",
+        "scan.review.join",
     ]
 
 

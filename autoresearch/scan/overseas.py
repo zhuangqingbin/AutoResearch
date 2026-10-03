@@ -47,9 +47,10 @@ from autoresearch.common import workspace as ws
 CN_TZ = "Asia/Shanghai"
 US_TZ = "America/New_York"
 
-#: 运营入场截止 = T+1 **14:45**,不是交易所的 14:57 —— 人读完报告还要下单(§2 与
-#: `scan/exec_anchor.py` 同一个数;两处不一致会让「来不来得及」这件事有两个答案)。
-ENTRY_CUTOFF = time(14, 45)
+#: 运营入场截止 = `scan_config.execution.entry_cutoff`(与 `scan/exec_anchor.py` 同一个函数;
+#: 两处不一致会让「来不来得及」这件事有两个答案)。
+from autoresearch.scan.exec_anchor import EXEC_DECISION_CUTOFF as ENTRY_CUTOFF, entry_cutoff  # noqa: E402,F401 — ENTRY_CUTOFF = 内建缺省别名(research 普查引用)
+
 T2_OPEN = time(9, 30)
 
 OVERSEAS_CSV = "overseas_calendar.csv"
@@ -61,6 +62,15 @@ _COLS = ("event_id", "event_type", "subject", "window", "time_quality",
 MAX_SUMMARY_ROWS = 4
 MAX_BRIEF_ROWS = 1
 MAX_TRIPWIRE_ROWS = 3
+
+
+def overseas_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.overseas.{horizon_days, rows_summary, rows_brief, rows_tripwire}`(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"horizon_days": int(knob("overseas", "horizon_days", None, 14, cfg)),
+            "rows_summary": int(knob("overseas", "rows_summary", None, MAX_SUMMARY_ROWS, cfg)),
+            "rows_brief": int(knob("overseas", "rows_brief", None, MAX_BRIEF_ROWS, cfg)),
+            "rows_tripwire": int(knob("overseas", "rows_tripwire", None, MAX_TRIPWIRE_ROWS, cfg))}
 
 _WINDOW_ZH = {"pre_entry": "入场前", "holding_overnight": "持仓隔夜", "date_risk": "当日风险"}
 
@@ -112,15 +122,16 @@ def anchors(analysis_date: str, report_ts: datetime | None = None,
     # 周五的 run 会把「T+2 开盘」锚到周六 09:30,于是整个周末的美股事件被判成窗外。
     t2 = _next_trade_day(t1)
     rep = report_ts or _cn(day0, time(21, 0))
-    return rep, _cn(t1, ENTRY_CUTOFF), _cn(t2, T2_OPEN)
+    return rep, _cn(t1, entry_cutoff()), _cn(t2, T2_OPEN)
 
 
 def collect(analysis_date: str, *, report_ts: datetime | None = None,
-            symbols=None, horizon_days: int = 14) -> list:
+            symbols=None, horizon_days: int | None = None) -> list:
     """取 FRED release / FOMC / 映射票财报 → 分窗 → PIT 过滤 → 去重取最新 revision。
 
     **B 级**:任何一个源取不到就跳过它(记账由源模块自己做),**不抛**;整体失败返回 []。
     """
+    horizon_days = overseas_cfg()["horizon_days"] if horizon_days is None else horizon_days
     from autoresearch.data.sources import official_event_calendar as oec
     rep, t1, t2 = anchors(analysis_date, report_ts)
     events: list = []
@@ -269,7 +280,7 @@ def _fmt(row: dict) -> str:
     return f"- **{win}**:{row.get('subject', '')}({when}){tail}"
 
 
-def summary_lines(scan_dir: Path | str, limit: int = MAX_SUMMARY_ROWS) -> list[str]:
+def summary_lines(scan_dir: Path | str, limit: int = overseas_cfg()["rows_summary"]) -> list[str]:
     """summary 📅 节的海外事件行(presence-gated:无 csv / 无事件 → [])。
 
     只是**人工复核提示**,不自动产生否决 / 仓位 / 评级动作。
@@ -290,12 +301,12 @@ def brief_line(scan_dir: Path | str) -> str:
         return ""
     head = rows[0]
     win = _WINDOW_ZH.get(head.get("window", ""), "")
-    more = f"(+{len(rows) - MAX_BRIEF_ROWS})" if len(rows) > MAX_BRIEF_ROWS else ""
+    more = f"(+{len(rows) - overseas_cfg()["rows_brief"]})" if len(rows) > overseas_cfg()["rows_brief"] else ""
     return f"海外窗:{win} {head.get('subject', '')}{more}"
 
 
 def tripwire_rows(scan_dir: Path | str, code: str, symbols,
-                  limit: int = MAX_TRIPWIRE_ROWS) -> list[str]:
+                  limit: int = overseas_cfg()["rows_tripwire"]) -> list[str]:
     """📌 持仓哨兵:该票映射名单命中的事件(≤3 条)。无映射 / 无命中 → []。"""
     if not symbols:
         return []

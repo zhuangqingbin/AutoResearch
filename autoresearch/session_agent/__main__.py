@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-def _parser():
+def _parser(*, read_only=False):
     parser = argparse.ArgumentParser(prog="python -m autoresearch.session_agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
     begin = subparsers.add_parser("begin")
@@ -30,6 +30,23 @@ def _parser():
     for command in ("status", "next", "resume", "finish"):
         child = subparsers.add_parser(command)
         child.add_argument("--run-id", required=True)
+    metering = subparsers.add_parser("metering")
+    metering.add_argument("--run-id", required=True)
+    acceptance = subparsers.add_parser("acceptance-status")
+    acceptance.add_argument("--records-file")
+    acceptance.add_argument("--evidence-root")
+    accept = subparsers.add_parser("accept-run")
+    accept.add_argument("--run-id", required=True)
+    accept.add_argument("--scenario", required=True)
+    accept.add_argument("--evidence-kind", choices=("REAL_SESSION", "REAL_SESSION_DRILL"),
+                        default="REAL_SESSION")
+    accept.add_argument("--notes", default="")
+    accept.add_argument("--publication-id")
+    accept.add_argument("--report")
+    accept.add_argument("--replay-timeout", type=float)
+    accept.add_argument("--write", action="store_true")
+    imported = subparsers.add_parser("acceptance-import")
+    imported.add_argument("--proof", required=True)
     claim = subparsers.add_parser("claim")
     claim.add_argument("--run-id", required=True)
     claim.add_argument("--task-id", required=True)
@@ -59,10 +76,16 @@ def _parser():
     calculation.add_argument("--task-id", required=True)
     calculation.add_argument("--attempt", required=True, type=int)
     calculation.add_argument("--params-file", required=True)
-    submit = subparsers.add_parser("submit")
-    submit.add_argument("--run-id", required=True)
-    submit.add_argument("--submission-file", required=True)
-    submit.add_argument("--host-receipt-file")
+    source_fields = subparsers.add_parser("source-fields")
+    source_fields.add_argument("--run-id", required=True)
+    source_fields.add_argument("--task-id", required=True)
+    source_fields.add_argument("--attempt", required=True, type=int)
+    source_fields.add_argument("--params-file", required=True)
+    for command in ("submit", "precheck"):
+        submission = subparsers.add_parser(command)
+        submission.add_argument("--run-id", required=True)
+        submission.add_argument("--submission-file", required=True)
+        submission.add_argument("--host-receipt-file")
     fail = subparsers.add_parser("fail")
     fail.add_argument("--run-id", required=True)
     fail.add_argument("--task-id", required=True)
@@ -81,8 +104,13 @@ def _parser():
     )
     from autoresearch.session_agent.mailbox_cli import add_parsers
 
-    add_parsers(subparsers)
+    if not read_only:
+        add_parsers(subparsers)
     return parser
+
+
+#: Commands that only read frozen evidence: they never adopt ``--run-id`` as the active run.
+_OFFLINE_COMMANDS = frozenset({"metering", "acceptance-status", "accept-run", "acceptance-import"})
 
 
 def _load(path):
@@ -119,7 +147,8 @@ def _error(command, run_id, code, message):
 
 
 def main(argv=None):
-    args = _parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = _parser(read_only=bool(argv and argv[0] in _OFFLINE_COMMANDS)).parse_args(argv)
     engine = os.environ.get("AUTORESEARCH_ENGINE", "").strip().lower()
     run_id = getattr(args, "run_id", "")
     if engine not in {"claude", "codex"}:
@@ -144,7 +173,31 @@ def main(argv=None):
                 )
             )
             return 6
-        os.environ["AUTORESEARCH_RUN_ID"] = run_id
+        if args.command not in _OFFLINE_COMMANDS:
+            os.environ["AUTORESEARCH_RUN_ID"] = run_id
+    if args.command in _OFFLINE_COMMANDS:
+        try:
+            if args.command == "acceptance-status":
+                from autoresearch.session_agent.evaluation import acceptance_status_from_paths
+                value = acceptance_status_from_paths(records_file=args.records_file, evidence_root=args.evidence_root)
+            elif args.command == "accept-run":
+                from autoresearch.session_agent.acceptance_cli import collect
+                value = collect(args.run_id, args.scenario, evidence_kind=args.evidence_kind,
+                                notes=args.notes, publication_id=args.publication_id,
+                                report=args.report, replay_timeout=args.replay_timeout,
+                                write=args.write)
+            elif args.command == "acceptance-import":
+                from autoresearch.session_agent.acceptance_cli import import_proof
+                value = import_proof(args.proof)
+            else:
+                from autoresearch.session_agent.metering import build_metering
+                from autoresearch.trace.capsule import load_run
+                value = build_metering(load_run(args.run_id))
+            _emit(value)
+            return 0
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
+            _emit(_error(args.command, run_id, "CONTRACT_ERROR", str(exc)))
+            return 2
     try:
         from autoresearch.session_agent import service
         from autoresearch.session_agent.executor import OperationRunning
@@ -204,6 +257,10 @@ def main(argv=None):
             value = service.calculate(
                 args.run_id, args.task_id, args.attempt, _load(args.params_file)
             )
+        elif args.command == "source-fields":
+            value = service.source_fields(
+                args.run_id, args.task_id, args.attempt, _load(args.params_file)
+            )
         elif args.command == "fail":
             value = service.fail(
                 args.run_id,
@@ -234,7 +291,7 @@ def main(argv=None):
             value = mailbox_command(args)
         else:
             host_receipt = _load(args.host_receipt_file) if args.host_receipt_file else None
-            value = service.submit(
+            value = getattr(service, args.command)(
                 args.run_id, _load(args.submission_file), host_receipt=host_receipt
             )
         _emit(value)

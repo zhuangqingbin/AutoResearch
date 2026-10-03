@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
@@ -17,24 +16,15 @@ from autoresearch.contracts.publication import (
     validate_publication_receipt,
 )
 from autoresearch.contracts.replay import validate_replay_plan, validate_replay_result
+from autoresearch.contracts.session_comparison import (
+    _VERDICTS,
+    COMPARISON_FIELDS,
+    _run_id,
+    build_comparison,
+    validate_comparison,
+)
 from autoresearch.contracts.session_task import require_exact_fields
 
-COMPARISON_FIELDS = frozenset(
-    {
-        "schema_version",
-        "engine",
-        "workflow",
-        "mode",
-        "baseline_run_id",
-        "candidate_run_id",
-        "input_identity_equal",
-        "config_identity_equal",
-        "deterministic_diffs",
-        "research_diffs",
-        "missing_evidence",
-        "verdict",
-    }
-)
 _RUNTIME_METADATA = frozenset(
     {
         "run_id",
@@ -47,8 +37,6 @@ _RUNTIME_METADATA = frozenset(
         "workspace",
     }
 )
-_RUN_ID = re.compile(r"[0-9]{8}T[0-9]{12}Z")
-_VERDICTS = frozenset({"PASS", "FAIL", "INCOMPLETE"})
 _EVIDENCE_KINDS = frozenset({"REAL_SESSION", "SYNTHETIC", "NONE"})
 
 _ACCEPTANCE_SCENARIOS = {
@@ -142,69 +130,10 @@ def compare_manifests(baseline: object, candidate: object) -> list[dict]:
     return diffs
 
 
-def _run_id(value: object, field: str, *, optional: bool = False) -> None:
-    if value is None and optional:
-        return
-    if type(value) is not str or _RUN_ID.fullmatch(value) is None:
-        raise ValueError(f"invalid {field}")
 
 
-def validate_comparison(value: dict) -> dict:
-    require_exact_fields(value, COMPARISON_FIELDS)
-    if value["schema_version"] != 1:
-        raise ValueError("unsupported comparison schema")
-    if value["engine"] not in {"codex", "claude"}:
-        raise ValueError("invalid comparison engine")
-    for field in ("workflow", "mode"):
-        if type(value[field]) is not str or not value[field]:
-            raise ValueError(f"{field} required")
-    _run_id(value["baseline_run_id"], "baseline_run_id", optional=True)
-    _run_id(value["candidate_run_id"], "candidate_run_id")
-    for field in ("input_identity_equal", "config_identity_equal"):
-        if type(value[field]) is not bool:
-            raise ValueError(f"{field} must be boolean")
-    for field in ("deterministic_diffs", "research_diffs", "missing_evidence"):
-        if type(value[field]) is not list:
-            raise ValueError(f"{field} must be a list")
-    if value["verdict"] not in _VERDICTS:
-        raise ValueError("invalid comparison verdict")
-    return value
 
 
-def build_comparison(
-    *,
-    engine: str,
-    workflow: str,
-    mode: str,
-    baseline_run_id: str | None,
-    candidate_run_id: str,
-    input_identity_equal: bool,
-    config_identity_equal: bool,
-    deterministic_diffs: list,
-    research_diffs: list,
-    missing_evidence: list,
-) -> dict:
-    if missing_evidence or baseline_run_id is None:
-        verdict = "INCOMPLETE"
-    elif not input_identity_equal or not config_identity_equal or deterministic_diffs:
-        verdict = "FAIL"
-    else:
-        verdict = "PASS"
-    value = {
-        "schema_version": 1,
-        "engine": engine,
-        "workflow": workflow,
-        "mode": mode,
-        "baseline_run_id": baseline_run_id,
-        "candidate_run_id": candidate_run_id,
-        "input_identity_equal": input_identity_equal,
-        "config_identity_equal": config_identity_equal,
-        "deterministic_diffs": deterministic_diffs,
-        "research_diffs": research_diffs,
-        "missing_evidence": missing_evidence,
-        "verdict": verdict,
-    }
-    return validate_comparison(value)
 
 
 def _validate_acceptance_case(value: dict) -> dict:
@@ -544,16 +473,85 @@ def accept_workflow(
     expected_labels = {f"{engine}:{scenario}" for engine, scenario in expected_keys}
     for engine, scenario in sorted(set(by_key) - expected_keys):
         invalid.append(f"UNEXPECTED_SCENARIO:{engine}:{scenario}")
-    enabled = bool(required) and not invalid and not missing_real and set(accepted) == expected_labels
+    from autoresearch.session_agent.boundary_proof import boundary_gate as verify_boundary
+    boundary_gate = verify_boundary(evidence_root=evidence_root)
+    enabled = (bool(required) and not invalid and not missing_real
+               and set(accepted) == expected_labels and boundary_gate["acceptance_satisfied"])
     return {
         "schema_version": 1,
         "workflow": workflow,
         "status": "ENABLED" if enabled else "INCOMPLETE",
         "default_enabled": enabled,
+        "research_boundary_gate": boundary_gate,
         "accepted_records": sorted(accepted),
         "missing_real_sessions": sorted(set(missing_real)),
         "invalid_records": sorted(set(invalid)),
     }
+
+
+def acceptance_status(records: list[dict], *, evidence_root: Path | str | None = None) -> dict:
+    """Read-only fixed-denominator status; software success is never inferred."""
+    if not isinstance(records, list):
+        raise ValueError("acceptance records must be a list")
+    from autoresearch.session_agent.boundary_proof import boundary_gate
+    boundary = boundary_gate(evidence_root=evidence_root)
+    workflows = {}
+    invalid = []
+    for index, record in enumerate(records):
+        try:
+            validate_acceptance_record(record)
+        except Exception as exc:
+            invalid.append(f"INVALID_RECORD:{index}:{type(exc).__name__}")
+    missing, accepted = [], []
+    for workflow in _ACCEPTANCE_SCENARIOS:
+        required = required_acceptance_scenarios(workflow)
+        selected = [r for r in records if isinstance(r, dict) and r.get("workflow") == workflow]
+        if selected:
+            result = accept_workflow(selected, evidence_root=evidence_root)
+        else:
+            result = {"schema_version": 1, "workflow": workflow, "status": "INCOMPLETE",
+                      "default_enabled": False,
+                      "research_boundary_gate": boundary,
+                      "accepted_records": [], "missing_real_sessions": [f"{engine}:{scenario}" for engine in ("codex", "claude") for scenario in required],
+                      "invalid_records": []}
+        workflows[workflow] = result
+        accepted.extend(f"{workflow}:{label}" for label in result["accepted_records"])
+        # Invalid proofs/claims are uncovered cells too; the fixed denominator never shrinks.
+        missing.extend(f"{workflow}:{engine}:{scenario}" for engine in ("codex", "claude") for scenario in required
+                       if f"{engine}:{scenario}" not in result["accepted_records"])
+        invalid.extend(f"{workflow}:{error}" for error in result["invalid_records"])
+    required_count = sum(2 * len(required_acceptance_scenarios(w)) for w in workflows)
+    return {"schema_version": 1, "software_status": "UNKNOWN",
+            "real_session_status": "COMPLETE" if not missing and not invalid else "INCOMPLETE",
+            "default_status": "ENABLED" if all(r["default_enabled"] for r in workflows.values()) and not invalid else "PILOT",
+            "required_count": required_count, "accepted_count": len(accepted),
+            "missing_real_sessions": sorted(missing), "invalid_records": sorted(set(invalid)), "workflows": workflows}
+
+
+def acceptance_status_from_paths(*, records_file: Path | str | None = None,
+                                 evidence_root: Path | str | None = None) -> dict:
+    """Read imported portable proofs only within this engine's acceptance audit root."""
+    reports_root = ws.reports_root()
+    audit_path = reports_root / "_acceptance"
+    if reports_root.is_symlink() or audit_path.is_symlink():
+        raise ValueError("acceptance audit root may not redirect through a symlink")
+    audit_root = audit_path.resolve()
+    def inside(path):
+        resolved = Path(path).resolve()
+        if not resolved.is_relative_to(audit_root):
+            raise ValueError("acceptance input must be inside this engine's reports/_acceptance audit root")
+        return resolved
+    root = inside(evidence_root) if evidence_root is not None else audit_root / "proofs"
+    records = [] if records_file is None else json.loads(inside(records_file).read_text(encoding="utf-8"))
+    # Validate proof targets before accept_workflow opens them; imports may not escape via symlinks.
+    if isinstance(records, list):
+        for record in records:
+            try:
+                validate_acceptance_record(record)
+            except (ValueError, TypeError):
+                continue
+            inside(acceptance_proof_path(record, root))
+    return acceptance_status(records, evidence_root=root)
 
 
 def orchestration_status(handle) -> dict:

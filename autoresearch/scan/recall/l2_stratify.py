@@ -49,6 +49,13 @@ DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价
 KNIFE_CAP_EXEMPT_STYLES: frozenset[str] = frozenset({"反转", "低位转强"})
 
 
+def knife_cap_exempt_styles(cfg: dict | None = None) -> frozenset[str]:
+    """`scan_config.l2.knife_cap_exempt_styles`:不受落刀帽的风格桶(缺键 = KNIFE_CAP_EXEMPT_STYLES)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l2", "knife_cap_exempt_styles", None, None, cfg)
+    return frozenset(str(x) for x in user) if isinstance(user, (list, tuple)) else KNIFE_CAP_EXEMPT_STYLES
+
+
 def _knife_quota(share: float | None, n: int) -> int | None:
     """某一步名额里允许的落刀行数;share=None → None = 不设帽(parity)。"""
     if share is None:
@@ -186,7 +193,7 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
         if knife is None or not knife.iloc[idx] or quota is None:
             return True
         if style is not None:
-            if style in KNIFE_CAP_EXEMPT_STYLES:
+            if style in knife_cap_exempt_styles():
                 return True
             n_taken = lane_taken.get(style, 0)
             if n_taken >= quota:

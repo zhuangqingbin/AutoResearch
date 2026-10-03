@@ -38,7 +38,7 @@ class RegimeState:
                 "med_mom": round(self.med_mom, 4), "n": self.n}
 
 
-def classify_regime(frame: pd.DataFrame, *, breadth_hi: float = 0.55, breadth_lo: float = 0.30,
+def classify_regime(frame: pd.DataFrame, *, breadth_hi: float | None = None, breadth_lo: float | None = None,
                     ma_col: str = "above_ma60", mom_col: str = "pct_60d") -> RegimeState:
     """横截面帧 → RegimeState(确定性)。
 
@@ -46,6 +46,10 @@ def classify_regime(frame: pd.DataFrame, *, breadth_hi: float = 0.55, breadth_lo
     否则 range。空帧/缺列 → 安全退化 range(中性,不误导下游)。breadth 优先用站上 MA60 占比,
     缺 `above_ma60` 时用 `pct_60d>0` 占比代理。
     """
+    from autoresearch.contracts import scan_config as _cfg_registry
+    _t = _cfg_registry.knob("signals", "regime_thresholds", None, {}) or {}
+    breadth_hi = float(_t.get("risk_on", 0.55)) if breadth_hi is None else breadth_hi
+    breadth_lo = float(_t.get("risk_off", 0.30)) if breadth_lo is None else breadth_lo
     n = int(len(frame))
     if n == 0:
         return RegimeState("range", 0.0, 0.0, 0)

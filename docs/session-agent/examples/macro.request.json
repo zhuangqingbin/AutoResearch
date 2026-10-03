@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 4,
   "kind": "macro-research",
   "requested_mode": "FULL",
   "analysis_date": "2026-09-14",
@@ -22,7 +22,18 @@
     "web_fetch": false,
     "observed_model": null,
     "observed_effort": null,
-    "evidence_refs": ["replace-with-observed-host-evidence"]
+    "evidence_refs": [
+      "replace-with-observed-host-evidence"
+    ]
   },
-  "predecessor_run_id": null
+  "predecessor_run_id": null,
+  "card_research_profile": "single-stage-v1",
+  "research_context": {
+    "venue": "XSHG",
+    "usage": "macro",
+    "calendar_source_path": null
+  },
+  "macro_research_profile": "serial21",
+  "macro_optional_products": [],
+  "sector_brief_profile": "legacy"
 }

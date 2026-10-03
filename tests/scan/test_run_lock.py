@@ -105,7 +105,11 @@ _CAPSULE_BEGIN = ["begin", "scan-market", "2026-09-28", "--engine", "claude",
 
 
 def test_capsule_begin_scan_market_refuses_while_the_lock_is_held(held_lock, monkeypatch, capsys):
+    from autoresearch.contracts import research_access
     from autoresearch.trace import capsule
+
+    # This unit exercises the lock after the separate host capability preflight.
+    monkeypatch.setattr(research_access, "require_legacy_access", lambda: None)
 
     monkeypatch.setattr(capsule, "begin_run", lambda *a, **k: pytest.fail("must not begin"))
     assert capsule.main(list(_CAPSULE_BEGIN)) == run_lock.EXIT_HELD
@@ -114,7 +118,11 @@ def test_capsule_begin_scan_market_refuses_while_the_lock_is_held(held_lock, mon
 
 
 def test_capsule_begin_with_the_explicit_override_proceeds(held_lock, monkeypatch, capsys):
+    from autoresearch.contracts import research_access
     from autoresearch.trace import capsule
+
+    # This unit exercises the lock after the separate host capability preflight.
+    monkeypatch.setattr(research_access, "require_legacy_access", lambda: None)
 
     def reached(*args, **kwargs):
         raise RuntimeError("reached begin_run")

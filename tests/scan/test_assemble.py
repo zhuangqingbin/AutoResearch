@@ -340,7 +340,9 @@ def test_decision_records_are_published(published):
     manifest = json.loads(
         (published["out_base"] / "manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["decision_record_schema_version"] == 1
+    from autoresearch.scan.decision_record import DECISION_RECORD_SCHEMA_VERSION
+
+    assert manifest["decision_record_schema_version"] == DECISION_RECORD_SCHEMA_VERSION
 
 
 def test_outbox_control_state_is_published(published):

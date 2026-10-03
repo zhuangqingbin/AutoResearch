@@ -153,3 +153,45 @@ def test_card_sources_and_profile_default_keep_production_on_legacy_md():
     assert scan_profile(card_source="candidate_json").card_source == "candidate_json"
     with pytest.raises(ValueError):
         scan_profile(card_source="json_first")
+
+
+@pytest.mark.parametrize("changes,error", [
+    ({"initial_rating": "Overweight", "proposal": "BUY", "rating_deviation_reason": "接受风险"}, "PASS"),
+    ({"initial_rating": "Overweight", "proposal": "BUY", "gates": dict.fromkeys(ao.OW_GATES, "PASS"),
+      "early_stop": {"phase": "P3", "reason": "资金流出"}, "rating_deviation_reason": "催化强"}, "early"),
+    ({"proposal": "SELL"}, "proposal"),
+    ({"initial_rating": "Underweight", "proposal": "SELL"}, "deviation"),
+    ({"holding": True, "dimensions": dict.fromkeys(ao.RUBRIC_DIMENSIONS, "未核")}, "PINNED"),
+])
+def test_semantic_card_rejects_invalid_decisions_without_mutation(changes, error):
+    from copy import deepcopy
+    from autoresearch.scan.l4 import rubric
+
+    card = card_fixture(**changes)
+    before = deepcopy(card)
+    with pytest.raises(ValueError, match=error):
+        rubric.validate_card_decision(card)
+    assert card == before
+
+
+def test_semantic_card_allows_explained_deviation_within_hard_bounds():
+    from autoresearch.scan.l4 import rubric
+
+    card = card_fixture(initial_rating="Underweight", proposal="SELL", rating_deviation_reason="持仓风险事件尚未量化")
+    suggestion, reason = rubric.validate_card_decision(card)
+    assert suggestion == "Hold" and "净分" in reason
+    assert card["initial_rating"] == "Underweight"
+    assert rubric.validate_card_decision(card_fixture())[0] == "Hold"
+
+
+def test_semantic_deviation_can_raise_rating_only_with_all_hard_gates_passed():
+    from autoresearch.scan.l4.rubric import validate_card_decision
+
+    card = card_fixture(initial_rating="Overweight", proposal="BUY",
+                        gates=dict.fromkeys(ao.OW_GATES, "PASS"),
+                        rating_deviation_reason="净分未计入已核实催化")
+    assert validate_card_decision(card)[0] == "Hold"
+    assert card["initial_rating"] == "Overweight"
+    card["gates"]["估值不透支"] = "FAIL"
+    with pytest.raises(ValueError, match="PASS"):
+        validate_card_decision(card)

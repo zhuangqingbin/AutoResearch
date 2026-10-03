@@ -46,6 +46,11 @@ def test_ensemble_same_tier_early_stop_is_not_degraded():
         "early_stopped": True,
         "role": "ens_review",
         "n_dispatch": 1,
+        "review_policy_version": "ow-pinned-sell-v1",
+        "review_trigger": "ow_review",
+        "review_required": True,
+        "review_status": "COMPLETE",
+        "review_coverage_reason": "same_tier_median_fixed",
     }
 
 
@@ -56,6 +61,7 @@ def test_failed_third_review_is_disclosed_as_degraded():
     assert value["ratings"] == ["Buy", "Hold"]
     assert value["degraded"] is True
     assert value["n_dispatch"] == 2
+    assert value["review_status"] == "INCOMPLETE"
 
 
 def test_ticket_success_is_only_written_after_prompt_slim_and_card_are_verified(tmp_path):
@@ -231,3 +237,19 @@ def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
         == second_binding["sha256"]
     )
     assert store.read_entry(session / "tasks.json", "l4.600519.a1.card")["state"] == "SUPERSEDED"
+
+    # resume replays promotion for every successful inference. The already accepted
+    # alias must be checked without rewriting it or rejecting a completed retry.
+    promoted_stat = original_card.stat()
+    service._promote_l4_retry_output(
+        handle, service._task(handle, "l4.600519.a2.card")
+    )
+    assert original_card.stat().st_mtime_ns == promoted_stat.st_mtime_ns
+    assert artifacts.binding_sha256(handle, "scan.l4.600519.a1.card") == second_binding["sha256"]
+
+    # Idempotency is not a bypass for a projection that changed after acceptance.
+    original_card.write_text("changed after acceptance")
+    with pytest.raises((RuntimeError, ValueError), match="changed|hash|identity"):
+        service._promote_l4_retry_output(
+            handle, service._task(handle, "l4.600519.a2.card")
+        )

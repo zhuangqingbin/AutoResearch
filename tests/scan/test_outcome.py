@@ -267,7 +267,7 @@ def test_relative_columns_use_declared_denominators(tmp_path, monkeypatch):
     fr = pd.DataFrame({outcome.MAIN: [0.10, 0.00, 0.00, -0.02],
                        "buyable_c1": True},
                       index=["a", "b", "c", "d"])
-    rel = outcome._relative_columns(fr, {"a": "钢铁", "b": "钢铁", "c": "银行", "d": "银行"})
+    rel = outcome._relative_columns(fr, membership={"status": "COMPLETE", "expected_codes": list(fr.index), "members": {"a": "钢铁", "b": "钢铁", "c": "银行", "d": "银行"}})
     base = fr[outcome.MAIN]
     assert rel.loc["a", "rel_gap_market"] == pytest.approx(0.10 - base.mean())
     assert rel.loc["a", "excess_med_market"] == pytest.approx(0.10 - base.median())
@@ -823,3 +823,11 @@ def test_swing_stamp_needs_most_rows_scored_else_it_stays_missing_and_is_revisit
     rows = {r["code"]: r for r in outcome.load_ledger(root)}
     assert rows["603317"]["outcome_status_swing"] == outcome.MATURE_10
     assert rows["603317"]["fwd_10_oc"] != ""
+
+
+def test_candidate_map_alone_cannot_define_sector_benchmark():
+    fr = pd.DataFrame({outcome.MAIN: [.04, -.02, 0], 'buyable_c1': True}, index=['a','b','c'])
+    result = outcome._relative_columns(fr, {'a': 'S1'})
+    assert result['rel_gap_sector'].isna().all()
+    assert result['rel_gap_market'].notna().all()
+    assert result.attrs['sector_benchmark']['expected_count'] == 3

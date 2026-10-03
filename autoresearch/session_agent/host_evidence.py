@@ -34,6 +34,13 @@ def _binding_root(handle) -> Path:
     return Path(handle.capsule) / "agents/session/task_bindings"
 
 
+def _last_ordinal(snapshot) -> int | None:
+    """Native row ordinals (Codex); Claude rows carry none, so use row positions."""
+    if snapshot.last_ordinal is not None:
+        return snapshot.last_ordinal
+    return len(snapshot.rows) - 1 if snapshot.rows else None
+
+
 def register_main_context(handle, host_profile: dict) -> dict:
     """Freeze the explicitly exported main transcript source, if available."""
     candidates = [
@@ -50,12 +57,11 @@ def register_main_context(handle, host_profile: dict) -> dict:
         from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
         snapshot = capture_snapshot(source, engine=handle.engine)
+        last = _last_ordinal(snapshot)
         main = {
             "status": "REGISTERED",
             "source_path": str(source.resolve()),
-            "start_ordinal": (
-                0 if snapshot.last_ordinal is None else snapshot.last_ordinal + 1
-            ),
+            "start_ordinal": 0 if last is None else last + 1,
         }
     else:
         main = {
@@ -160,7 +166,7 @@ def capture_main_context(handle) -> dict:
 
         snapshot = capture_snapshot(source, engine=handle.engine)
         start = int(main["start_ordinal"])
-        end = snapshot.last_ordinal
+        end = _last_ordinal(snapshot)
         if end is None or end < start:
             raise RuntimeError("main transcript has no exported rows after begin")
         invocation_id = f"session-main-{handle.run_id}"
@@ -213,6 +219,7 @@ def capture_main_context(handle) -> dict:
             "tool_call_ids": [],
         }
     atomic_write_json(output_path, result)
+    observe_activity(handle, event="main_transcript_bound")
     return result
 
 
@@ -331,6 +338,7 @@ def bind_task_transcript(
     value["binding_id"] = host_evidence_binding_hash(value)
     validate_host_evidence_binding(value)
     atomic_write_json(_binding_root(handle) / f"{value['binding_id']}.json", value)
+    observe_activity(handle, task_id=task_id, attempt=attempt, event="transcript_bound")
     return {**value, "evidence_ref": f"{_REF_PREFIX}{value['binding_id']}"}
 
 
@@ -412,3 +420,60 @@ __all__ = [
     "resolve_receipt_evidence",
     "transcript_refs_for_task",
 ]
+
+
+def capture_activity(handle, *, task_id=None, attempt=None, event):
+    """Append a capability-limited observation; never rewrite a sealed archive."""
+    from autoresearch.common import workspace as ws
+    from autoresearch.common.atomic import atomic_write_bytes, canonical_json, sha256_bytes
+    from autoresearch.scan.research_provenance import safe_path
+    from autoresearch.trace.transcripts.snapshot import capture_snapshot
+    if handle.engine != ws.ENGINE:
+        raise ValueError('activity engine mismatch')
+    capsule = Path(handle.capsule)
+    if (capsule / 'verification/ROOT.json').exists():
+        raise ValueError('cannot capture activity in a sealed capsule')
+    registration_path = capsule / 'identity/session/host_evidence.json'
+    if not registration_path.exists():
+        return {'activity_visibility': 'UNKNOWN', 'reason': 'HOST_SOURCE_NOT_REGISTERED'}
+    registration = _read_json(registration_path)
+    if (registration['engine'], registration['run_id']) != (handle.engine, handle.run_id):
+        raise ValueError('activity registration identity mismatch')
+    binding = _existing_binding(handle, task_id, attempt) if task_id and attempt else None
+    main = registration['main_transcript']
+    source = binding.get('source_path') if binding else main.get('source_path')
+    value = {'schema_version': 'host-activity-observation-v1', 'engine': handle.engine,
+        'run_id': handle.run_id, 'task_id': task_id, 'attempt': attempt, 'event': str(event),
+        'captured_at': _now(), 'session_ref': binding['session_ref'] if binding else registration['session_ref'],
+        'attribution': 'TASK_ATTEMPT' if binding else 'ROOT_ONLY',
+        'activity_visibility': 'UNKNOWN', 'reason': 'HOST_SOURCE_NOT_REGISTERED'}
+    if source:
+        try:
+            snapshot = capture_snapshot(safe_path(source), engine=handle.engine)
+            raw = capsule / 'evidence/activity/archives' / (snapshot.archive.sha256 + '.jsonl.gz')
+            if not raw.exists():
+                atomic_write_bytes(raw, snapshot.archive_bytes)
+            start = binding['start_ordinal'] if binding else main.get('start_ordinal')
+            end = binding['end_ordinal'] if binding else snapshot.last_ordinal
+            value.update(activity_visibility='PARTIAL', reason='OBSERVED_PREFIX_NOT_FULL_EXECUTION',
+                start_ordinal=start, end_ordinal=end, source_prefix_sha256=snapshot.source_prefix.sha256,
+                archive_sha256=snapshot.archive.sha256, raw_path=str(raw.relative_to(capsule)),
+                cutoff_bytes=snapshot.cutoff_bytes, trailing_partial_bytes=snapshot.trailing_partial_bytes,
+                bad_lines=snapshot.bad_lines, source_changed=snapshot.source_changed)
+        except (OSError, ValueError) as exc:
+            value['reason'] = f'{type(exc).__name__}:{exc}'
+    digest = sha256_bytes(canonical_json(value).encode())
+    atomic_write_json(capsule / 'evidence/activity' / (digest + '.json'), value)
+    return value
+
+
+def observe_activity(handle, *, task_id=None, attempt=None, event):
+    """Best-effort observation must not change task state or invent host capability."""
+    capsule = getattr(handle, 'capsule', None)
+    if capsule is None or (Path(capsule) / 'verification/ROOT.json').exists():
+        return
+    try:
+        capture_activity(handle, task_id=task_id, attempt=attempt, event=event)
+    except (OSError, ValueError, RuntimeError):
+        # A failed observation is exposed as missing in the read-only diagnostic.
+        return

@@ -17,6 +17,29 @@ uv run --no-sync python -m autoresearch.session_agent finish --run-id <RUN_ID>
 
 `READY` 表示至少有一个 PENDING 节点依赖已满足；`WAITING` 表示仍有运行中任务或待展开模板；`BLOCKED` 会列出阻断节点；`DONE` 只表示任务图完整，仍需 `finish` 发布。
 
+## 候选预检与最终封存
+
+layout v2 的当前 RUNNING inference attempt 可先使用根所有的预检入口：
+
+```bash
+export AUTORESEARCH_ENGINE=codex
+uv run --no-sync python -m autoresearch.session_agent precheck \
+  --run-id <RUN_ID> --submission-file <SUBMISSION.json>
+# 研究角色完成修订后，再绑定最终 transcript 区段并制作匹配的 host receipt。
+uv run --no-sync python -m autoresearch.session_agent precheck \
+  --run-id <RUN_ID> --submission-file <SUBMISSION_WITH_RECEIPT_ID.json> \
+  --host-receipt-file <HOST_RECEIPT.json>
+uv run --no-sync python -m autoresearch.session_agent submit \
+  --run-id <RUN_ID> --submission-file <SUBMISSION_WITH_RECEIPT_ID.json> \
+  --host-receipt-file <HOST_RECEIPT.json>
+```
+
+不要用命令退出码替代预检结论。读取机器结果中的 `result`：`domain_status` 为 PASS/FAIL；`host_evidence_status` 为 VERIFIED、PENDING_FINAL_BINDING 或 INVALID；错误按 `domain:` / `host evidence:` 区分。只有领域通过且匹配 receipt 及适用的 deep 实读均已核验时，`can_submit` 才为 true。早停仅免除不适用的 deep DD，仍须真实宿主证据。缺 receipt 保持 pending；损坏归档、身份不符或最终绑定缺完整 deep 读取为 INVALID。
+
+`candidate_sha256` 单输出时是根安全捕获的真实文件 SHA256；多输出时是 `{artifact_id: actual_sha256}` 的 canonical JSON（UTF-8，无末尾换行）摘要。预检把副本留在 `session_outputs/precheck/`，可以保留按卡 hash 寻址的候选断言审计，但不更新 task、registry、accepted outputs、host binding、接受回执或 publication。无法安全捕获、坏请求、终态/过期 attempt 和 layout v1 直接返回错误，不伪造候选摘要。
+
+正确顺序是 **预检 → 修订 → 最终 transcript 封存 → 携 receipt 预检 → submit**。已有 transcript binding 不能延长或替换，预检不会重写它。`can_submit=true` 只描述本次候选快照，正式 submit 必须再次捕获并核对字节；预检后修改输出时旧 submission 将失败，不能把预检当作接受凭证。
+
 ## 交付核验
 
 `finish` 成功后只使用其返回的 canonical 路径，不从日期目录或“最新文件”猜版本：
@@ -92,7 +115,7 @@ L4 重试最多到 attempt 2。第二次卡通过后，服务核对首轮卡的�
 
 ## 回滚
 
-未通过真实宿主验收的入口继续走 `LEGACY_ORCHESTRATION_FALLBACK`。切回 legacy 只影响新 run：已有 `session_v1` run 的冻结计划不能交给旧 Workflow 从中间接管，可继续按原计划完成或冻结为 INTERRUPTED。历史 `context_*`、`reports_*`、capsule 和 usage 不移动、不改归因。
+C4 下，旧 `LEGACY_ORCHESTRATION_FALLBACK` 入口缺少任务身份绑定，会在研究启动前返回 `HOST_CAPABILITY_REQUIRED`。未通过真实验收的入口只能显式 PILOT 并满足能力门。未来恢复 legacy 的能力后，切换也只影响新 run：已有 `session_v1` run 的冻结计划不能交给旧 Workflow 从中间接管，可继续按原计划完成或冻结为 INTERRUPTED。历史 `context_*`、`reports_*`、capsule 和 usage 不移动、不改归因。
 
 ## 默认放行 proof
 
@@ -102,3 +125,27 @@ L4 重试最多到 attempt 2。第二次卡通过后，服务核对首轮卡的�
 `write_acceptance_proof` 会校验并绑定 verification、replay plan/result、publication
 bundle/receipt 与 execution origin；`accept_workflow` 再按固定双宿主场景分母复核。缺文件、hash
 冲突、非 session_v1、非 FULL/ENFORCED、合成证据或缺任一宿主场景都保持 `INCOMPLETE`。
+
+
+### C6 计量与验收状态
+
+计量使用本次推理 attempt 的冻结 dispatch 与绑定 transcript，分别展示 requested、resolved、observed model/effort。observed 缺失保留未知；配置值不能冒充宿主实际值。token、缓存、模型调用次数与派发次数各自说明覆盖；估算价格及代理输入量独立于实测 token。
+
+只读查看本引擎 run 的计量：
+
+```bash
+export AUTORESEARCH_ENGINE=codex
+uv run --no-sync python -m autoresearch.session_agent metering --run-id <RUN_ID>
+```
+
+最终证据物化阶段将 sidecar 写入 `capsule/agents/session/metering.json`。读命令按冻结证据派生结果，已封存 capsule 不因查询而改写。字段和最终验证结果见 [第七批开发记录](../research/2026-09-30-agent-skills-batch7-readout.md)。
+
+查看固定场景缺项，或检查本引擎审计根中已经导入的记录与 portable proof：
+
+```bash
+export AUTORESEARCH_ENGINE=codex
+uv run --no-sync python -m autoresearch.session_agent acceptance-status
+uv run --no-sync python -m autoresearch.session_agent acceptance-status --records-file reports_codex/_acceptance/records.json --evidence-root reports_codex/_acceptance/proofs
+```
+
+`records.json` 必须来自实际验收记录；没有该文件时先用无参数命令查看缺项。Claude 明确导出的 portable proof 可放在 Codex 审计根的 `proofs/claude/` 子树；这不授权读取实际 `context_claude/` 或 `reports_claude/`。路径、身份、hash、重复场景或 DRILL 不合法都会保留失败信息，不能抵扣必需场景。

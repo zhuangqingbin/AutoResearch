@@ -187,11 +187,20 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
         card = src / f"{code}.md"
         if not card.exists():
             continue
+        from autoresearch.scan.l4.card_io import frozen_claim_semantics
+        claim_semantics = frozen_claim_semantics(scan_dir, card.read_text(encoding="utf-8"),
+                                                code=code, holding=fr.get("lane") == "pinned")
         name = _safe_name(fr.get("name", "")) or code
         dst = detail_out / f"{name}.md"
         if dst.exists():                       # 同名兜底:挂 code 避免覆盖
             dst = detail_out / f"{name}_{code}.md"
         shutil.copy2(card, dst)
+        if claim_semantics is not None:
+            from autoresearch.common.atomic import atomic_write_json
+            from autoresearch.news.card_claims import usage_note
+            atomic_write_json(dst.with_suffix(".claim-uses.json"), claim_semantics["claim_usage"])
+            with dst.open("a", encoding="utf-8") as stream:
+                stream.write(usage_note(claim_semantics["claim_usage"]))
         intel = scan_dir / f"_l4_intel_{code}.md"
         # 📰 头行(Wave9 B-4):插在标题行后,T0/24h 增量条数上浮到卡头,指向文末
         # 情报附录 —— 见 _news_headline/_inject_news_headline 顶部注释。
@@ -409,12 +418,17 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # 此刻 GATE4 还没跑,所以批准时刻先用发布时刻并如实标 `publish_time`/`estimated`;
     # CP7 的 `post_run observe` 在 GATE4 过之后用实测时刻覆盖它(`gate4_approved`/`measured`)。
     # 写在这里而不是等 CP7:发布路径可能不经 post_run,那时有个诚实的估算好过什么都没有。
-    with contextlib.suppress(Exception):
-        from autoresearch.scan.exec_anchor import build_execution_block
-
+    from autoresearch.scan.exec_anchor import build_execution_block, frozen_decision_frame
+    frame = frozen_decision_frame(scan_dir)
+    if frame is not None:
         manifest["execution"] = build_execution_block(
             analysis_date, approved_at=now, brief_written_at=now,
-            ready_source="publish_time", ready_quality="estimated")
+            ready_source="publish_time", ready_quality="estimated", decision_frame=frame)
+    else:
+        with contextlib.suppress(Exception):
+            manifest["execution"] = build_execution_block(
+                analysis_date, approved_at=now, brief_written_at=now,
+                ready_source="publish_time", ready_quality="estimated")
     manifest.update({
         "capsule_schema_version": 1,
         "business_status": "SUCCEEDED",
@@ -424,6 +438,15 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
             else "PENDING"
         ),
     })
+    pending_claim_entries = []
+    for usage_path in detail_out.glob("*.claim-uses.json"):
+        usage = json.loads(usage_path.read_text())
+        if usage["entry_status"] == "PENDING_EVIDENCE":
+            producer = usage["identity"]["task_id"]
+            match = re.fullmatch(r"l4\.([0-9]{6})\.a[0-9]+\.card", producer)
+            if match is None:
+                raise ValueError("unrecognized claim entry producer")
+            pending_claim_entries.append(match.group(1))
     # ── 发布包(§6.2):一次整形 → 两处纯渲染 → 两份文本都成了才落盘 ────────────────
     # 顺序是冻结的(2026-08-28 定稿),每一步都有它必须在那个位置的理由:
     #   prepare_report_model  唯一一次读盘 + 既有 finalize / 决策落盘副作用
@@ -477,6 +500,13 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
         )
 
         observation = observation_after_failure(exc)
+    if pending_claim_entries and "execution" in manifest:
+        from autoresearch.news.card_claims import constrain_claim_execution
+        selection_path = scan_dir / "_relative_buy_decision.json"
+        selection = json.loads(selection_path.read_text()) if selection_path.is_file() else {}
+        selected = [row["code"] for row in selection.get("buys", [])]
+        manifest["execution"] = constrain_claim_execution(manifest["execution"], pending_claim_entries,
+            selected if selection_path.is_file() else pending_claim_entries)
     # summary 紧凑一行 + appendix E 完整块,**同一个 observation**(§6.5)。
     md, appendix_md, _obs_warns = refresh_run_observation(md, appendix_md, observation)
     for _warn in _obs_warns:

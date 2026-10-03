@@ -114,6 +114,13 @@ _WINDOW_TOLERANCE = timedelta(minutes=20)
 _MAX_RUN_DURATION = timedelta(hours=8)
 
 
+def salvage_windows() -> tuple[timedelta, timedelta]:
+    """`scan_config.retention.{salvage_window_min, salvage_max_hours}`(缺省 = 上面两个常量)。"""
+    from autoresearch.scan.user_config import knob
+    return (timedelta(minutes=int(knob("retention", "salvage_window_min", None, 20))),
+            timedelta(hours=int(knob("retention", "salvage_max_hours", None, 8))))
+
+
 def is_fact(attribution: str) -> bool:
     """只有 ``VERIFIED_RUN`` 可以充当本 run 的事实(controller ruling 1)。
 
@@ -249,12 +256,12 @@ def _search_anchor(window: dict) -> datetime | None:
 
 
 def _in_window(instant: datetime | None, window: dict) -> tuple[bool | None, str]:
-    """*instant* 是否落在 *window*(±`_WINDOW_TOLERANCE`)内。
+    """*instant* 是否落在 *window*(±`salvage_windows()[0]`)内。
 
     两端都未知 → ``(None, ...)``(无法比较,不是"在"也不是"不在" —— 归属据此判
     ``UNKNOWN``,而不是默认判"在窗口内"这种偏乐观的猜测)。只有起点已知、终点
     未知(`manifest.generated_at` 默认按时区不明处理时的常态)不能被当成"无上界,
-    以后任何时刻都算在窗口内"——用 `_MAX_RUN_DURATION` 顶替未知终点,一个记录在
+    以后任何时刻都算在窗口内"——用 `salvage_windows()[1]` 顶替未知终点,一个记录在
     案的保守上限,不是编造的绝对时刻。
     """
     if instant is None:
@@ -265,19 +272,19 @@ def _in_window(instant: datetime | None, window: dict) -> tuple[bool | None, str
         return None, "run 取证窗口两端均未知(契约/清单缺失,或终点时区不明)"
     effective_end = end
     if effective_end is None and start is not None:
-        effective_end = start + _MAX_RUN_DURATION
-    if start is not None and instant < start - _WINDOW_TOLERANCE:
-        return False, f"早于窗口起点 {window.get('start')}(容差 {_WINDOW_TOLERANCE})"
-    if effective_end is not None and instant > effective_end + _WINDOW_TOLERANCE:
+        effective_end = start + salvage_windows()[1]
+    if start is not None and instant < start - salvage_windows()[0]:
+        return False, f"早于窗口起点 {window.get('start')}(容差 {salvage_windows()[0]})"
+    if effective_end is not None and instant > effective_end + salvage_windows()[0]:
         if end is not None:
-            return False, f"晚于窗口终点 {window.get('end')}(容差 {_WINDOW_TOLERANCE})"
+            return False, f"晚于窗口终点 {window.get('end')}(容差 {salvage_windows()[0]})"
         return False, (
             f"窗口终点未知,已超出起点 {window.get('start')} + "
-            f"保守上限 {_MAX_RUN_DURATION}(容差 {_WINDOW_TOLERANCE})"
+            f"保守上限 {salvage_windows()[1]}(容差 {salvage_windows()[0]})"
         )
     if end is not None:
         return True, "落在本 run 取证窗口内(含容差)"
-    return True, f"落在起点 {window.get('start')} + 保守上限 {_MAX_RUN_DURATION} 内(真实终点未知)"
+    return True, f"落在起点 {window.get('start')} + 保守上限 {salvage_windows()[1]} 内(真实终点未知)"
 
 
 # --------------------------------------------------------------- 同日多 run

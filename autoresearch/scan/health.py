@@ -22,8 +22,7 @@ import pandas as pd
 from autoresearch.contracts import artifacts as _contract_artifacts
 from autoresearch.scan.report_model import (
     APPENDIX_FILENAME,
-    APPENDIX_WARN_BYTES,
-    SUMMARY_WARN_BYTES,
+    report_cfg,
 )
 
 REPORT_BUDGET_SCHEMA_VERSION = 1
@@ -83,8 +82,11 @@ def _read(p: Path) -> pd.DataFrame | None:
         return None
 
 
-def nan_report(scan_dir: Path, thresh: float = 0.30) -> tuple[dict, list[str]]:
+def nan_report(scan_dir: Path, thresh: float | None = None) -> tuple[dict, list[str]]:
     """L1_recall 关键因子 NaN 率 → ({col: rate}, 降级列表)。缺文件 → ({}, [])。"""
+    if thresh is None:
+        from autoresearch.scan.observability import observability_cfg
+        thresh = observability_cfg()["nan_warn"]
     df = _read(Path(scan_dir) / "L1_recall_top1000.csv")
     if df is None or not len(df):
         return {}, []
@@ -609,8 +611,8 @@ def measure_report_budget(scan_dir: Path | str, report_dir: Path | str) -> dict:
         from autoresearch.scan.report_appendix import appendix_budget_warn
         from autoresearch.scan.report_sections import summary_budget_warn
     except ImportError:
-        summary_budget_warn = lambda t: _fallback("summary.md", t, SUMMARY_WARN_BYTES)  # noqa: E731
-        appendix_budget_warn = lambda t: _fallback(APPENDIX_FILENAME, t, APPENDIX_WARN_BYTES)  # noqa: E731
+        summary_budget_warn = lambda t: _fallback("summary.md", t, report_cfg()["summary_warn_bytes"])  # noqa: E731
+        appendix_budget_warn = lambda t: _fallback(APPENDIX_FILENAME, t, report_cfg()["appendix_warn_bytes"])  # noqa: E731
     warnings: list[str] = []
     summary_bytes = appendix_bytes = None
     if summary_text is not None:
@@ -626,9 +628,9 @@ def measure_report_budget(scan_dir: Path | str, report_dir: Path | str) -> dict:
     payload = {
         "schema_version": REPORT_BUDGET_SCHEMA_VERSION,
         "summary_bytes": summary_bytes,
-        "summary_warn_bytes": SUMMARY_WARN_BYTES,
+        "summary_warn_bytes": report_cfg()["summary_warn_bytes"],
         "appendix_bytes": appendix_bytes,
-        "appendix_warn_bytes": APPENDIX_WARN_BYTES,
+        "appendix_warn_bytes": report_cfg()["appendix_warn_bytes"],
         "warnings": warnings,
     }
     target = scan / REPORT_BUDGET_NAME

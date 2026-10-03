@@ -1,5 +1,5 @@
 """FRED macro vendor: alias resolution, configuration errors, output formatting,
-missing-value handling, lookahead-safe windowing, and router integration.
+missing-value handling, observation windowing, and router integration.
 
 All API access is mocked, so these run without a network connection or a key.
 """
@@ -151,8 +151,8 @@ class FredFormattingTests(unittest.TestCase):
         body_rows = [ln for ln in out.splitlines() if ln.startswith("| 2025")]
         self.assertEqual(len(body_rows), fred.MAX_ROWS)
 
-    def test_window_is_lookahead_safe(self):
-        # observation_end must equal curr_date so a past date never pulls future data.
+    def test_observation_window_bounds(self):
+        # Observation bounds select reference periods; vintage bounds select revisions.
         captured = {}
 
         def _capture(path, params):

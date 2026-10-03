@@ -82,6 +82,17 @@ def _safe(industry) -> str:
 # 炸在这里等于用一个展示增强把整条漏斗打死)。
 
 _RT_MAX = 4                     # §8:单层 ≤4 项(load_map 已截,这里再截一次 = 纵深防御)
+SECTOR_DEFAULTS: dict = {"red_top_n": 3, "l2_conc_top_n": 3, "leaders_n": 5, "terrain_max_rows": 40, "readthrough_max": _RT_MAX}
+
+
+def sector_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.sector` 的体量旋钮(缺键 = SECTOR_DEFAULTS)。"""
+    from autoresearch.scan.user_config import knob
+    return {"red_top_n": int(knob("sector", "red_top_n", None, SECTOR_DEFAULTS["red_top_n"], cfg)),
+            "l2_conc_top_n": int(knob("sector", "l2_conc_top_n", None, SECTOR_DEFAULTS["l2_conc_top_n"], cfg)),
+            "leaders_n": int(knob("sector", "leaders_n", None, SECTOR_DEFAULTS["leaders_n"], cfg)),
+            "terrain_max_rows": int(knob("sector", "terrain_max_rows", None, SECTOR_DEFAULTS["terrain_max_rows"], cfg)),
+            "readthrough_max": int(knob("sector", "readthrough_max", None, SECTOR_DEFAULTS["readthrough_max"], cfg))}
 _RT_KINDS = ("company", "etf", "index")
 _RT_RELATIONS = ("customer", "supplier", "peer", "theme")
 _RT_DIRECTIONS = ("downstream", "upstream", "peer")
@@ -259,7 +270,7 @@ def readthrough_block(industry, as_of: str) -> list[dict] | None:
     raw = _rt_map_items(industry, as_of)
     if not raw:
         return None
-    valid = [it for it in raw if _rt_valid(it, as_of)][:_RT_MAX]
+    valid = [it for it in raw if _rt_valid(it, as_of)][:sector_cfg()["readthrough_max"]]
     if not valid:
         return None
     tape, stale = _rt_tape(as_of)
@@ -269,20 +280,30 @@ def readthrough_block(industry, as_of: str) -> list[dict] | None:
 # ───────────────────────── 单行业数据包 ─────────────────────────
 
 
-def sector_pack(industry: str, scan_dir: Path | str) -> dict:
+def sector_pack(industry: str, scan_dir: Path | str, *, profile: str = "legacy") -> dict:
     """单行业确定性数据包:成分截面聚合 + L2 入选数 + 日历事件计数 + (有则)海外读透映射。
 
     字段可缺(None/[]);`readthrough` 是 **presence-gated** 的 —— 无有效映射时整键不存在
     (不是空 list),下游据「键在不在」决定渲不渲染那一节。
     """
-    pack = _sector_pack_staging(industry, scan_dir)
+    pack = _sector_pack_staging(industry, scan_dir, profile=profile)
     rt = readthrough_block(industry, pack.get("as_of") or "")
     if rt:
         pack["readthrough"] = rt
     return pack
 
 
-def _sector_pack_staging(industry: str, scan_dir: Path | str) -> dict:
+def _sector_pack_staging(industry: str, scan_dir: Path | str, *, profile: str = "legacy") -> dict:
+    pack = _legacy_sector_pack_staging(industry, scan_dir)
+    if profile == "legacy":
+        return pack
+    if profile != "deterministic-v1":
+        raise ValueError("unknown sector brief profile")
+    from autoresearch.sector.terrain import enrich_pack
+    return enrich_pack(pack, scan_dir)
+
+
+def _legacy_sector_pack_staging(industry: str, scan_dir: Path | str) -> dict:
     """pack 的 staging 腿(全部只读 scan 既有产物,零外源;缺文件/缺列逐字段降级)。"""
     scan_dir = Path(scan_dir)
     pack: dict = {"industry": str(industry), "as_of": scan_dir.name,
@@ -323,7 +344,7 @@ def _sector_pack_staging(industry: str, scan_dir: Path | str) -> dict:
     except Exception:  # noqa: BLE001
         pack["healthy_n"] = None
     if "mktcap_yi" in g.columns:  # 龙头映射素材(市值 top5,事实非方向)
-        top = g.assign(_cap=_num(g, "mktcap_yi")).nlargest(5, "_cap")
+        top = g.assign(_cap=_num(g, "mktcap_yi")).nlargest(sector_cfg()["leaders_n"], "_cap")
         pack["leaders"] = [
             {"code": r["code"], "name": r.get("name"),
              "mktcap_yi": (round(float(r["_cap"]), 1) if pd.notna(r["_cap"]) else None),
@@ -358,6 +379,7 @@ def _sector_pack_staging(industry: str, scan_dir: Path | str) -> dict:
 
 def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
                             wl_path: Path | str = _WS_WATCHLIST,
+                            healthy_top3_extra: bool | None = None,
                             ) -> tuple[list[str], dict[str, str]]:
     """brief 该给哪几个行业:红榜 top3 ∪ L2 集中度 top3 ∪ 观察单行业,保序去重 cap=k。
 
@@ -377,11 +399,11 @@ def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
     sec = _read_csv(scan_dir / "sectors.csv")
     if sec is not None and {"industry", "median_pct_60d"} <= set(sec.columns):
         s = sec.assign(_m=pd.to_numeric(sec["median_pct_60d"], errors="coerce")).dropna(subset=["_m"])
-        for ind in s.sort_values("_m", ascending=False)["industry"].head(3):
+        for ind in s.sort_values("_m", ascending=False)["industry"].head(sector_cfg()["red_top_n"]):
             _add(ind, "红榜top3")
     l2 = _read_csv(scan_dir / "L2_gbdt_top200.csv")
     if l2 is not None and "industry" in l2.columns:
-        for ind in l2["industry"].value_counts().head(3).index:
+        for ind in l2["industry"].value_counts().head(sector_cfg()["l2_conc_top_n"]).index:
             _add(ind, "L2集中度top3")
     wl = _read_csv(Path(wl_path))
     l1 = _read_csv(scan_dir / "L1_scored_full.csv")
@@ -398,20 +420,27 @@ def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
                 _add(r.get("industry"), "top3看多")
         except Exception:  # noqa: BLE001 — 新增来源,坏 pack 不挡行业选择
             pass
-    base = [i for i, tag in prov.items() if tag != "top3看多"][:k]
-    extra = [i for i in prov if prov[i] == "top3看多" and i not in base]
-    inds = base + extra
+    if healthy_top3_extra is None:            # 显式形参 > scan_config sector.healthy_top3_extra > 内建 True
+        from autoresearch.scan.user_config import knob
+        healthy_top3_extra = bool(knob("sector", "healthy_top3_extra", None, True))
+    if healthy_top3_extra:
+        base = [i for i, tag in prov.items() if tag != "top3看多"][:k]
+        extra = [i for i in prov if prov[i] == "top3看多" and i not in base]
+        inds = base + extra
+    else:                                     # max_briefs 是真上限:top3看多 与其它来源一起按保序去重 cap=k
+        inds = list(prov)[:k]
     return inds, {i: prov[i] for i in inds}
 
 
 # ───────────────────────── L3 全行业确定性地形(对称覆盖) ─────────────────────────
 
 
-def sector_terrain_md(scan_dir: Path | str, max_rows: int = 40, top200_only: bool = False) -> str:
+def sector_terrain_md(scan_dir: Path | str, max_rows: int | None = None, top200_only: bool = False) -> str:
     """L3 紧凑表前置的**全行业地形段**:每申万一级一行,全行业对称——防"有 brief 的行业被系统性
     高看"(design §5.5-4)。数字全出 staging;缺 staging → ''(l3_table_md 默认关 = parity)。
     top200_only=True:只渲染 L2 top200 出现过的申万一级行业(~110→30-50 行,L3 表最大块瘦身);
     默认 False = 逐字 parity。"""
+    max_rows = sector_cfg()["terrain_max_rows"] if max_rows is None else max_rows
     scan_dir = Path(scan_dir)
     l1 = _read_csv(scan_dir / "L1_scored_full.csv")
     if l1 is None or "industry" not in l1.columns:

@@ -283,12 +283,17 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
     # D8.3 ④:strict-with-warn —— 先认行首 `**Rating**:` 标签(契约干净);找不到才落回
     # 宽松兜底(行为读数不变,硬切是 P2 D8.2 的事),但打印一行 stderr 留痕:少了这行标签
     # 不该是静默发生的事,即便读数最终碰巧一样。
+    from autoresearch.contracts.profiles import STRICT_CARD_RULES
+    from autoresearch.scan.l4.card_io import card_from_text, card_rules_version
+
+    version = card_rules_version(scan_dir=scan_dir)
     rating = parse_rating(text, strict=True)
-    if rating is None:
+    if rating is None and version not in STRICT_CARD_RULES:
         rating = parse_rating(text)
         code = fr.get("code") or ticker
         print(f"[card-contract] {code} Rating 行缺失,已启用全文兜底", file=sys.stderr)
-    return {
+    rating = rating or "—"
+    row = {
         **fr,
         "rating": rating,
         "target": _get(dash, "EV目标", "目标") or "—",
@@ -299,6 +304,43 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
         "rubric_suggest": rub.group(1).title() if rub else "",   # C·评分卡建议(self_review 比对)
         "rubric_dev": bool(_DEV_RE.search(text)),                # 卡片有 **偏离** 说明 → 豁免
     }
+    if version in STRICT_CARD_RULES:
+        from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+        from autoresearch.scan.l4.card_io import card_rating_bands
+        from autoresearch.scan.l4.rubric import rubric_rating, validate_card_decision
+        bands = card_rating_bands(scan_dir=scan_dir) if version == CURRENT_CARD_RULES else None
+
+        row["card_rules_version"] = version
+        row["card_incomplete"] = False
+        try:
+            card = card_from_text(
+                text, code=str(fr.get("code") or ticker).split(".")[0],
+                analysis_date=scan_dir.name, holding=fr.get("lane") == "pinned", rules_version=version,
+            )
+            reviewed = card
+            if version == CURRENT_CARD_RULES:
+                from autoresearch.scan.l4.card_io import frozen_claim_semantics
+                semantics = frozen_claim_semantics(scan_dir, text,
+                    code=str(fr.get("code") or ticker).split(".")[0], holding=fr.get("lane") == "pinned")
+                if semantics is not None:
+                    # Gate facts for E6 stay the verified view; the review checks read what the
+                    # model reviewed (card_claims.evaluate_card_claims, 2026-10-02 真扫).
+                    card, reviewed = semantics["effective_card"], semantics["reviewed_card"]
+                    row["claim_usage"] = semantics["claim_usage"]
+            suggestion, reason = rubric_rating(
+                reviewed["dimensions"], {key: value == "PASS" for key, value in reviewed["gates"].items()},
+                bands=bands,
+            )
+            row.update({"rubric_suggest": suggestion, "rubric_reason": reason,
+                        "_card_facts": {"gate_states": dict(card["gates"]),
+                                        "early_stop": card["early_stop"],
+                                        "evidence_refs": list(card["evidence_refs"])}})
+            validate_card_decision(reviewed, bands=bands)
+        except (ValueError, KeyError, RuntimeError, OSError) as exc:
+            row["card_incomplete"] = True
+            row["card_validation_error"] = str(exc)
+    return row
+
 
 # Wave10 A11 复核实测(2026-08-01):`**` 强调号是**卡片里的主流写法**,而此前的跳过逻辑
 # 只跳空白。全语料 241 张带门柱段的卡里 **42 张(17.4%)** 因此被判成「三门全过」——

@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+
 from dataclasses import replace
 
 from autoresearch.contracts import stages as vocab
@@ -39,6 +41,7 @@ def analyze_profile(
     last_stage: str | None = None,
     agent_roles: tuple[str, ...] | None = None,
     card_source: str = "legacy_md",
+    card_rules_version: str = CURRENT_CARD_RULES,
     role_stages: dict[str, str] | None = None,
 ) -> RunProfile:
     """Build the `stock-research` evidence profile for one run's mode and terminal state.
@@ -71,6 +74,7 @@ def analyze_profile(
         # 的进程内 checkpoint。声明成 `()` 而不是让它恒判缺失 —— 假警报不是发现。
         captured_stages=(),
         card_source=card_source,
+        card_rules_version=card_rules_version,
         role_stages=role_stages,
     )
 

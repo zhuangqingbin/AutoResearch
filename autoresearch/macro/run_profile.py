@@ -1,6 +1,8 @@
 """Evidence profiles for standalone macro research runs."""
 from __future__ import annotations
 
+from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+
 from dataclasses import replace
 
 from autoresearch.contracts import stages as vocab
@@ -20,6 +22,7 @@ def macro_profile(
     last_stage: str | None = None,
     agent_roles: tuple[str, ...] | None = None,
     card_source: str = "legacy_md",
+    card_rules_version: str = CURRENT_CARD_RULES,
     role_stages: dict[str, str] | None = None,
 ) -> RunProfile:
     if mode not in vocab.MACRO_MODES:
@@ -42,6 +45,7 @@ def macro_profile(
         last_stage=last_stage,
         captured_stages=(),
         card_source=card_source,
+        card_rules_version=card_rules_version,
         role_stages=role_stages or dict(vocab.MACRO_ROLE_STAGES),
     )
 

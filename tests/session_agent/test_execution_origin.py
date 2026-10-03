@@ -42,6 +42,8 @@ def test_every_workflow_freezes_its_actual_session_origin(
         "requested_mode": mode,
         "subject": subject,
         "asset_type": asset_type,
+        "host_profile": {**_profile(), "independent_context": True,
+                         "web_search": True, "web_fetch": True},
     }
 
     result = service.begin(request)
@@ -107,6 +109,9 @@ def test_session_begin_rejects_missing_host_capability_before_creating_run(
 
 
 def test_legacy_stock_begin_requires_a_reason_before_creating_run(tmp_path, monkeypatch):
+    # Historical origin contract after a simulated legacy entry capability.
+    from autoresearch.contracts import research_access
+    monkeypatch.setattr(research_access, 'require_legacy_access', lambda: None)
     redirect_roots(monkeypatch, tmp_path)
 
     with pytest.raises(ValueError, match="legacy_reason"):
@@ -121,6 +126,9 @@ def test_legacy_stock_begin_requires_a_reason_before_creating_run(tmp_path, monk
 
 
 def test_legacy_stock_begin_freezes_the_explicit_reason(tmp_path, monkeypatch):
+    # Historical origin contract after a simulated legacy entry capability.
+    from autoresearch.contracts import research_access
+    monkeypatch.setattr(research_access, 'require_legacy_access', lambda: None)
     redirect_roots(monkeypatch, tmp_path)
 
     result = runctl.begin(
@@ -191,6 +199,9 @@ def test_generic_capsule_legacy_begin_requires_and_freezes_a_reason(
     monkeypatch,
     capsys,
 ):
+    # Historical origin contract after a simulated legacy entry capability.
+    from autoresearch.contracts import research_access
+    monkeypatch.setattr(research_access, 'require_legacy_access', lambda: None)
     redirect_roots(monkeypatch, tmp_path)
     config = tmp_path / "scan-config.json"
     config.write_text("{}", encoding="utf-8")

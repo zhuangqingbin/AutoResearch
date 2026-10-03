@@ -90,7 +90,12 @@ def test_dossier_validation_rejects_summary_over_cap(tmp_path):
         dossier_validate(handle)
 
 
-def test_dossier_publish_detects_concurrent_manual_creation_and_is_idempotent(tmp_path):
+def test_dossier_publish_detects_concurrent_manual_creation_and_is_idempotent(tmp_path, monkeypatch):
+    from autoresearch.dossier import pool
+
+    # The publication also commits a coverage-pool mutation; without this the test rewrote the
+    # current engine's production pool under the CWD (2026-10-02: context_claude pool reformatted).
+    monkeypatch.setattr(pool, "POOL_PATH", tmp_path / "knowledge/coverage_pool.json")
     handle = _handle(tmp_path)
     target = handle.workspace / "live/600519.md"
     output = _setup(handle)

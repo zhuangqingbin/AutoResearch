@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
                          "Wave9 R5 已退役 TTL 复用)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
-    ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
+    ap.add_argument("--workers", type=int, default=None, help="slim 批量并发数(1=串行;缺省 = scan_config l4_tasks.slim_workers)")
     args = ap.parse_args(argv)
     args.date = ws.validate_scan_date(args.date)
     if args.cmd == "shared":

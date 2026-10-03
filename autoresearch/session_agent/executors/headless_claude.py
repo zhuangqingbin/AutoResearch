@@ -8,7 +8,7 @@ agent definition and hooks, the result JSON carries ``usage`` / ``total_cost_usd
 
 Transport only (``executors.base``): agent, model, effort, prompt and output paths come
 from the :class:`DispatchRequest` verbatim.  The executor's own checks are about the
-*process*: bounded wall clock (the whole process group is killed on timeout), the result
+*process*: bounded wall clock (process-group cancellation is attempted and its confirmation recorded), the result
 JSON must parse and must not be an error, and every declared output file must exist after
 a clean exit — an agent saying "I wrote it" is not a file.
 
@@ -23,7 +23,6 @@ records.  ``_dispatch/`` is control traffic, excluded from scan staging bundles.
 """
 from __future__ import annotations
 
-import contextlib
 import glob
 import json
 import os
@@ -45,6 +44,7 @@ from autoresearch.session_agent.executors.base import (
     DispatchResult,
     ExecutorTimeout,
 )
+from autoresearch.session_agent.task_access import bind_headless as bind_task_access
 from autoresearch.trace import process_probe
 from autoresearch.trace.process_probe import owns_group, stop_group
 
@@ -104,6 +104,8 @@ _ENV_KEEP_NAMES = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
 
 
 def _drops(name: str) -> bool:
+    if name.startswith(("AUTORESEARCH_ACCESS_", "AUTORESEARCH_BOUNDARY_")):
+        return True
     if name in _ENV_KEEP_NAMES:
         return False
     return (name in _ENV_DROP_NAMES or name.startswith(_ENV_DROP_PREFIXES)
@@ -194,6 +196,18 @@ def _excerpt(text: str | None) -> str:
     return str(text or "").strip()[:EXCERPT_CHARS]
 
 
+def _group_stopped(pgid: int) -> bool | None:
+    """Only ESRCH confirms absence; lack of permission or observation is unknown."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return None
+    return False
+
+
+
 class HeadlessClaudeExecutor:
     """Run each inference attempt as its own ``claude -p`` session (blocking)."""
 
@@ -216,7 +230,8 @@ class HeadlessClaudeExecutor:
         self.claude_bin = resolve_claude_bin(claude_bin)
         self.cwd = Path(cwd) if cwd is not None else Path.cwd()
         self.transcript_root = Path(transcript_root) if transcript_root is not None else None
-        self.max_turns = {**MAX_TURNS, **dict(max_turns or {})}
+        from autoresearch.session_agent.config import session_cfg
+        self.max_turns = {**MAX_TURNS, **session_cfg()["max_turns"], **dict(max_turns or {})}
         self.kill_grace_seconds = float(kill_grace_seconds)
 
     # ── helpers ─────────────────────────────────────────────────────────────────
@@ -225,7 +240,9 @@ class HeadlessClaudeExecutor:
             return int(request.max_turns)
         if request.role in self.max_turns:
             return int(self.max_turns[request.role])
-        return int(TIER_MAX_TURNS.get(request.tier or "", DEFAULT_MAX_TURNS))
+        from autoresearch.session_agent.config import session_cfg
+        _sc = session_cfg()
+        return int({**TIER_MAX_TURNS, **_sc["tier_max_turns"]}.get(request.tier or "", _sc["default_max_turns"]))
 
     def _record_dir(self) -> Path:
         path = self.staging / DISPATCH_DIR / HEADLESS_DIR
@@ -268,7 +285,19 @@ class HeadlessClaudeExecutor:
                 ok=False, error_class="AGENT_ERROR",
                 error=f"headless executor runs `claude -p` only; run engine is {request.engine}")
         session_id = str(uuid.uuid4())
+        try:
+            access_binding = bind_task_access(request, session_id, repo_root=self.cwd)
+        except (ValueError, OSError, KeyError) as exc:
+            return DispatchResult(ok=False, error_class="CONTRACT_ERROR",
+                                  error=f"C4 access binding unavailable: {exc}")
         argv = self.argv(request, session_id)
+        transport_prompt = request.prompt
+        if 'read_commands' in access_binding:
+            transport_prompt += ("\nC4 已绑定当前 headless UUID。以下为精确文件broker命令；Write正文替换占位符，"
+                                 "保持单引号JSON参数，正文单引号写Unicode转义。\n"
+                                 + json.dumps({key: access_binding[key] for key in
+                                               ('read_commands', 'write_commands')}, ensure_ascii=False))
+            argv[-1] = transport_prompt
         folder = self._record_dir()
         priors = self._prior_records(folder, request.task_id)
         superseded = self._stop_orphans(priors, session_id)
@@ -288,11 +317,12 @@ class HeadlessClaudeExecutor:
             "role": request.role,
             "agent_type": request.agent_type,
             "argv": argv[:-1] + [
-                f"<prompt {len(request.prompt)} chars sha256:"
-                f"{sha256_bytes(request.prompt.encode('utf-8'))[:16]}>"],
+                f"<prompt {len(transport_prompt)} chars sha256:"
+                f"{sha256_bytes(transport_prompt.encode('utf-8'))[:16]}>"],
             "requested_session_id": session_id,
             "session_id": None,
             "host_session_ref": request.host_session_ref,
+            "access_binding": access_binding,
             "cwd": str(self.cwd),
             "claude_bin_resolved": _resolved(self.claude_bin),
             "env_stripped": env_stripped,
@@ -307,6 +337,9 @@ class HeadlessClaudeExecutor:
             "elapsed_s": None,
             "exit_code": None,
             "timed_out": False,
+            "cancel_capability": "PROCESS_GROUP",
+            "cancel_requested": False,
+            "cancel_confirmed": None,
             "is_error": None,
             "subtype": None,
             "num_turns": None,
@@ -336,16 +369,22 @@ class HeadlessClaudeExecutor:
             exit_code = proc.wait(timeout=float(request.timeout_seconds))
             # A clean exit can still leave a grandchild in the group (review M1a).
             record["leftovers_swept"] = stop_group(proc.pid, self.kill_grace_seconds)
+            if record["leftovers_swept"]:
+                record.update(cancel_requested=True, cancel_confirmed=_group_stopped(proc.pid))
         except subprocess.TimeoutExpired:
-            self._kill_group(proc)
-            record.update(state="KILLED", timed_out=True, exit_code=proc.returncode,
+            confirmed = self._kill_group(proc)
+            record.update(state="KILLED" if confirmed is True else "CANCEL_UNCONFIRMED",
+                          timed_out=True, exit_code=proc.returncode,
+                          cancel_requested=True, cancel_confirmed=confirmed,
                           ended_at=_now(), elapsed_s=round(time.monotonic() - started, 1),
                           session_id=session_id,
                           error=f"timeout after {request.timeout_seconds:.0f}s")
             atomic_write_json(folder / f"{stem}.json", record)
             raise ExecutorTimeout(
                 f"{request.task_id} a{request.attempt}: claude -p 超时 "
-                f"{request.timeout_seconds:.0f}s,已杀整个进程组(session {session_id})"
+                f"{request.timeout_seconds:.0f}s,"
+                f"{'已确认进程组停止' if confirmed is True else '进程组停止未确认'}"
+                f"(session {session_id})"
             ) from None
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
@@ -423,7 +462,10 @@ class HeadlessClaudeExecutor:
                 continue
             stop_group(int(record["pid"]), self.kill_grace_seconds)
             stopped.append(int(record["pid"]))
-            record.update(state="KILLED", superseded_by=session_id, ended_at=_now(),
+            confirmed = _group_stopped(int(record["pid"]))
+            record.update(state="KILLED" if confirmed is True else "CANCEL_UNCONFIRMED",
+                          cancel_capability="PROCESS_GROUP", cancel_requested=True,
+                          cancel_confirmed=confirmed, superseded_by=session_id, ended_at=_now(),
                           error=f"superseded by session {session_id} (runner re-dispatched)")
             atomic_write_json(path, record)
         return stopped
@@ -454,22 +496,33 @@ class HeadlessClaudeExecutor:
             moved.append({"from": str(source), "to": str(target)})
         return moved
 
-    def _kill_group(self, proc: subprocess.Popen) -> None:
+    def _kill_group(self, proc: subprocess.Popen) -> bool | None:
         """SIGTERM the whole process group, then SIGKILL whatever is left."""
         for sig, grace in ((signal.SIGTERM, self.kill_grace_seconds), (signal.SIGKILL, 5.0)):
+            deadline = time.monotonic() + max(0.0, grace)
             try:
                 os.killpg(proc.pid, sig)
             except ProcessLookupError:
-                return
+                proc.poll()
+                return True
+            except OSError:
+                # A failed signal does not prove the group is gone; still escalate
+                # and observe until the existing cancellation deadline.
+                pass
             try:
-                proc.wait(timeout=grace)
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 continue
-            if sig == signal.SIGTERM:
-                # The leader is gone; grandchildren in the group may not be.
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-            return
+            confirmed = _group_stopped(proc.pid)
+            if confirmed is True:
+                return confirmed
+            if sig == signal.SIGKILL:
+                while time.monotonic() < deadline:
+                    confirmed = _group_stopped(proc.pid)
+                    if confirmed is True:
+                        return confirmed
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        return _group_stopped(proc.pid)
 
 
 __all__ = [

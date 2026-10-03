@@ -12,6 +12,7 @@ import statistics
 from pathlib import Path
 
 from autoresearch.scan.stage_result import safe_record_stage_result
+from autoresearch.contracts.scan_config import DEFAULT_CONCURRENCY
 
 BUDGET_OBSERVATION_SCHEMA_VERSION = 1
 DEFAULT_BUDGETS = {
@@ -20,14 +21,11 @@ DEFAULT_BUDGETS = {
     "run_weighted_target": 5_000_000,
     "stage_cost_usd": {},
     "stage_wall_seconds": {},
-    "concurrency": {
-        "tushare": 4,
-        "web_search": 4,
-        "web_fetch": 4,
-        "l4_stock": 4,
-    },
+    "concurrency": dict(DEFAULT_CONCURRENCY),
     "min_real_scans": 10,
     "baseline_run": "20260727_2140",
+    "maturity": {"phase1": {"cost_reduction": 0.15, "p50": 75, "p90": 100},
+                 "phase2": {"cost_reduction": 0.25, "p50": 65, "p90": 90}},
 }
 
 
@@ -74,6 +72,10 @@ def normalize_budgets(raw: dict | None) -> dict:
         "baseline_run": str(
             raw.get("baseline_run", DEFAULT_BUDGETS["baseline_run"])
         ),
+        "maturity": {
+            ph: {**DEFAULT_BUDGETS["maturity"][ph], **((raw.get("maturity") or {}).get(ph) or {})}
+            for ph in ("phase1", "phase2")
+        },
     }
 
 
@@ -304,20 +306,21 @@ def evaluate_history(
     weighted_p50 = float(_nearest_rank(weighted_values, 0.5))
     weighted_p90 = float(_nearest_rank(weighted_values, 0.9))
 
+    mt = (policy.get("maturity") or DEFAULT_BUDGETS["maturity"])
     if int(phase) == 2:
         targets = {
-            "cost": reduction is not None and reduction >= 0.25,
-            "p50": p50 <= 65,
-            "p90": p90 <= 90,
+            "cost": reduction is not None and reduction >= mt["phase2"]["cost_reduction"],
+            "p50": p50 <= mt["phase2"]["p50"],
+            "p90": p90 <= mt["phase2"]["p90"],
             "cache": cache_median >= policy["cache_hit_min"],
             "weighted_p50": weighted_p50 <= policy["run_weighted_target"],
             "weighted_p90": weighted_p90 <= policy["run_weighted_warn"],
         }
     else:
         targets = {
-            "cost": reduction is not None and reduction >= 0.15,
-            "p50": p50 <= 75,
-            "p90": p90 <= 100,
+            "cost": reduction is not None and reduction >= mt["phase1"]["cost_reduction"],
+            "p50": p50 <= mt["phase1"]["p50"],
+            "p90": p90 <= mt["phase1"]["p90"],
             "cache": cache_median >= policy["cache_hit_min"],
             "weighted_p50": weighted_p50 <= policy["run_weighted_target"],
             "weighted_p90": weighted_p90 <= policy["run_weighted_warn"],

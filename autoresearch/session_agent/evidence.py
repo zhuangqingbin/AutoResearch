@@ -288,7 +288,11 @@ def _freeze_attempt_record(
                 f"frozen {kind} changed for {task_id}:a{attempt}"
             )
         return path
-    return atomic_write_json(path, value)
+    result = atomic_write_json(path, value)
+    if kind in {'claim', 'accepted_receipt', 'failure', 'abandoned'}:
+        from autoresearch.session_agent.host_evidence import observe_activity
+        observe_activity(handle, task_id=task_id, attempt=attempt, event=kind)
+    return result
 
 
 def freeze_claim(handle, task: dict, attempt: int, receipt: dict) -> Path:
@@ -409,7 +413,9 @@ def _captured_ref(
     expected_hash: str | None = None,
 ) -> tuple[dict | None, str | None]:
     try:
-        with artifacts.open_artifact(handle, artifact_id) as stream:
+        opener = (artifacts.open_artifact_version(handle, artifact_id, expected_hash)
+                  if expected_hash is not None else artifacts.open_artifact(handle, artifact_id))
+        with opener as stream:
             payload = stream.read()
         digest = sha256_bytes(payload)
         if expected_hash is not None and digest != expected_hash:
@@ -662,6 +668,9 @@ def materialize_evidence(handle, *, now: datetime | None = None) -> dict:
             / "evidence.json",
             evidence,
         )
+    from autoresearch.session_agent.metering import materialize_metering
+
+    materialize_metering(handle, evidence_plan=plan)
     result = evaluate_closure(handle.capsule, plan)
     atomic_write_json(
         Path(handle.capsule) / "verification/evidence_closure.json",
@@ -681,3 +690,7 @@ __all__ = [
     "materialize_evidence",
     "read_abandonment",
 ]
+
+
+# Shared frozen source reads live below the session orchestrator.
+from autoresearch.trace.frozen_sources import intel_claim_sources  # noqa: F401

@@ -24,6 +24,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 #: 主尺(2026-08-05 用户裁定):T+1 收盘买 → T+2 开盘卖。
 MAIN_RULER = "gap_c1_o2"
 #: 敏感尺白名单。只观察、只并列报告,**永不进 BUY**。
@@ -91,8 +93,17 @@ def validate_spec(value: dict) -> dict:
     if not isinstance(split, dict) or set(split) != {"train", "validation", "test"}:
         raise ValueError("split must name train/validation/test date ranges")
     for name, window in split.items():
-        if not isinstance(window, list) or len(window) != 2 or window[0] >= window[1]:
+        if not isinstance(window, list) or len(window) != 2:
             raise ValueError(f"split {name} must be an ordered [start, end) pair")
+        try:
+            if any(not isinstance(day, str) or date.fromisoformat(day).isoformat() != day for day in window):
+                raise ValueError("noncanonical date")
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"split {name} requires valid ISO dates") from exc
+        if window[0] >= window[1]:
+            raise ValueError(f"split {name} must be an ordered [start, end) pair")
+    if split['train'][1] > split['validation'][0] or split['validation'][1] > split['test'][0]:
+        raise ValueError("split windows overlap or are out of order")
     if not isinstance(value["stop_rule"], str) or not value["stop_rule"].strip():
         raise ValueError("stop_rule must be fixed before results are seen")
     return value

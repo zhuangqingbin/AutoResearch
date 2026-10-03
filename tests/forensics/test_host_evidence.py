@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,7 @@ from tests.session_agent.test_service import _handle, _request
 
 
 def _inference_plan(request, handle, *, independent=False, role="stock.card",
-                    subject="600519.SS"):
+                    subject="600519.SS", input_id="inference.input"):
     from autoresearch.session_agent.roles import get_role
 
     task = {
@@ -21,7 +22,7 @@ def _inference_plan(request, handle, *, independent=False, role="stock.card",
         "role": role,
         "operation": None,
         "dependencies": [],
-        "input_artifact_ids": ["inference.input"],
+        "input_artifact_ids": [input_id],
         "output_artifact_ids": ["inference.output"],
         "expected_output_contract": get_role(role)["output_contract"],
         "owner": "SESSION",
@@ -51,13 +52,14 @@ def _inference_plan(request, handle, *, independent=False, role="stock.card",
     return value
 
 
-def _running_case(tmp_path, *, independent=False, role="stock.card", subject="600519.SS"):
+def _running_case(tmp_path, *, independent=False, role="stock.card", subject="600519.SS", input_id="inference.input"):
     handle = _handle(tmp_path)
     request = _request()
     if role == "stock.news":
         request["host_profile"] = {
             **request["host_profile"],
             "web_search": True,
+            "web_fetch": True,
         }
     if independent:
         request["host_profile"] = {
@@ -69,14 +71,14 @@ def _running_case(tmp_path, *, independent=False, role="stock.card", subject="60
     input_path.write_text("frozen task input", encoding="utf-8")
 
     def register(request, current, plan):
-        artifacts.register_artifact(current, "inference.input", input_path, "READ")
+        artifacts.register_artifact(current, input_id, input_path, "READ")
         artifacts.register_artifact(current, "inference.output", output, "WRITE")
 
     service.begin(
         request,
         begin_capsule=lambda unused: handle,
         planner=lambda current, unused: _inference_plan(
-            current, unused, independent=independent, role=role, subject=subject
+            current, unused, independent=independent, role=role, subject=subject, input_id=input_id
         ),
         artifact_registrar=register,
     )
@@ -87,6 +89,7 @@ def _running_case(tmp_path, *, independent=False, role="stock.card", subject="60
         handle_loader=lambda unused: handle,
         event_recorder=lambda *args, **kwargs: None,
     )
+    output = Path(claimed["result"]["claim_receipt"]["output_paths"]["inference.output"])
     return handle, output, claimed
 
 
@@ -106,7 +109,7 @@ def _submission(claimed, output, handle, *, host_receipt_id):
         "**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: HOLD\n",
         encoding="utf-8",
     )
-    digest = artifacts.bind_artifact_hash(handle, "inference.output")["sha256"]
+    digest = sha256_bytes(output.read_bytes())
     return {
         "schema_version": 1,
         "envelope": claimed["result"]["envelope"],
@@ -164,6 +167,9 @@ def test_bound_task_segment_enters_the_same_evidence_closure(tmp_path):
     )
 
     assert closure["completeness_ok"] is True
+    accepted = artifacts.artifact_path(handle, "inference.output")
+    assert accepted != output
+    assert accepted.read_bytes() == output.read_bytes()
     assert task["transcript_refs"][0]["context_source"] == "MAIN"
     assert bound["tool_call_ids"]
     assert task["source_receipt_ids"]
@@ -316,6 +322,8 @@ def test_begin_registers_declared_main_transcript_source(tmp_path):
 
 def test_main_session_tools_after_begin_are_captured_in_run_scope(tmp_path):
     from autoresearch.session_agent.host_evidence import capture_main_context
+    from autoresearch.trace.capsule import _archive_bound_transcripts
+    from autoresearch.trace.completeness import host_evidence_coverage
 
     handle = _handle(tmp_path)
     source = tmp_path / "host" / "main.jsonl"
@@ -353,3 +361,111 @@ def test_main_session_tools_after_begin_are_captured_in_run_scope(tmp_path):
     assert captured["start_ordinal"] == 0
     assert captured["tool_call_ids"]
     assert (handle.capsule / captured["raw_path"]).is_file()
+
+    # The live host can append after materialize_evidence and before finalize.
+    # Re-archiving must preserve the exact normalized bytes main_host froze.
+    original = (handle.capsule / captured["normalized_path"]).read_bytes()
+    with source.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "ordinal": 14, "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "later-turn"},
+        }) + "\n")
+    archived = _archive_bound_transcripts(handle)[f"session-main-{handle.run_id}"]
+
+    assert host_evidence_coverage(handle.capsule)["ok"] is True
+    assert (handle.capsule / captured["normalized_path"]).read_bytes() == original
+    assert archived["normalized"] != captured["normalized_path"]
+    current = json.loads((handle.capsule / archived["normalized"]).read_text())
+    assert current["snapshot_id"] == archived["snapshot_id"]
+
+
+def test_task_binding_survives_later_shared_host_snapshot(tmp_path):
+    from autoresearch.common.atomic import sha256_file
+    from autoresearch.session_agent.host_evidence import bind_task_transcript
+    from autoresearch.trace.capsule import _archive_bound_transcripts
+
+    handle, _, _ = _running_case(tmp_path)
+    source = _rollout(tmp_path)
+    bound = bind_task_transcript(
+        handle.run_id, "inference.one", 1, source,
+        context_ref="context-main", parent_context_ref=None,
+        session_ref="session-main", start_ordinal=0, end_ordinal=13,
+        context_source="MAIN", handle_loader=lambda unused: handle,
+    )
+    with source.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "ordinal": 14, "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "later-turn"},
+        }) + "\n")
+    archived = _archive_bound_transcripts(handle)[bound["invocation_id"]]
+
+    assert sha256_file(handle.capsule / bound["normalized_path"]) == bound["normalized_sha256"]
+    assert archived["normalized"] != bound["normalized_path"]
+
+
+
+def _claude_main_rows(count, *, start=0):
+    """Claude Code main-session rows carry no native ``ordinal`` field."""
+    rows = []
+    for index in range(start, start + count):
+        rows.append({"type": "user", "sessionId": "session-main", "version": "2.1.285",
+                     "timestamp": f"2026-10-01T07:{index:02d}:00Z",
+                     "message": {"role": "user", "content": f"turn {index}"}})
+    return "".join(json.dumps(row) + "\n" for row in rows)
+
+
+def _claude_begin(tmp_path, monkeypatch, rows_before):
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "ENGINE", "claude")
+    handle = _handle(tmp_path)
+    handle.engine = "claude"
+    source = tmp_path / "host" / "main.jsonl"
+    source.parent.mkdir()
+    source.write_text(_claude_main_rows(rows_before), encoding="utf-8")
+    request = _request()
+    request["host_profile"] = {
+        **request["host_profile"],
+        "engine": "claude",
+        "evidence_refs": [f"transcript-file:{source}"],
+    }
+    input_path = handle.staging / "input.md"
+    input_path.write_text("frozen task input", encoding="utf-8")
+
+    def register(request, current, plan):
+        artifacts.register_artifact(current, "inference.input", input_path, "READ")
+        artifacts.register_artifact(
+            current, "inference.output", current.staging / "inference.md", "WRITE"
+        )
+
+    service.begin(request, begin_capsule=lambda unused: handle, planner=_inference_plan,
+                  artifact_registrar=register)
+    return handle, source
+
+
+def test_claude_main_transcript_without_native_ordinals_is_captured(tmp_path, monkeypatch):
+    """Positional row indices stand in for ordinals; the interval opens at begin."""
+    from autoresearch.session_agent.host_evidence import capture_main_context
+
+    handle, source = _claude_begin(tmp_path, monkeypatch, rows_before=3)
+    registration = json.loads(
+        (handle.capsule / "identity/session/host_evidence.json").read_text(encoding="utf-8"))
+    # Three rows existed before begin; the run's interval starts at the next row.
+    assert registration["main_transcript"]["start_ordinal"] == 3
+    with source.open("a", encoding="utf-8") as stream:
+        stream.write(_claude_main_rows(2, start=3))
+
+    captured = capture_main_context(handle)
+
+    assert captured["status"] == "PRESENT", captured
+    assert (captured["start_ordinal"], captured["end_ordinal"]) == (3, 4)
+
+
+def test_claude_main_transcript_without_rows_after_begin_stays_missing(tmp_path, monkeypatch):
+    from autoresearch.session_agent.host_evidence import capture_main_context
+
+    handle, _ = _claude_begin(tmp_path, monkeypatch, rows_before=3)
+
+    captured = capture_main_context(handle)
+
+    assert captured["status"] == "MISSING"

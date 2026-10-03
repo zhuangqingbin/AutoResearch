@@ -232,6 +232,56 @@ POOL_COMPOSITE = "composite"
 RISK_EARLY_STOP_REASONS = frozenset({
     "涨停追高", "题材透支", "资金流出", "估值透支", "基本面恶化",
 })
+
+
+def _rule_defaults() -> dict:
+    """E6 规则参数的内建缺省 = 上面的常量(调用时现读)。`scan_config.relative_buy` 逐键覆盖。"""
+    return {
+        "max_buys": 1,
+        "liquidity_pctl_floor": LIQUIDITY_PCTL_FLOOR,
+        "redflag": {"early_stop_reasons": sorted(REDFLAG_EARLY_STOP_REASONS),
+                    "ratings": sorted(REDFLAG_RATINGS), "proposals": sorted(REDFLAG_PROPOSALS)},
+        "risk_early_stop_reasons": sorted(RISK_EARLY_STOP_REASONS),
+        "scoring": {"recall_weights": {"n_channels": 0.5, "best_channel": 0.5},
+                    "evidence": {"full": 1.0, "early_stop": 0.4, "intel": 0.2, "dossier": 0.2,
+                                 "price_claim_clean": 0.2},
+                    "risk_bonus": 1.0, "missing_fill": 0.5},
+    }
+
+
+def rule_params(cfg: dict | None = None) -> dict:
+    """`scan_config.relative_buy` 里的规则参数(缺键 = `_rule_defaults()`,逐字 parity)。
+
+    决策文件同时落 `rule_params` 与 `rule_params_sha256`:账本读数按 (rule_version, params_sha) 分组,
+    参数一改历史行就不可直接相连 —— 这是「规则进 config」的前提(2026-09-27 Q4)。
+    """
+    from autoresearch.scan.user_config import knob
+    base = _rule_defaults()
+    block = knob("relative_buy", "scoring", None, None, cfg)   # 只为触发一次配置读取;下面逐键取
+    user = {k: knob("relative_buy", k, None, None, cfg)
+            for k in ("max_buys", "liquidity_pctl_floor", "redflag", "risk_early_stop_reasons", "scoring")}
+    out = dict(base)
+    if user["max_buys"] is not None:
+        out["max_buys"] = max(1, int(user["max_buys"]))
+    if user["liquidity_pctl_floor"] is not None:
+        out["liquidity_pctl_floor"] = float(user["liquidity_pctl_floor"])
+    if isinstance(user["redflag"], dict):
+        out["redflag"] = {**base["redflag"], **{k: list(v) for k, v in user["redflag"].items()}}
+    if isinstance(user["risk_early_stop_reasons"], (list, tuple)):
+        out["risk_early_stop_reasons"] = list(user["risk_early_stop_reasons"])
+    if isinstance(block, dict):
+        sc = {**base["scoring"], **{k: v for k, v in block.items() if not isinstance(v, dict)}}
+        for k in ("recall_weights", "evidence"):
+            sc[k] = {**base["scoring"][k], **(block.get(k) or {})}
+        out["scoring"] = sc
+    return out
+
+
+def rule_params_digest(params: dict) -> str:
+    """规则参数的规范化 sha256(键排序、无空白)。"""
+    import hashlib
+    return hashlib.sha256(json.dumps(params, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
 #: ST / 退市标记(镜像 `factor_lab.py` 与 `akshare_universe.py` 的同一判据)。
 _ST_MARKS = ("ST", "退")
 
@@ -592,35 +642,37 @@ def _raw_faces(entry: dict, ctx: dict) -> dict[str, float | None]:
 
     target = recall.get("composite_pctl")
 
+    sc = (ctx.get("params") or rule_params())["scoring"]
     channel_pctls = [chan.get("pctl") for chan in (recall.get("per_channel") or {}).values()
                      if chan.get("pctl") is not None]
     parts: list[tuple[float, float]] = []
     n_channels_pctl = ctx["n_channels_pctl"].get(code)
     if n_channels_pctl is not None:
-        parts.append((n_channels_pctl, 0.5))
+        parts.append((n_channels_pctl, float(sc["recall_weights"]["n_channels"])))
     if channel_pctls:
-        parts.append((max(channel_pctls), 0.5))
+        parts.append((max(channel_pctls), float(sc["recall_weights"]["best_channel"])))
     strength = _blend(parts)
 
     kind = card.get("card_kind")
+    ev = sc["evidence"]
     if kind is None:
         evidence = None
     else:
-        evidence = 1.0 if kind == "full" else 0.4
+        evidence = float(ev["full"]) if kind == "full" else float(ev["early_stop"])
         if card.get("intel_avail") == "INTEL":
-            evidence += 0.2
+            evidence += float(ev["intel"])
         if code in ctx["dossier"]:
-            evidence += 0.2
+            evidence += float(ev["dossier"])
         if ctx["price_claim"].get(code) == "CLEAN":
-            evidence += 0.2
+            evidence += float(ev["price_claim_clean"])
         evidence = min(1.0, max(0.0, evidence))
 
     if not card.get("carded"):
         risk = None
     else:
         risk = float(len(card.get("risk_flags") or []))
-        if str(card.get("earlystop_reason") or "") in RISK_EARLY_STOP_REASONS:
-            risk += 1.0
+        if str(card.get("earlystop_reason") or "") in set((ctx.get("params") or rule_params())["risk_early_stop_reasons"]):
+            risk += float(sc["risk_bonus"])
         risk += float(ctx["tripwire"].get(code, 0))
 
     return {"target_align": target, "recall_strength": strength,
@@ -630,6 +682,7 @@ def _raw_faces(entry: dict, ctx: dict) -> dict[str, float | None]:
 def _faces_table(entries: list[dict], ctx: dict) -> dict[str, dict]:
     """全体候选 → {code: {"faces": {...}, "missing": [...]}}(面内缺失 = 0.5 + 记账)。"""
     raws = {entry["code"]: _raw_faces(entry, ctx) for entry in entries}
+    raw_snapshots = {code: dict(raw) for code, raw in raws.items()}
 
     # risk 先归一(除以候选内最大风险),再取 safety = 1 − 归一风险
     risks = {code: raw["risk_safety_risk"] for code, raw in raws.items()
@@ -640,7 +693,9 @@ def _faces_table(entries: list[dict], ctx: dict) -> dict[str, dict]:
         raw["risk_safety"] = None if risk is None else (
             1.0 if worst <= 0 else 1.0 - risk / worst)
 
-    out: dict[str, dict] = {code: {"faces": {}, "missing": []} for code in raws}
+    fill = float((ctx.get("params") or rule_params())["scoring"]["missing_fill"])
+    out: dict[str, dict] = {code: {"faces": {}, "missing": [],
+                                  "raw_face_metrics": raw_snapshots[code]} for code in raws}
     for face in _FACES:
         defined = {code: raw[face] for code, raw in raws.items() if raw[face] is not None}
         pctls = _mid_rank_pctl(defined)
@@ -648,7 +703,7 @@ def _faces_table(entries: list[dict], ctx: dict) -> dict[str, dict]:
             if code in pctls:
                 out[code]["faces"][face] = pctls[code]
             else:
-                out[code]["faces"][face] = 0.5
+                out[code]["faces"][face] = fill
                 out[code]["missing"].append(face)
     for record in out.values():
         record["missing"].sort()
@@ -718,18 +773,19 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
         else:
             gates["contract"] = True
 
-    # ④ 无红灯
+    # ④ 无红灯(词表与流动性门阈来自 relative_buy 规则参数,缺省 = 模块常量)
+    rp = ctx.get("params") or rule_params()
     rating = entry["l4"].get("research_rating")
     stop_reason = str(entry["l4"].get("earlystop_reason") or "")
     amount_pctl = ctx["universe"]["amount_pctl"].get(code)
     proposal = str(entry["l4"].get("proposal") or "").upper()
     if _is_st(entry.get("name")):
         fail("no_redflag", f"ST/退市标记:{entry.get('name')!r}")
-    elif rating in REDFLAG_RATINGS:
+    elif rating in set(rp["redflag"]["ratings"]):
         # v3.0(A2):v1/v2 只挡最末一档 Sell,于是 UW 卡照样能当 BUY 出 —— 08-20/08-25
         # 两次实测。BUY 与卡面结论打架比 0 BUY 更误导,这是产品一致性要求。
         fail("no_redflag", f"research_rating={rating}(v3.0 起 UW/Sell 一律否决)")
-    elif proposal in REDFLAG_PROPOSALS:
+    elif proposal in set(rp["redflag"]["proposals"]):
         # 评级读不出来但卡自己写了 `FINAL TRANSACTION PROPOSAL: SELL` 的情形(两条独立防线:
         # 评级解析可能失手,提案行是卡的机读契约行)。
         fail("no_redflag", f"卡面提案 {proposal}")
@@ -738,11 +794,11 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
         # 进 no_redflag 硬门(BUY 不能与卡自己写的「禁止开仓」打架)。关(默认)时这一支
         # 不命中,PROHIBITED 只留在 `conflicts` 里当展示性冲突——v3.0 行为逐字不变。
         fail("no_redflag", "卡面入场=禁止(entry_stance=PROHIBITED;v4.0 tiering)")
-    elif stop_reason in REDFLAG_EARLY_STOP_REASONS:
+    elif stop_reason in set(rp["redflag"]["early_stop_reasons"]):
         fail("no_redflag", f"早停红灯停因:{stop_reason}")
-    elif amount_pctl is not None and amount_pctl < LIQUIDITY_PCTL_FLOOR:
+    elif amount_pctl is not None and amount_pctl < float(rp["liquidity_pctl_floor"]):
         fail("no_redflag",
-             f"成交额分位 {amount_pctl:.4f} < P{int(LIQUIDITY_PCTL_FLOOR * 100)}")
+             f"成交额分位 {amount_pctl:.4f} < P{int(float(rp['liquidity_pctl_floor']) * 100)}")
     else:
         gates["no_redflag"] = True
 
@@ -1277,7 +1333,10 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     n_channels = {entry["code"]: entry["recall"].get("n_channels")
                   for entry in entries
                   if entry["recall"].get("n_channels") is not None}
+    params = rule_params()
+    max_buys = int(params["max_buys"])
     ctx = {
+        "params": params,
         "universe": universe,
         "data_a": _data_contract_ok(scan),
         "task_book": _task_book(scan),
@@ -1315,6 +1374,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             "hard_gate": gates,
             "faces": {name: face[name] for name in _FACES},
             "faces_missing": faces[code]["missing"],
+            "raw_face_metrics": faces[code]["raw_face_metrics"],
             "relative_decision_score": round(
                 sum(face[name] for name in _FACES) / len(_FACES), 6),
             "rank": None,
@@ -1384,17 +1444,19 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         r_pool = [row for row in buy_pool if row["card_context"].get("entry_stance") != "ALLOWED"]
         tier_counts = {"A": len(a_pool), "R": len(r_pool)}
         if a_pool:
-            buys = [{"code": a_pool[0]["code"], "basis": "card_backed", "rank": 1, "tier": "A"}]
+            buys = [{"code": row["code"], "basis": "card_backed", "rank": i, "tier": "A"}
+                    for i, row in enumerate(a_pool[:max_buys], start=1)]
         elif r_pool:
-            buys = [{"code": r_pool[0]["code"], "basis": "relative_forced", "rank": 1, "tier": "R"}]
+            buys = [{"code": row["code"], "basis": "relative_forced", "rank": i, "tier": "R"}
+                    for i, row in enumerate(r_pool[:max_buys], start=1)]
         else:
             buys = []
     else:
-        # 第 2 只起的门:v1 影子期无已验证阈值 → 恒不满足,恒只出 1 只。
-        buys = ([{"code": buy_pool[0]["code"], "basis": "relative", "rank": 1}]
-                if buy_pool else [])
-    second_buy = {"fired": SECOND_BUY_THRESHOLD is not None,
-                  "reason": SECOND_BUY_BLOCK_REASON,
+        # 第 2 只起:`relative_buy.max_buys`(缺省 1 = v1 影子期无已验证阈值,恒只出 1 只)。
+        buys = [{"code": row["code"], "basis": "relative", "rank": i}
+                for i, row in enumerate(buy_pool[:max_buys], start=1)]
+    second_buy = {"fired": max_buys > 1 or SECOND_BUY_THRESHOLD is not None,
+                  "reason": SECOND_BUY_BLOCK_REASON if max_buys <= 1 else f"relative_buy.max_buys={max_buys}",
                   "threshold": SECOND_BUY_THRESHOLD}
 
     blocked = not buys
@@ -1432,6 +1494,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     return {
         "schema_version": SCHEMA_VERSION,
         "rule_version": RULE_VERSION,
+        # 2026-09-27:规则参数进 config → 决策文件落参数本体 + 规范化哈希,账本按 (rule_version, params_sha) 分组。
+        "rule_params": params,
+        "rule_params_sha256": rule_params_digest(params),
         "mode": mode,
         "exclude_pinned": exclude_pinned,
         # v3.0:BUY 候选池来源 + 当日席位码。**读这份决策文件前先看这两个键** ——
@@ -1492,7 +1557,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             # 红灯词表进产物(复核 Minor):只读 JSON 的人看不见集合里有没有死条目 ——
             # 导出词表 = 让它自己说话。("监管/审计红灯" 那个死条目已在 D8.3 ②删除,
             # 现在这里导出的就是真正生效的四词。)
-            "redflag_early_stop_reasons": sorted(REDFLAG_EARLY_STOP_REASONS),
+            "redflag_early_stop_reasons": sorted(params["redflag"]["early_stop_reasons"]),
             "excluded_from_benchmark": universe["excluded"],
         },
         "inputs": {
@@ -1577,18 +1642,18 @@ def load_decision(scan_dir: Path | str, *, date: str | None = None) -> dict | No
     return doc
 
 
-def configured_relative_buy() -> tuple[str, bool, str | None, str, bool]:
-    """`scan_config.jsonc` 的 `relative_buy` 块 →
-    `(mode, exclude_pinned, activate_date, pool, tiering)`。
+def configured_relative_buy() -> tuple[str, bool, str, bool]:
+    """`scan_config.jsonc` 的 `relative_buy` 块 → `(mode, exclude_pinned, pool, tiering)`。
 
     **消费侧的 mode 事实源是 config,不是决策文件**:E3b 的渲染点要在决策文件写出来**之前**
     就决定"要不要落占位符",那时盘上那份要么不存在要么是过期的,拿它的 `mode` 反推等于让
     昨天的开关决定今天的渲染。config 才是 writer-1 待会儿要用的那份开关(`post_run.py:673`
     同一处读取),两边同源才不会一个落占位、另一个不注入。
 
-    缺文件 / 缺块 / 配置层故障 → `("shadow", False, None, "finalists", False)` = 内建默认 =
+    缺文件 / 缺块 / 配置层故障 → `("shadow", False, "finalists", False)` = 内建默认 =
     现行为(parity)。故障降级必须留痕(同 `user_config.knob` 纪律),所以异常路径打一行
-    stderr。`tiering`(v4.0)是第五个元素,同样缺键 = `False`(= v3.0 逐字,parity)。
+    stderr。`tiering`(v4.0)是末元素,同样缺键 = `False`(= v3.0 逐字,parity)。
+    (`activate_date` 于 2026-09-27 随「死键不留」标准删除:它自 08-21 learning 层退役起零消费点。)
     """
     try:
         from autoresearch.scan.user_config import load_user_config
@@ -1598,7 +1663,6 @@ def configured_relative_buy() -> tuple[str, bool, str | None, str, bool]:
         print(f"[relative_buy] scan_config 读取失败({exc!r})→ mode/exclude_pinned 用内建默认",
               file=sys.stderr)
         block = {}
-    activate = block.get("activate_date")
     pool = str(block.get("pool") or POOL_FINALISTS)
     if pool not in {POOL_FINALISTS, POOL_COMPOSITE}:   # 错型不静默生效(同 knob 纪律)
         print(f"[relative_buy] scan_config 的 relative_buy.pool={pool!r} 非法 → 回落 "
@@ -1606,7 +1670,6 @@ def configured_relative_buy() -> tuple[str, bool, str | None, str, bool]:
         pool = POOL_FINALISTS
     return (str(block.get("mode") or MODE_SHADOW),
             bool(block.get("exclude_pinned", False)),
-            str(activate) if activate else None,
             pool,
             bool(block.get("tiering", False)))
 
@@ -1635,19 +1698,14 @@ def is_active() -> bool:
     return configured_mode() == MODE_ACTIVE
 
 
-def activate_date() -> str | None:
-    """legacy 账本冻结日(`relative_buy.activate_date`);未配置 → `None` = 不冻结(parity)。"""
-    return configured_relative_buy()[2]
-
-
 def configured_pool() -> str:
     """BUY 候选池来源(v3.0)。薄封装,消费点别再自己解析一遍 config。"""
-    return configured_relative_buy()[3]
+    return configured_relative_buy()[2]
 
 
 def configured_tiering() -> bool:
     """入场门 + A/R 分级总开关(v4.0)。薄封装,消费点别再自己解析一遍 config。"""
-    return configured_relative_buy()[4]
+    return configured_relative_buy()[3]
 
 
 def write_decision(scan_dir: Path | str, date: str | None = None,

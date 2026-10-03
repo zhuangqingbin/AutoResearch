@@ -66,7 +66,7 @@ def gate1(scan_dir: Path) -> dict:
     return {"ok": True, "gate": "gate1", "reason": "ok", "sentinel_level": level,
             "sentinel_reason": sentinel_reason,
             "l4_budget": int(budget), "l2_n": int(len(df)),
-            "l3cap": caps["l3cap"], "max_cards": caps["max_cards"],
+            "l3cap": caps["l3cap"], "l3min": caps["l3min"], "max_cards": caps["max_cards"],
             "budget_flags": caps["budget_flags"]}
 
 

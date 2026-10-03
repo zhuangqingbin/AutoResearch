@@ -12,3 +12,17 @@ try:
     load_dotenv(find_dotenv(usecwd=True))
 except ImportError:
     pass
+
+
+# Package startup is the composition root: lower supplier modules use a capture
+# port without importing trace. Resolve the adapter at call time, after package
+# initialization, and let it validate the current run/task/attempt on every call.
+def _capture_supplier_response(**kwargs):
+    from autoresearch.trace.source_receipts import record_active_response
+
+    return record_active_response(**kwargs)
+
+
+from autoresearch.common.source_capture import register_source_recorder  # noqa: E402
+
+register_source_recorder(_capture_supplier_response)

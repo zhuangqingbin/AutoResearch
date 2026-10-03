@@ -225,7 +225,7 @@ ARCHIVE_TRANSCRIPT_AGENTS = ("l3-rank", "l4-card", "l4-intel", "macro-brief", "s
 
 
 def archive_transcripts(scan_dir: Path | str, run_dir: Path | str,
-                        agents: tuple[str, ...] = ARCHIVE_TRANSCRIPT_AGENTS) -> dict:
+                        agents: tuple[str, ...] | None = None) -> dict:
     """把判断腿的 subagent transcript gzip 归档进 `<run_dir>/trace/transcripts/`。
 
     数据源是 staging 的 `_token_usage.json` —— `usage_harvest` 已经为计量把每份 transcript
@@ -236,6 +236,7 @@ def archive_transcripts(scan_dir: Path | str, run_dir: Path | str,
     缺 `_token_usage.json`(计量还没跑 / 跑失败)→ `{"n": 0, "reason": "no-usage-ledger"}`,
     presence-gated,不报错。
     """
+    agents = retention_cfg()["archive_transcript_agents"] if agents is None else agents
     import gzip
 
     scan = Path(scan_dir)
@@ -282,8 +283,16 @@ def archive_transcripts(scan_dir: Path | str, run_dir: Path | str,
 LAKE_WINDOW_DAYS = 70
 
 
+def retention_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.retention.{archive_transcript_agents, lake_window_days}`(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    agents = knob("retention", "archive_transcript_agents", None, None, cfg)
+    return {"archive_transcript_agents": tuple(str(a) for a in agents) if isinstance(agents, (list, tuple)) else ARCHIVE_TRANSCRIPT_AGENTS,
+            "lake_window_days": int(knob("retention", "lake_window_days", None, LAKE_WINDOW_DAYS, cfg))}
+
+
 def lake_manifest(date: str, *, lake_root: Path | None = None,
-                  window_days: int = LAKE_WINDOW_DAYS) -> dict:
+                  window_days: int | None = None) -> dict:
     """本 run 窗口内**湖的样子** —— `{endpoint/key: "<sha256>:<bytes>"}`。
 
     ## 它证明什么、不证明什么
@@ -300,6 +309,7 @@ def lake_manifest(date: str, *, lake_root: Path | None = None,
 
     成本实测(2026-08-25 窗口):2781 文件 / 126 MB / **sha256 全量 ~1.0 秒**,一次 run 一次。
     """
+    window_days = retention_cfg()["lake_window_days"] if window_days is None else window_days
     root = Path(lake_root) if lake_root else ws.lake_root()
     if not root.is_dir():
         return {"schema_version": 1, "schema": "window_guess",

@@ -54,7 +54,8 @@ def _probe_workflow(path: Path, args: dict) -> dict:
         """
         const fs = require('fs');
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        // Historical workflow-body tests only; actual C4 early refusal is tested separately.
+        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta').replace(/^throw .*C4_LEGACY_GUARD.*$/m, '');
         __BOUNDARY_ACK__
         let first = null;
         const agent = (prompt) => {
@@ -184,7 +185,7 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     assert "target_event_type" in source
     assert "target_invocation_id" in source
     assert "target_role" in source
-    assert "TRACE_CONTROL_CALLS_PER_TARGET = 2" in source
+    assert "TRACE_CONTROL_CALLS_PER_TARGET = SHELLS.trace_calls_per_target ?? 2" in source   # shells.trace_calls_per_target,缺省 2
     wrapper_body = source.split("async function tracedAgent", 1)[1].split(
         "const recordL4", 1
     )[0]
@@ -223,7 +224,8 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
         r"""
         const fs = require('fs');
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        // Historical workflow-body tests only; actual C4 early refusal is tested separately.
+        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta').replace(/^throw .*C4_LEGACY_GUARD.*$/m, '');
         const mode = process.argv[3];
         const logs = [];
         const boundaryAck = (prompt) => {
@@ -332,7 +334,8 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
         """
         const fs = require('fs');
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        // Historical workflow-body tests only; actual C4 early refusal is tested separately.
+        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta').replace(/^throw .*C4_LEGACY_GUARD.*$/m, '');
         __BOUNDARY_ACK__
         const fail = JSON.parse(process.argv[3]);
         const calls = [];

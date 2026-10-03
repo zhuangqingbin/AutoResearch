@@ -52,6 +52,7 @@ import yfinance as yf  # noqa: E402
 from autoresearch.agents.utils.agent_utils import get_macro_indicators  # noqa: E402
 from autoresearch.dataflows.config import set_config  # noqa: E402
 from autoresearch.default_config import DEFAULT_CONFIG  # noqa: E402
+from autoresearch.trace.source_receipts import capture_active_responses  # noqa: E402
 
 # US macro — friendly aliases already resolved by fred.py.
 US_FRED = [
@@ -137,26 +138,40 @@ def _section_body(fn, *args, **kwargs) -> str:
     return body
 
 
-def us_macro_block(curr_date: str) -> str:
+@capture_active_responses
+def us_macro_block(
+    curr_date: str, *, vintage_date: str | None = None,
+    knowledge_cutoff: str | None = None,
+) -> str:
     """US regional macro: every US_FRED series via the project's FRED tool."""
     out = []
     for series in US_FRED:
         try:
-            md = get_macro_indicators.invoke({"indicator": series, "curr_date": curr_date})
+            md = get_macro_indicators.invoke({
+                "indicator": series, "curr_date": curr_date,
+                "vintage_date": vintage_date, "knowledge_cutoff": knowledge_cutoff,
+            })
         except Exception as e:  # noqa: BLE001
             md = f"_({series} unavailable: {e})_"
         out.append(f"### {series}\n\n{md}")
     return "\n\n".join(out)
 
 
-def global_macro_block(curr_date: str) -> str:
+@capture_active_responses
+def global_macro_block(
+    curr_date: str, *, vintage_date: str | None = None,
+    knowledge_cutoff: str | None = None,
+) -> str:
     """Global outer layer: FRED international series by raw ID (passthrough).
     Series that FRED does not carry return MACRO_DATA_UNAVAILABLE — kept inline so
     the build-time smoke run can spot and drop them."""
     out = []
     for label, series_id in INTL_FRED.items():
         try:
-            md = get_macro_indicators.invoke({"indicator": series_id, "curr_date": curr_date})
+            md = get_macro_indicators.invoke({
+                "indicator": series_id, "curr_date": curr_date,
+                "vintage_date": vintage_date, "knowledge_cutoff": knowledge_cutoff,
+            })
         except Exception as e:  # noqa: BLE001
             md = f"_({series_id} unavailable: {e})_"
         out.append(f"### {label} ({series_id})\n\n{md}")
@@ -794,6 +809,8 @@ def collect_harvest_snapshot(
     trade_date: str,
     *,
     scan_root: Path | str | None = None,
+    vintage_date: str | None = None,
+    knowledge_cutoff: str | None = None,
 ) -> dict:
     """Collect macro suppliers into a structured snapshot, without rendering files."""
     datetime.strptime(trade_date, "%Y-%m-%d")
@@ -806,7 +823,12 @@ def collect_harvest_snapshot(
         ("Cross-asset price basket (yfinance)", cross_asset_block),
     ):
         print(f"  - {title} ...", flush=True)
-        sections.append({"title": title, "body": _section_body(fn, trade_date)})
+        fred_options = {}
+        if fn in (us_macro_block, global_macro_block) and (
+            vintage_date is not None or knowledge_cutoff is not None
+        ):
+            fred_options = {"vintage_date": vintage_date, "knowledge_cutoff": knowledge_cutoff}
+        sections.append({"title": title, "body": _section_body(fn, trade_date, **fred_options)})
     tape = global_tape_payload(trade_date)
     cal = overseas_calendar_payload(trade_date)
     for title, body in external_sections(tape, cal):
@@ -881,6 +903,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="显式工作目录(session adapter 使用);缺省保持历史 context 宏观目录",
     )
+    parser.add_argument("--vintage-date", help="FRED historical information date YYYY-MM-DD")
+    parser.add_argument("--knowledge-cutoff", help="FRED research cutoff date or timezone-aware ISO timestamp")
     args = parser.parse_args(argv)
     trade_date = args.date or date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
@@ -894,14 +918,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.output_dir is not None
         else ROOT / ws.context_root() / "macro" / trade_date
     )
-    snapshot = collect_harvest_snapshot(trade_date)
+    fred_options = {}
+    if args.vintage_date is not None or args.knowledge_cutoff is not None:
+        fred_options = {"vintage_date": args.vintage_date, "knowledge_cutoff": args.knowledge_cutoff}
+    snapshot = collect_harvest_snapshot(trade_date, **fred_options)
     try:
         from autoresearch.trace.source_receipts import record_active_response
 
         record_active_response(
             provider="macro_harvest",
             endpoint="macro.harvest.snapshot.v1",
-            params={"analysis_date": trade_date},
+            params={"analysis_date": trade_date, **fred_options},
             outcome=snapshot,
             consumer_artifact_ids=["macro.data", "macro.global_tape", "macro.scan_meta"],
         )

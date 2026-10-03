@@ -58,6 +58,12 @@ def stage_inputs(context, handle, register) -> None:
     register()
     registry_path = Path(handle.workspace) / "session/artifacts.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))["artifacts"]
+    if "research.frame" not in registry and any(
+        ref["artifact_id"] == "research.frame" for ref in context.unit["input_refs"]
+    ):
+        artifacts.register_artifact(handle, "research.frame",
+                                    handle.staging / "session_outputs/decision_frame.json", "WRITE")
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))["artifacts"]
     for ref in context.unit["input_refs"]:
         artifact_id = ref["artifact_id"]
         if artifact_id not in registry:
@@ -65,7 +71,7 @@ def stage_inputs(context, handle, register) -> None:
         source = input_path(context, artifact_id)
         if not source.is_file():
             continue
-        target = Path(handle.workspace) / registry[artifact_id]["relative_path"]
+        target = artifacts.declared_path(handle, artifact_id)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
         artifacts.bind_artifact_hash(handle, artifact_id)
@@ -79,8 +85,8 @@ def export_outputs(context, handle) -> None:
         if artifact_id not in registry:
             raise RuntimeError(f"unregistered replay output: {artifact_id}")
         artifacts.bind_artifact_hash(handle, artifact_id)
-        source = Path(handle.workspace) / registry[artifact_id]["relative_path"]
-        context.output_path(artifact_id).write_bytes(source.read_bytes())
+        with artifacts.open_artifact(handle, artifact_id) as stream:
+            context.output_path(artifact_id).write_bytes(stream.read())
 
 
 def source_snapshot(context, endpoint: str) -> dict:

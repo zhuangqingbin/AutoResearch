@@ -19,7 +19,7 @@ def _request():
         "asset_type": None,
         "name": "贵州茅台",
         "force_full": False,
-        "host_profile": _profile(),
+        "host_profile": {**_profile(), "web_search": True, "web_fetch": True},
         "predecessor_run_id": None,
     }
 

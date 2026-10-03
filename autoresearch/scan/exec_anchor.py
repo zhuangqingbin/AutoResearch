@@ -51,6 +51,20 @@ EXCHANGE_CUTOFF = time(14, 57)
 #: 迟到多少个 session 之后从"需重新核验"降为"过期"。
 _EXPIRY_LAG_SESSIONS = 3
 
+
+def entry_cutoff() -> time:
+    """`scan_config.execution.entry_cutoff`(HH:MM;缺省 = EXEC_DECISION_CUTOFF)。overseas 同用。"""
+    from autoresearch.scan.user_config import knob
+    raw = str(knob("execution", "entry_cutoff", None, EXEC_DECISION_CUTOFF.strftime("%H:%M")))
+    hh, mm = raw.split(":")
+    return time(int(hh), int(mm))
+
+
+def expiry_lag_sessions() -> int:
+    """`scan_config.execution.expiry_lag_sessions`(缺省 = _EXPIRY_LAG_SESSIONS)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("execution", "expiry_lag_sessions", None, _EXPIRY_LAG_SESSIONS))
+
 ACTIONABLE = "ACTIONABLE"
 LATE_REVALIDATION_REQUIRED = "LATE_REVALIDATION_REQUIRED"
 EXPIRED = "EXPIRED"
@@ -128,7 +142,7 @@ def first_available_session(approved_at: datetime, analysis_date: str,
     for session in sorted(sessions):
         if session <= anchor:
             continue
-        cutoff = datetime.combine(date.fromisoformat(session), EXEC_DECISION_CUTOFF)
+        cutoff = datetime.combine(date.fromisoformat(session), entry_cutoff())
         if approved_at.tzinfo is not None:
             cutoff = cutoff.replace(tzinfo=approved_at.tzinfo)
         if approved_at < cutoff:
@@ -145,7 +159,7 @@ def classify(exec_lag: int | None, *, business_status: str = "SUCCEEDED",
         return UNKNOWN
     if exec_lag <= 0:
         return ACTIONABLE
-    return LATE_REVALIDATION_REQUIRED if exec_lag < _EXPIRY_LAG_SESSIONS else EXPIRED
+    return LATE_REVALIDATION_REQUIRED if exec_lag < expiry_lag_sessions() else EXPIRED
 
 
 def build_execution_block(analysis_date: str, *, approved_at: datetime | None,
@@ -154,7 +168,8 @@ def build_execution_block(analysis_date: str, *, approved_at: datetime | None,
                           sessions: list[str] | None = None,
                           calendar_quality: str = "",
                           ready_source: str = "gate4_approved",
-                          ready_quality: str = "measured") -> dict:
+                          ready_quality: str = "measured",
+                          decision_frame: dict | None = None) -> dict:
     """一个 run 的时间锚块(写进 `manifest.json` 的 `execution`)。
 
     `sessions` 缺省时自己取日历:从数据日起往后 21 个自然日足够跨过任何长假边界的
@@ -162,6 +177,16 @@ def build_execution_block(analysis_date: str, *, approved_at: datetime | None,
     """
     anchor = _dashed(analysis_date)
     quality = calendar_quality
+    if decision_frame is not None:
+        from autoresearch.contracts.execution import validate_decision_frame
+        validate_decision_frame(decision_frame)
+        if decision_frame["calendar_quality"] == "UNKNOWN":
+            sessions, quality = [], "UNKNOWN"
+        elif sessions is None:
+            evidence = decision_frame.get("calendar_evidence")
+            sessions = ([row["date"] for row in evidence["source"]["sessions"]] if evidence else
+                        [decision_frame[key] for key in ("analysis_session", "entry_session", "exit_session")])
+            quality = decision_frame["calendar_quality"]
     if sessions is None:
         end = (date.fromisoformat(anchor) + timedelta(days=21)).isoformat()
         sessions, quality = trading_sessions(anchor, end)
@@ -171,7 +196,7 @@ def build_execution_block(analysis_date: str, *, approved_at: datetime | None,
     if first is not None and anchor in index and first in index:
         staleness = index[first] - index[anchor]        # 1 = 正常 T+1
         exec_lag = max(0, staleness - 1)                # 0 = 正常
-    return {
+    block = {
         "schema_version": EXECUTION_SCHEMA_VERSION,
         "analysis_date": anchor,
         "data_as_of": anchor,
@@ -186,9 +211,14 @@ def build_execution_block(analysis_date: str, *, approved_at: datetime | None,
         "ready_quality": ready_quality,
         "calendar_quality": quality,
         "timezone_assumed": MARKET_TZ,
-        "exec_decision_cutoff": EXEC_DECISION_CUTOFF.strftime("%H:%M"),
+        "exec_decision_cutoff": entry_cutoff().strftime("%H:%M"),
         "exchange_cutoff": EXCHANGE_CUTOFF.strftime("%H:%M"),
     }
+
+    if decision_frame is not None:
+        from autoresearch.common.execution_math import constrain_execution_to_frame
+        block = constrain_execution_to_frame(block, decision_frame)
+    return block
 
 
 # ───────────────────────── 读取(新 run 直读,老 run 估算并标记) ─────────────────────────
@@ -270,7 +300,8 @@ def _upgrade_with_gate4(run: Path, block: dict) -> dict | None:
         return None
     return build_execution_block(
         str(block.get("analysis_date")), approved_at=approved, brief_written_at=written,
-        business_status="SUCCEEDED", ready_source=source, ready_quality=quality)
+        business_status="SUCCEEDED", ready_source=source, ready_quality=quality,
+        decision_frame=block.get("decision_frame"))
 
 
 def read_execution(run_dir: Path | str) -> dict:
@@ -290,6 +321,12 @@ def read_execution(run_dir: Path | str) -> dict:
             manifest = json.loads(path.read_text(encoding="utf-8"))
     block = manifest.get("execution")
     if isinstance(block, dict) and block.get("analysis_date"):
+        if block.get("decision_frame") is not None:
+            from autoresearch.common.execution_math import constrain_execution_to_frame
+            block = constrain_execution_to_frame(block, block["decision_frame"])
+        if "claim_entry_pending" in block:
+            from autoresearch.news.card_claims import constrain_claim_execution
+            block = constrain_claim_execution(block, block["claim_entry_pending"], block["claim_selected_codes"])
         if str(block.get("ready_quality")) == "measured":
             return block
         # 发布时 GATE4 还没跑,存的必然是发布时刻的**估算**(`publish_time`/`estimated`)。
@@ -298,6 +335,12 @@ def read_execution(run_dir: Path | str) -> dict:
         # 不回写 manifest:run 目录发布后不再变是 MANIFEST/ROOT 的不变量。
         upgraded = _upgrade_with_gate4(run, block)
         if upgraded is not None:
+            if block.get("decision_frame") is not None:
+                from autoresearch.common.execution_math import constrain_execution_to_frame
+                upgraded = constrain_execution_to_frame(upgraded, block["decision_frame"])
+            if "claim_entry_pending" in block:
+                from autoresearch.news.card_claims import constrain_claim_execution
+                upgraded = constrain_claim_execution(upgraded, block["claim_entry_pending"], block["claim_selected_codes"])
             return upgraded
         return block
 
@@ -337,3 +380,16 @@ __all__ = [
     "read_execution",
     "trading_sessions",
 ]
+
+
+def frozen_decision_frame(scan_dir: Path | str) -> dict | None:
+    """Use the exact run-local frame for new scan rules; never refresh a historical clock."""
+    from autoresearch.contracts.execution import validate_decision_frame
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+    from autoresearch.scan.l4.card_io import card_rules_version
+
+    root = Path(scan_dir)
+    if card_rules_version(scan_dir=root) != CURRENT_CARD_RULES:
+        return None
+    path = root / "session_outputs/decision_frame.json"
+    return validate_decision_frame(json.loads(path.read_text()))

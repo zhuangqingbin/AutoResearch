@@ -33,6 +33,40 @@ def test_registered_input_is_opened_by_identity_and_hash(tmp_path):
     assert registry["artifacts"]["stock.slim"] == descriptor
 
 
+@pytest.mark.parametrize("workspace_prefixed", [False, True])
+def test_relative_workspace_preserves_artifact_identity(tmp_path, monkeypatch, workspace_prefixed):
+    handle = _handle(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    handle.workspace = handle.workspace.relative_to(tmp_path)
+    source = handle.workspace / "staging/slim.md"
+    source.parent.mkdir()
+    source.write_bytes(b"verified input")
+    path = source if workspace_prefixed else "staging/slim.md"
+
+    descriptor = register_artifact(handle, "stock.slim", path, "READ")
+
+    assert descriptor["relative_path"] == "staging/slim.md"
+    with open_artifact(handle, "stock.slim") as stream:
+        assert stream.read() == b"verified input"
+
+
+@pytest.mark.parametrize("workspace_prefixed", [False, True])
+def test_relative_workspace_rejects_escape_and_symlink(tmp_path, monkeypatch, workspace_prefixed):
+    handle = _handle(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    handle.workspace = handle.workspace.relative_to(tmp_path)
+    outside = handle.workspace.parent / "outside.txt"
+    outside.write_text("secret")
+    link = handle.workspace / "outside-link"
+    link.symlink_to(outside.resolve())
+    prefix = handle.workspace if workspace_prefixed else type(handle.workspace)(".")
+
+    with pytest.raises(ValueError, match="outside run workspace"):
+        register_artifact(handle, "bad.parent", prefix / "../outside.txt", "READ")
+    with pytest.raises(ValueError, match="symlink"):
+        register_artifact(handle, "bad.link", prefix / "outside-link", "READ")
+
+
 def test_changed_or_replaced_input_is_rejected(tmp_path):
     handle = _handle(tmp_path)
     source = handle.workspace / "staging" / "slim.md"

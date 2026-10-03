@@ -139,10 +139,17 @@ def _result(
 def _default_begin_capsule(request: dict):
     kind = request["kind"]
     if kind == "stock-research":
+        from functools import partial
+
         from autoresearch.analyze import runctl
         from autoresearch.analyze.run_bootstrap import prepare_analyze_run
+        from autoresearch.session_agent.config import load_orchestration_config
         from autoresearch.trace.capsule import begin_run
 
+        bootstrap = partial(
+            prepare_analyze_run,
+            orchestration_config=load_orchestration_config(engine=ws.ENGINE),
+        )
         if ws.ENGINE == "codex":
             runctl._warn_if_codex_rollout_missing()
         handle = begin_run(
@@ -157,7 +164,7 @@ def _default_begin_capsule(request: dict):
                 **({"name": request["name"]} if request["name"] else {}),
             },
             session_ref=request["host_profile"]["session_ref"],
-            bootstrap=prepare_analyze_run,
+            bootstrap=bootstrap,
         )
         if ws.ENGINE == "codex":
             runctl._record_codex_escape_hatch(handle)
@@ -239,12 +246,30 @@ def _predecessor_evidence(request: dict, loader=None) -> dict | None:
         business_status = str(getattr(predecessor, "business_status", ""))
     if business_status == "ACTIVE" or not business_status:
         raise ValueError("predecessor must be a terminal run")
-    return {
+    value = {
         "schema_version": 1,
         "run_id": predecessor_id,
         "engine": predecessor.engine,
         "business_status": business_status,
     }
+
+    if request.get("schema_version", 1) >= 3:
+        from autoresearch.contracts.execution import validate_decision_frame
+        from autoresearch.session_agent import artifacts
+
+        prior_request = _read_json(Path(predecessor.workspace) / "session/request.json")
+        if prior_request["subject"] != request["subject"] or prior_request["kind"] != request["kind"]:
+            raise ValueError("review subject differs from predecessor")
+        snapshot = artifacts.snapshot_artifact(predecessor, "research.frame")
+        with artifacts.open_artifact(predecessor, "research.frame") as stream:
+            raw = stream.read()
+        frame = validate_decision_frame(json.loads(raw))
+        if frame["analysis_session"] != request["analysis_date"]:
+            raise ValueError("review must retain predecessor analysis anchor")
+        if frame["venue"] != request["research_context"]["venue"]:
+            raise ValueError("review venue differs from predecessor")
+        value.update(frame_json=raw.decode("utf-8"), frame_sha256=snapshot["sha256"])
+    return value
 
 
 def begin(
@@ -267,6 +292,12 @@ def begin(
     handle = (begin_capsule or _default_begin_capsule)(request)
     if handle.engine != ws.ENGINE:
         raise ValueError("capsule engine does not match process engine")
+    from autoresearch.trace.completeness import freeze_card_rules
+
+    freeze_card_rules(handle.capsule, kind=request["kind"], config=getattr(handle.contract, "user_config", None))
+    from autoresearch.session_agent.research_profile import freeze_research_profile
+
+    freeze_research_profile(handle, request)
     _mirror_identity(handle, "request.json", request)
     _mirror_identity(handle, "host_profile.json", request["host_profile"])
     from autoresearch.session_agent.host_evidence import register_main_context
@@ -275,6 +306,10 @@ def begin(
     if predecessor is not None:
         _mirror_identity(handle, "predecessor.json", predecessor)
     frozen_plan = (planner or _default_planner)(request, handle)
+    from autoresearch.session_agent.preflight import preflight_plan
+
+    role_support = preflight_plan(handle, frozen_plan, request["host_profile"])
+    _freeze_json(Path(handle.capsule) / "identity/session/role_support.json", role_support)
     plan_service.freeze_plan(_plan_path(handle), frozen_plan)
     _freeze_json(Path(handle.capsule) / "identity" / "session" / "plan.json", frozen_plan)
     freeze_session_origin(handle, request, frozen_plan)
@@ -286,6 +321,8 @@ def begin(
         Path(handle.capsule) / "identity" / "session" / "roles.json",
         role_manifest(role_ids),
     )
+    _mirror_identity(handle, "storage.json", {"schema_version": 1, "output_layout_version": 2,
+                                               "run_id": handle.run_id, "plan_hash": frozen_plan['plan_hash']})
     if artifact_registrar is not None:
         artifact_registrar(request, handle, frozen_plan)
     elif planner is None:
@@ -297,8 +334,10 @@ def begin(
 
 
 def _sync_expansion(handle, request: dict, expansion: dict) -> None:
+    from autoresearch.session_agent.preflight import preflight_plan
     from autoresearch.session_agent.workflows import register_expansion_artifacts
 
+    preflight_plan(handle, expansion, request["host_profile"])
     register_expansion_artifacts(request, handle, expansion)
     _freeze_json(
         Path(handle.capsule)
@@ -331,6 +370,58 @@ def _activate_after_task(handle, task: dict) -> list[str]:
     return activated
 
 
+def _failure_scope(task: dict) -> str:
+    subject = str(task.get("subject") or "")
+    return "STOCK" if (task.get("parent_task") or re.fullmatch(r"[0-9]{6}(?:\.(?:SS|SZ|BJ))?", subject)
+                       or (subject and str(task.get("role") or "").startswith("stock."))) else "GLOBAL"
+
+
+def _input_failure_scope(task: dict, artifact_id: str, tasks: list[dict]) -> str:
+    consumers = {item.get("subject") for item in tasks if artifact_id in item["input_artifact_ids"]}
+    if len(consumers) > 1 or _failure_scope(task) == "GLOBAL":
+        return "GLOBAL"
+    # A shared pack remains global when only one stock currently consumes it.
+    # Per-stock scan outputs retain their declared stock identity.
+    if (not re.match(r"scan\.l4\.[0-9]{6}\.", artifact_id)
+            and any(artifact_id in item["output_artifact_ids"] and _failure_scope(item) == "GLOBAL"
+                    for item in tasks)):
+        return "GLOBAL"
+    return "STOCK"
+
+
+def _dependency_errors(tasks: list[dict], states: dict, entries: dict, roots: dict) -> list[dict]:
+    """Project blockage without changing task ownership or terminal history."""
+    for task in tasks:
+        task_id = task["task_id"]
+        if states.get(task_id) in {"FAILED", "BLOCKED"} and task_id not in roots:
+            error = (entries.get(task_id) or {}).get("error") or {}
+            roots[task_id] = {"code": "TASK_BLOCKED", "task_id": task_id,
+                              "reason": error.get("code", "PARENT_TICKET_FAILED"),
+                              "message": error.get("message", ""),
+                              "scope": _failure_scope(task)}
+    blocked_by = {key: {key} for key in roots}
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            task_id = task["task_id"]
+            if task_id in roots or states.get(task_id) in {"SUCCEEDED", "SUPERSEDED", "RUNNING"}:
+                continue
+            dependencies = list(task["dependencies"])
+            parent = task.get("parent_task")
+            if parent:
+                dependencies.append(f"l4.{parent['subject']}.a{parent['attempt']}")
+            causes = set().union(*(blocked_by.get(dep, set()) for dep in dependencies))
+            if causes and causes != blocked_by.get(task_id):
+                blocked_by[task_id] = causes
+                changed = True
+    return [*roots.values(), *[
+        {"code": "DEPENDENCY_BLOCKED", "task_id": task_id, "blocked_by": sorted(causes),
+         "scope": "GLOBAL" if any(roots[cause]["scope"] == "GLOBAL" for cause in causes) else "STOCK"}
+        for task_id, causes in sorted(blocked_by.items()) if task_id not in roots
+    ]]
+
+
 def _state(handle) -> tuple[str, list[dict], list[dict]]:
     frozen_plan = _load_plan(handle)
     tasks = _all_tasks(handle, frozen_plan)
@@ -344,15 +435,32 @@ def _state(handle) -> tuple[str, list[dict], list[dict]]:
         else:
             states.update({task["task_id"]: "PENDING" for task in owner_tasks})
     ready = plan_service.ready_tasks(tasks, states)
+    roots = {}
+    checked_inputs = {}
+    for task in ready:
+        for artifact_id in task["input_artifact_ids"]:
+            if artifact_id not in checked_inputs:
+                try:
+                    artifacts.snapshot_artifact(handle, artifact_id)
+                    checked_inputs[artifact_id] = None
+                except (KeyError, OSError, ValueError, RuntimeError) as exc:
+                    checked_inputs[artifact_id] = exc
+            exc = checked_inputs[artifact_id]
+            if exc is not None:
+                roots[task["task_id"]] = {
+                    "code": "INPUT_UNAVAILABLE", "task_id": task["task_id"],
+                    "reason": "NO_DATA" if isinstance(exc, (KeyError, FileNotFoundError)) else "DATA_INTEGRITY",
+                    "artifact_id": artifact_id, "message": str(exc),
+                    "scope": _input_failure_scope(task, artifact_id, tasks),
+                }
+                break
+    errors = _dependency_errors(tasks, states, store.read_entries(_store_path(handle)), roots)
+    unavailable = {row["task_id"] for row in errors}
+    ready = [task for task in ready if task["task_id"] not in unavailable]
     if ready:
-        return "READY", ready, []
-    blocked = [task for task in tasks if states.get(task["task_id"]) in {"BLOCKED", "FAILED"}]
-    if blocked:
-        return (
-            "BLOCKED",
-            [],
-            [{"code": "TASK_BLOCKED", "task_id": task["task_id"]} for task in blocked],
-        )
+        return "READY", ready, errors
+    if errors:
+        return "BLOCKED", [], errors
     if tasks and all(states.get(task["task_id"]) in {"SUCCEEDED", "SUPERSEDED"} for task in tasks):
         expanded = {
             _read_json(path)["template_id"]
@@ -387,12 +495,14 @@ def status(
     from autoresearch.trace.capsule import require_active_run
 
     handle = (handle_loader or require_active_run)(run_id)
+    from autoresearch.session_agent.host_evidence import observe_activity
+    observe_activity(handle, event=command)
     state, tasks, errors = _state(handle)
     progress = None
     if getattr(getattr(handle, "contract", None), "run_kind", None) == "scan-market":
         from autoresearch.session_agent.progress import scan_progress
 
-        progress = scan_progress(handle)
+        progress = scan_progress(handle, graph_state=state)
     return _result(
         command,
         handle.run_id,
@@ -413,14 +523,22 @@ def _degrade_optional_l3_repair(handle, task_id: str, error: dict) -> bool:
     from autoresearch.session_agent.domain_ops import scan_l3_repair_degraded
 
     scan_l3_repair_degraded(error, handle=handle)
-    artifacts.bind_artifact_hash(handle, "scan.l3.repair.result")
-    effective = Path(handle.staging) / "_l3_effective_judged.json"
+    manifest = None
+    keys = ['scan.l3.repair.result']
+    effective = Path(handle.staging) / '_l3_effective_judged.json'
     if effective.is_file():
-        artifacts.bind_artifact_hash(handle, "scan.l3.effective.judged")
+        keys.append('scan.l3.effective.judged')
+    if artifacts.layout_version(handle) >= 2:
+        spec = _task(handle, 'scan.l3.repair.apply')
+        manifest = artifacts.capture_outputs(handle, {**spec, 'output_artifact_ids': keys},
+                                             max(1, store.read_entry(_store_path(handle), task_id)['attempt']))
+    else:
+        for key in keys:
+            artifacts.bind_artifact_hash(handle, key)
     task_ids = [task_id]
     if task_id == "scan.l3.repair":
         task_ids.append("scan.l3.repair.apply")
-    store.supersede_optional_failure(_store_path(handle), task_ids, error)
+    store.supersede_optional_failure(_store_path(handle), task_ids, error, accepted_artifacts=manifest)
     return True
 
 
@@ -465,7 +583,7 @@ def fail(
         task_id,
         {"code": kind, "message": message},
     )
-    if task["parent_task"] is not None:
+    if task["parent_task"] is not None and task.get("role") != "scan.l4.review":
         from autoresearch.session_agent import legacy_scan
 
         parent = task["parent_task"]
@@ -528,21 +646,31 @@ def retry_l4(
     if any(states.get(task["task_id"]) == "RUNNING" for task in previous_tasks):
         raise RuntimeError("L4 retry requires every previous child to be quiescent")
     request = _read_json(_session_dir(handle) / "request.json")
-    config = getattr(handle.contract, "user_config", {}) or {}
-    intel_enabled = bool((config.get("l4_intel") or {}).get("enabled"))
+    intel_enabled = any(task.get("role") == "scan.l4.intel" for task in previous_tasks)
+    initial_tasks = [task for task in previous_tasks
+                     if task["expected_output_contract"] == "research.card.initial.v1"]
+    successful_initials = [task for task in initial_tasks if states.get(task["task_id"]) == "SUCCEEDED"]
+    retained_initial = successful_initials[0] if successful_initials else None
     prompt_snapshot = artifacts.snapshot_artifact(handle, f"scan.l4.{code6}.a1.prompt")
+    snapshots = [{"artifact_id": prompt_snapshot["artifact_id"], "sha256": prompt_snapshot["sha256"]}]
+    if retained_initial is not None:
+        for artifact_id in [*retained_initial["input_artifact_ids"], *retained_initial["output_artifact_ids"]]:
+            frozen = artifacts.snapshot_artifact(handle, artifact_id)
+            snapshots.append({"artifact_id": artifact_id, "sha256": frozen["sha256"]})
     expansion = l4_retry_expansion(
         frozen_plan,
         code6,
         expected_attempt,
-        [
-            {
-                "artifact_id": prompt_snapshot["artifact_id"],
-                "sha256": prompt_snapshot["sha256"],
-            }
-        ],
+        snapshots,
         intel_enabled=intel_enabled,
+        retained_initial=retained_initial,
+        holding=any(any(key.endswith(".deep") for key in task["input_artifact_ids"])
+                    for task in initial_tasks),
     )
+    from autoresearch.session_agent.decision_frame import attach_expansion, frame_in_plan
+    from autoresearch.session_agent.workflows.scan import two_stage_plan
+    if two_stage_plan(frozen_plan) and frame_in_plan(frozen_plan):
+        expansion = attach_expansion(expansion, artifacts.snapshot_artifact(handle, "research.frame"))
     root = _session_dir(handle) / "recoveries"
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{expansion['expansion_id']}.json"
@@ -592,7 +720,27 @@ def _record_completion(handle, task: dict, attempt: int, payload: dict, recorder
     )
 
 
+def _recover_inference_completion(handle, task, receipt, recorder):
+    entry = store.read_entry(_store_path(handle), task['task_id'])
+    submission = entry.get('accepted_submission')
+    if submission is None:
+        return
+    receipt_path = Path(handle.capsule) / 'agents/session/receipts' / f"{receipt['receipt_id']}.json"
+    _freeze_json(receipt_path, receipt)
+    completion = {
+        'receipt_ref': receipt_path.relative_to(handle.capsule).as_posix(),
+        'receipt_id': receipt['receipt_id'], 'outputs': submission['outputs'],
+        'host_receipt_id': submission['host_receipt_id'],
+    }
+    completion_path = Path(handle.capsule) / 'agents/session/completions' / f"{task['task_id']}-a{receipt['attempt']}.json"
+    _freeze_json(completion_path, completion)
+    _record_completion(handle, task, receipt['attempt'], completion, recorder)
+
+
 def _promote_l4_retry_output(handle, task: dict) -> None:
+    if artifacts.layout_version(handle) >= 2:
+        artifacts.materialize_outputs(handle)
+        return
     match = re.fullmatch(
         r"l4\.(\d{6})\.a(\d+)\.(intel|card|review2|review3)",
         task["task_id"],
@@ -620,6 +768,13 @@ def _promote_l4_retry_output(handle, task: dict) -> None:
         previous = int(attempt_text) - 1
         original_id = f"scan.l4.{code}.a{previous}.card"
         original = store.read_entry(_store_path(handle), f"l4.{code}.a{previous}.card")
+        if original["state"] == "SUPERSEDED":
+            # resume may repeat a completed promotion. Verify the accepted alias
+            # byte-for-byte; do not repair or conceal a later write to that path.
+            with artifacts.open_artifact(handle, original_id) as stream:
+                if stream.read() != content:
+                    raise RuntimeError("promoted L4 card alias changed after acceptance")
+            return
         if original["state"] != "WAITING_RETRY":
             raise RuntimeError("original L4 card is not waiting for retry promotion")
         expected_sha256 = artifacts.binding_sha256(handle, original_id)
@@ -702,6 +857,8 @@ def claim(
     )
     from autoresearch.session_agent.evidence import freeze_claim
 
+    if artifacts.layout_version(handle) >= 2 and task['kind'] == 'INFERENCE':
+        receipt = {**receipt, 'output_paths': artifacts.output_paths(handle, task, expected_attempt)}
     freeze_claim(handle, task, expected_attempt, receipt)
     claim_result: dict = {"claim_receipt": receipt}
     if task["kind"] == "INFERENCE":
@@ -724,6 +881,15 @@ def claim(
             }
         )
         invocation_id = f"session-{task['task_id']}-a{expected_attempt}"
+        if artifacts.layout_version(handle) >= 2:
+            from autoresearch.session_agent.dispatch import build_request
+            claim_result['dispatch_request'] = build_request(
+                handle, task, expected_attempt, host_profile=host_profile).to_json()
+            from autoresearch.session_agent.task_access import activate_claim_access, manifest_path
+            activate_claim_access(Path(handle.workspace) / 'session/dispatch' / f"{task['task_id']}-a{expected_attempt}.json")
+            access_path = manifest_path(Path(handle.workspace) / 'session/dispatch' / f"{task['task_id']}-a{expected_attempt}.json")
+            claim_result['access_manifest'] = ({'path': str(access_path), 'sha256': sha256_file(access_path), 'enforcement': 'UNVERIFIED'}
+                                               if access_path.is_file() else {'status': 'MISSING_LEGACY_BINDING'})
         handoff = {
             "schema_version": 1,
             "envelope": envelope,
@@ -731,6 +897,9 @@ def claim(
             "request": claim_result["request"],
             "claim_receipt": receipt,
         }
+        if 'dispatch_request' in claim_result:
+            handoff['dispatch_request'] = claim_result['dispatch_request']
+            handoff['access_manifest'] = claim_result['access_manifest']
         request_path = Path(handle.capsule) / "agents/session/requests" / f"{invocation_id}.json"
         _freeze_json(request_path, handoff)
         _boundary_recorder(event_recorder)(
@@ -757,6 +926,7 @@ def execute(
     *,
     handle_loader: Callable[[str], object] | None = None,
     runner=None,
+    owner_callback=None,
 ) -> dict:
     from autoresearch.trace.capsule import require_active_run
 
@@ -778,7 +948,15 @@ def execute(
 
         validate_operation_params(request, task, params)
     kwargs = {} if runner is None else {"runner": runner}
-    execution = executor.execute_operation(handle, task, attempt, params, **kwargs)
+    if owner_callback is not None and task["operation"] == "research.card.facts" and runner is None:
+        kwargs["owner_callback"] = owner_callback
+    artifacts.materialize_outputs(handle)
+    try:
+        execution = executor.execute_operation(handle, task, attempt, params, **kwargs)
+    except KeyboardInterrupt:
+        fail(run_id, task_id, attempt, "INTERRUPTED", "deterministic execution interrupted",
+             handle_loader=lambda unused: handle)
+        raise
     if execution["status"] != "SUCCEEDED":
         failure = {
             "code": "OPERATION_FAILED",
@@ -814,12 +992,28 @@ def execute(
                 f"child operation failed: {task_id}",
             )
         return status(run_id, handle_loader=lambda unused: handle, command="execute")
-    outputs = []
-    for artifact_id in task["output_artifact_ids"]:
-        descriptor = artifacts.bind_artifact_hash(handle, artifact_id)
-        outputs.append({"artifact_id": artifact_id, "sha256": descriptor["sha256"]})
+    if "prepared_output" in execution:
+        current = store.read_entry(_store_path(handle), task_id)
+        if current["state"] != "RUNNING" or current["attempt"] != attempt:
+            raise RuntimeError("prepared result lost task ownership")
+        if task["parent_task"] is not None:
+            legacy_scan.validate_parent(handle, task["parent_task"])
+        _verify_frozen_inputs(handle, task, current)
+        if task["operation"] != "research.card.facts" or len(task["output_artifact_ids"]) != 1:
+            raise ValueError("prepared result requires facts output")
+        atomic_write_json(artifacts.declared_path(handle, task["output_artifact_ids"][0]),
+                          execution.pop("prepared_output"))
+    manifest = None
+    if artifacts.layout_version(handle) >= 2:
+        manifest = artifacts.capture_outputs(handle, task, attempt)
+        outputs = [{'artifact_id': key, 'sha256': row['sha256']} for key, row in manifest.items()]
+    else:
+        outputs = []
+        for artifact_id in task['output_artifact_ids']:
+            descriptor = artifacts.bind_artifact_hash(handle, artifact_id)
+            outputs.append({'artifact_id': artifact_id, 'sha256': descriptor['sha256']})
     receipt = store.complete_deterministic(
-        _store_path(handle), task_id, attempt, outputs, execution
+        _store_path(handle), task_id, attempt, outputs, execution, accepted_artifacts=manifest
     )
     from autoresearch.session_agent.evidence import freeze_receipt
 
@@ -897,6 +1091,183 @@ def calculate(
     return _result("calculate", run_id, "WAITING", result=calculation)
 
 
+def source_fields(
+    run_id: str, task_id: str, attempt: int, request: dict, *, handle_loader=None,
+) -> dict:
+    """Root-only field verification over an existing receipt in the admitted task graph.
+
+    Same current-attempt and frozen-input gates as calculate. The registered intel
+    status operation also calls this service; research file brokers do not execute it.
+    """
+    from datetime import datetime, timezone
+
+    from autoresearch.contracts.session_task import require_exact_fields
+    from autoresearch.news import source_fields as fields
+    from autoresearch.trace.capsule import require_active_run
+    from autoresearch.trace.events import append_event
+    from autoresearch.trace.source_receipts import read_receipts, record_response
+
+    handle = (handle_loader or require_active_run)(run_id)
+    if handle.run_id != run_id:
+        raise ValueError("source-fields run mismatch")
+    task = _task(handle, task_id)
+    if task["owner"] != "SESSION" or not (
+        task["kind"] == "INFERENCE" or task["operation"] == "scan.l4.intel.status"
+    ):
+        raise ValueError("source-fields requires inference or registered intel status owner")
+    entry = store.read_entry(_store_path(handle), task_id)
+    if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
+        raise RuntimeError("source-fields task attempt is not running")
+    if task["parent_task"] is not None:
+        from autoresearch.session_agent import legacy_scan
+        legacy_scan.validate_parent(handle, task["parent_task"])
+    _verify_frozen_inputs(handle, task, entry)
+    require_exact_fields(request, frozenset({"source_receipt_id", "adapter_id", "selector"}))
+    receipts = {row["receipt_id"]: row for row in read_receipts(handle.capsule)}
+    source = receipts[request["source_receipt_id"]]
+    allowed = fields.admissible_attempts(store.read_entries(_store_path(handle)), task_id, attempt)
+    fields.require_source_identity(source, engine=handle.engine, run_id=handle.run_id, allowed=allowed)
+    frame = json.loads(artifacts.read_bytes(handle, "research.frame"))
+    fields.require_timing(source, frame)
+    # A source superseded by an available (or undated) correction stays unavailable.
+    for row in receipts.values():
+        if source["receipt_id"] in row.get("supersedes_receipt_ids", []):
+            try:
+                fields.require_timing(row, frame)
+            except ValueError:
+                times = row.get("source_timing")
+                if times and times.get("first_available_at") is not None:
+                    continue
+            raise ValueError("source receipt has been superseded")
+    payload, paths = fields.derive_fields(source, fields.checked_payload(Path(handle.capsule), source), request["adapter_id"], request["selector"])
+    subject = str(task["subject"] or "").split(".")[0]
+    if payload["event"]["subject_code"] != subject:
+        raise ValueError("source row subject differs from task")
+    params = {"producer_version": fields.PRODUCER_VERSION, **request,
+              "field_paths": paths, "frame_sha256": sha256_bytes(canonical_json(frame).encode()),
+              "input_snapshots": entry["claim_receipt"]["input_snapshots"]}
+    for row in receipts.values():
+        if row["task_id"] == task_id and row["attempt"] == attempt and row["endpoint"] == "claim_fields.v1" and row["normalized_params"] == params:
+            fields.replay_review(Path(handle.capsule), row, source, frame)
+            return _result("source-fields", run_id, "WAITING", result=row)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    review = record_response(handle, {
+        "engine": handle.engine, "run_id": handle.run_id, "task_id": task_id, "attempt": attempt,
+        "provider": "deterministic", "endpoint": "claim_fields.v1", "normalized_params": params,
+        "started_at": timestamp, "ended_at": timestamp, "as_of": source["as_of"],
+        "available_at": None, "consumer_refs": [],
+    }, payload)
+    append_event(Path(handle.capsule) / "events/events.jsonl", run_id=handle.run_id,
+        engine=handle.engine, stage="intel", invocation_id=f"session-{task_id}-a{attempt}",
+        attempt=attempt, subject=task["subject"], event_type="SOURCE_FIELDS_VERIFIED",
+        payload={"review_receipt_id": review["receipt_id"], "source_receipt_id": source["receipt_id"],
+                 "task_id": task_id, "attempt": attempt})
+    return _result("source-fields", run_id, "WAITING", result=review)
+
+
+def _validate_submission_host_receipt(
+    handle, submission: dict, task: dict, host_receipt: dict, *, _entry_reader=None,
+) -> str:
+    """Read-only receipt validation shared by precheck and formal submit."""
+    host_profile = _read_json(_session_dir(handle) / "host_profile.json")
+    validate_receipt(task, host_receipt, host_profile)
+    if task["expected_output_contract"] == "research.card.decision.v1":
+        from autoresearch.session_agent.card_facts import validate_distinct_context
+        validate_distinct_context(handle, task, host_receipt, _entry_reader=_entry_reader)
+    if host_receipt["attempt"] != submission["envelope"]["attempt"]:
+        raise ValueError("host receipt attempt mismatch")
+    receipt_id = sha256_bytes(canonical_json(host_receipt).encode("utf-8"))
+    if submission["host_receipt_id"] != receipt_id:
+        raise ValueError("host_receipt_id does not match the verified receipt")
+    from autoresearch.session_agent.host_evidence import resolve_receipt_evidence
+    resolve_receipt_evidence(handle, task, host_receipt)
+    return receipt_id
+
+
+def precheck(run_id: str, submission: dict, *, handle_loader=None, host_receipt=None) -> dict:
+    """Inspect a candidate; this never accepts, binds, publishes, or freezes receipts.
+
+    One output hashes its captured bytes. Multiple outputs hash canonical JSON of
+    the artifact-id -> captured SHA256 mapping (UTF-8, no trailing newline).
+    """
+    import contextlib
+    from autoresearch.trace.capsule import require_active_run
+    from autoresearch.session_agent import host_evidence
+    from autoresearch.session_agent.executors import mailbox
+    from autoresearch.session_agent.validation import (
+        DomainValidationError, validate_deep_read_evidence, validate_registered_domain_contract,
+    )
+
+    validate_submission(submission)
+    handle = (handle_loader or require_active_run)(run_id)
+    if handle.run_id != run_id or submission["envelope"]["run_id"] != handle.run_id:
+        raise ValueError("submission run_id does not match command run_id")
+    if artifacts.layout_version(handle) < 2:
+        raise ValueError("precheck requires output layout version 2")
+    task = _task(handle, submission["envelope"]["task_id"])
+    if task["kind"] != "INFERENCE":
+        raise ValueError("precheck requires an inference task")
+
+    def inspect(value, spec, entry, read_locked_entry):
+        attempt = value["envelope"]["attempt"]
+        if mailbox.is_abandoned(handle.staging, spec["task_id"], attempt):
+            raise store.TaskConflict("submission attempt was abandoned")
+        _verify_frozen_inputs(handle, spec, entry)
+        manifest = artifacts.capture_outputs(handle, spec, attempt, purpose="precheck")
+        hashes = {key: row["sha256"] for key, row in manifest.items()}
+        digest = (list(hashes.values())[0] if len(hashes) == 1
+                  else sha256_bytes(canonical_json(hashes).encode("utf-8")))
+        errors, deep_ids = [], []
+        domain_status, host_status = "PASS", "PENDING_FINAL_BINDING"
+        with artifacts.candidate_view(handle, manifest):
+            try:
+                validate_submission_outputs(handle, value, spec)
+                deep_ids = validate_registered_domain_contract(handle, value, spec)
+            except (DomainValidationError, ValueError, KeyError, RuntimeError, OSError) as exc:
+                domain_status = "FAIL"
+                errors.append(f"domain: {exc}")
+            try:
+                if host_receipt is not None:
+                    _validate_submission_host_receipt(
+                        handle, value, spec, host_receipt, _entry_reader=read_locked_entry)
+                    host_status = "VERIFIED"
+                elif value["host_receipt_id"] is not None:
+                    raise ValueError("host_receipt_id requires the matching host receipt")
+                else:
+                    # An absent final binding is pending. A corrupt existing one
+                    # is invalid, even when the caller omits its receipt.
+                    binding = host_evidence._existing_binding(handle, spec["task_id"], attempt)
+                    if binding is not None:
+                        host_evidence._load_binding_ref(handle, f"host-binding:{binding['binding_id']}")
+                        identity = {"engine": handle.engine, "run_id": handle.run_id,
+                                    "task_id": spec["task_id"], "attempt": attempt,
+                                    "role": spec["role"], "subject": spec["subject"]}
+                        if any(binding.get(key) != expected for key, expected in identity.items()):
+                            raise ValueError("host evidence task identity mismatch")
+                        if domain_status == "PASS":
+                            validate_deep_read_evidence(handle, value, spec, deep_ids)
+                if host_status == "VERIFIED" and domain_status == "PASS":
+                    validate_deep_read_evidence(handle, value, spec, deep_ids)
+            except (ValueError, KeyError, RuntimeError, OSError, TypeError) as exc:
+                host_status = "INVALID"
+                errors.append(f"host evidence: {exc}")
+        return {"schema_version": 1, "run_id": run_id, "task_id": spec["task_id"], "attempt": attempt,
+                "candidate_sha256": digest, "domain_status": domain_status,
+                "host_evidence_status": host_status, "errors": errors,
+                "can_submit": domain_status == "PASS" and host_status == "VERIFIED"}
+
+    parent_guard = contextlib.nullcontext()
+    if task["parent_task"] is not None:
+        from autoresearch.scan import l4_tasks
+        from autoresearch.session_agent import legacy_scan
+        parent_guard = l4_tasks._locked(legacy_scan.taskbook_path(handle))
+    with mailbox._locked(handle.staging), parent_guard:
+        if task["parent_task"] is not None:
+            legacy_scan.verify_child_handoff(handle, task, submission["envelope"])
+        result = store.precheck(_store_path(handle), submission, inspect)
+    return _result("precheck", run_id, "WAITING", result=result)
+
+
 def submit(
     run_id: str,
     submission: dict,
@@ -915,23 +1286,26 @@ def submit(
     task = _task(handle, submission["envelope"]["task_id"])
     if task["kind"] != "INFERENCE":
         raise ValueError("submit requires an inference task")
+    from autoresearch.session_agent.host_evidence import observe_activity
+    observe_activity(handle, task_id=task["task_id"], attempt=submission["envelope"]["attempt"], event="submit")
+    existing = store.read_entry(_store_path(handle), task['task_id'])
+    if existing['state'] == 'SUCCEEDED' and artifacts.layout_version(handle) >= 2:
+        receipt = store.accept(_store_path(handle), submission, lambda *_: None)
+        from autoresearch.session_agent.evidence import freeze_receipt
+        freeze_receipt(handle, task, receipt['attempt'], receipt)
+        _recover_inference_completion(handle, task, receipt, event_recorder)
+        artifacts.materialize_outputs(handle)
+        current = status(run_id, handle_loader=lambda unused: handle, command='submit')
+        current['result'] = {'receipt': receipt}
+        return current
     if task["parent_task"] is not None:
         from autoresearch.session_agent import legacy_scan
 
         legacy_scan.verify_child_handoff(handle, task, submission["envelope"])
-    host_profile = _read_json(_session_dir(handle) / "host_profile.json")
     entry = store.read_entry(_store_path(handle), task["task_id"])
     _verify_frozen_inputs(handle, task, entry)
     if host_receipt is not None:
-        validate_receipt(task, host_receipt, host_profile)
-        if host_receipt["attempt"] != submission["envelope"]["attempt"]:
-            raise ValueError("host receipt attempt mismatch")
-        host_receipt_id = sha256_bytes(canonical_json(host_receipt).encode("utf-8"))
-        if submission["host_receipt_id"] != host_receipt_id:
-            raise ValueError("host_receipt_id does not match the verified receipt")
-        from autoresearch.session_agent.host_evidence import resolve_receipt_evidence
-
-        resolve_receipt_evidence(handle, task, host_receipt)
+        host_receipt_id = _validate_submission_host_receipt(handle, submission, task, host_receipt)
         _freeze_json(
             _session_dir(handle) / "receipts" / f"{host_receipt_id}.json",
             host_receipt,
@@ -945,16 +1319,48 @@ def submit(
     elif task["independent_context"]:
         raise ValueError("independent task requires a verified host receipt")
 
+    from autoresearch.session_agent.executors import mailbox
+
+    def require_not_abandoned(value):
+        envelope = value['envelope']
+        if mailbox.is_abandoned(handle.staging, envelope['task_id'], envelope['attempt']):
+            raise store.TaskConflict('submission attempt was abandoned')
+
     def checked(value: dict, spec: dict) -> None:
+        require_not_abandoned(value)
         domain_validator = validator
         if domain_validator is None:
 
             def domain_validator(submitted, task):
                 return validate_registered_contract(handle, submitted, task)
 
-        validate_submission_outputs(handle, value, spec, domain_validator=domain_validator)
+        try:
+            validate_submission_outputs(handle, value, spec, domain_validator=domain_validator)
+        except Exception:
+            observe_activity(handle, task_id=spec['task_id'], attempt=value['envelope']['attempt'],
+                             event='submit_rejected')
+            raise
 
-    receipt = store.accept(_store_path(handle), submission, checked)
+    def prepare(value, spec):
+        require_not_abandoned(value)
+        manifest = artifacts.capture_outputs(handle, spec, value['envelope']['attempt'], expected=value['outputs'])
+        with artifacts.candidate_view(handle, manifest):
+            checked(value, spec)
+        return manifest
+
+    import contextlib
+    parent_guard = contextlib.nullcontext()
+    if task['parent_task'] is not None:
+        from autoresearch.scan import l4_tasks
+        from autoresearch.session_agent import legacy_scan
+        parent_guard = l4_tasks._locked(legacy_scan.taskbook_path(handle))
+    with mailbox._locked(handle.staging), parent_guard:
+        if task['parent_task'] is not None:
+            legacy_scan.verify_child_handoff(handle, task, submission['envelope'])
+        if artifacts.layout_version(handle) >= 2:
+            receipt = store.accept(_store_path(handle), submission, lambda *_: None, prepare=prepare)
+        else:
+            receipt = store.accept(_store_path(handle), submission, checked)
     from autoresearch.session_agent.evidence import freeze_receipt
 
     freeze_receipt(
@@ -994,6 +1400,9 @@ def resume(
     from autoresearch.trace.capsule import require_active_run
 
     handle = (handle_loader or require_active_run)(run_id)
+    from autoresearch.session_agent.host_evidence import observe_activity
+    observe_activity(handle, event='recovery')
+    artifacts.materialize_outputs(handle)
     request = _read_json(_session_dir(handle) / "request.json")
     expansion_root = _session_dir(handle) / "expansions"
     if expansion_root.is_dir():
@@ -1013,14 +1422,17 @@ def resume(
                 _activate_after_task(handle, task)
             receipt = store.recover_receipt(_store_path(handle), task["task_id"])
             if receipt is not None:
+                from autoresearch.session_agent.evidence import freeze_receipt
+                freeze_receipt(handle, task, receipt['attempt'], receipt)
                 recovered.append(receipt)
                 if task["kind"] == "INFERENCE":
+                    _recover_inference_completion(handle, task, receipt, event_recorder)
                     completion_path = (
                         Path(handle.capsule)
                         / "agents/session/completions"
                         / f"{task['task_id']}-a{receipt['attempt']}.json"
                     )
-                    if completion_path.is_file():
+                    if completion_path.is_file() and artifacts.layout_version(handle) < 2:
                         _record_completion(
                             handle,
                             task,
@@ -1117,11 +1529,13 @@ def finish(
 __all__ = [
     "begin",
     "calculate",
+    "source_fields",
     "claim",
     "execute",
     "fail",
     "finish",
     "next",
+    "precheck",
     "resume",
     "retry_l4",
     "status",

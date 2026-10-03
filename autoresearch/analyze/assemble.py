@@ -15,7 +15,7 @@ split into two tiers so the note reads top-down like a real PM memo:
 
 Only the spine + the core analyst lenses are required; every other lens is
 optional and skipped if absent. The final decision is still validated with the
-project's own ``parse_rating`` (the function behind ``SignalProcessor``).
+shared strict rating/action contract.
 
 Usage:
     python -m autoresearch.analyze.assemble context/analyze/<TICKER>_<YYYYMMDD> [--name 中文简称]
@@ -31,7 +31,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import validate_rating_and_proposal
 from autoresearch.common import workspace as ws
 from autoresearch.data import contracts as data_contracts
 
@@ -160,6 +160,8 @@ def _main_unlocked(
     clock: datetime | None = None,
     reports_root: Path | str | None = None,
     context_root: Path | str | None = None,
+    decision_context: dict | None = None,
+    write_operation: str = "stock.assemble",
 ) -> int:
     argv = sys.argv[1:]
     explicit_name = None
@@ -188,15 +190,34 @@ def _main_unlocked(
     # 只在最后调一次宽松 `parse_rating`(找不到就默默当 Hold),报告与 manifest 已经写完
     # 才会被人发现"这张卡其实没结论"。改为提前读一次、strict 校验两条契约行,任一缺席
     # 直接 return 1 并点名缺哪行,不写出任何文件。
-    decision_text = _read(root, DECISION_REL)
-    rating = parse_rating(decision_text, strict=True)
-    proposal_m = re.search(r"FINAL TRANSACTION PROPOSAL:\s*\*\*(BUY|HOLD|SELL)\*\*",
-                           decision_text)
-    if rating is None or not proposal_m:
-        print("[CONTRACT] decision.md 缺契约行:"
-              + ("`**Rating**: <五档>` " if rating is None else "")
-              + ("`FINAL TRANSACTION PROPOSAL: **…**`" if not proposal_m else ""))
+    decision_text = (root / DECISION_REL).read_bytes().decode("utf-8")
+    semantics = {}
+    try:
+        rating, proposal = validate_rating_and_proposal(decision_text)
+        if decision_context is not None:
+            from autoresearch.common.card_decision import validate_decision_text
+            from autoresearch.contracts.profiles import (
+                CURRENT_CARD_RULES,
+                validate_card_rules_version,
+            )
+
+            version = validate_card_rules_version(decision_context["rules_version"])
+            if version == CURRENT_CARD_RULES:
+                semantics = validate_decision_text(decision_text, subject=decision_context["subject"],
+                                       frame=decision_context["frame"], bands=decision_context.get("rating_bands"))
+                if "claim_context" in decision_context:
+                    from autoresearch.news.card_claims import validate_claimed_decision
+                    semantics = validate_claimed_decision(decision_text, subject=decision_context["subject"],
+                        frame=decision_context["frame"], frame_hash=decision_context["frame_hash"],
+                        context=decision_context["claim_context"], bands=decision_context.get("rating_bands"))
+    except ValueError as exc:
+        print(f"[CONTRACT] decision.md: {exc}")
         return 1
+
+    claim_note = ""
+    if "claim_usage" in semantics:
+        from autoresearch.news.card_claims import usage_note
+        claim_note = usage_note(semantics["claim_usage"])
 
     spine_present = [(t, p) for t, items in SPINE if (p := _present(root, items))]
     appx_present = [(t, p) for t, items in APPENDIX if (p := _present(root, items))]
@@ -242,6 +263,8 @@ def _main_unlocked(
         for name, rel in present:
             out.append(_anchored("###", name, _read(root, rel)))
 
+    if claim_note:
+        out.append(claim_note)
     report_base = Path(reports_root) if reports_root is not None else ws.reports_root()
     out_dir = report_base / "analyze" / now.strftime("%Y%m%d_%H%M")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -271,7 +294,8 @@ def _main_unlocked(
         "context_file": str(ctx_file) if ctx_file.exists() else None,
         "degradations": len(data_contracts.degradations()),
         "rating": rating,
-        "proposal": proposal_m.group(1),
+        "proposal": proposal,
+        **{key: semantics[key] for key in ("machine_suggestion", "machine_reason", "execution", "claim_usage") if key in semantics},
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"[assembled] {out_path}")
@@ -289,10 +313,11 @@ def _main_unlocked(
         outputs=[out_path, out_dir / "manifest.json"],
         inputs=[str(root)],
         metrics={
-            "ticker": ticker, "rating": rating, "proposal": proposal_m.group(1),
+            "ticker": ticker, "rating": rating, "proposal": proposal,
             "spine_sections": len(spine_present), "appendix_sections": len(appx_present),
             "skipped_lenses": len(skipped), "report_dir": str(out_dir),
         },
+        operation=write_operation,
     )
     return 0
 
@@ -302,14 +327,48 @@ def main(
     clock: datetime | None = None,
     reports_root: Path | str | None = None,
     context_root: Path | str | None = None,
+    decision_context: dict | None = None,
+    write_operation: str = "stock.assemble",
 ) -> int:
+    """`write_operation`:本次装配以哪个操作的身份过写守卫。CLI 用缺省;session_v1 的 FULL
+    计划登记的是 `stock.full.assemble`,由 `domain_ops.stock_full_assemble` 传入。"""
     from autoresearch.trace.write_guard import guarded_ambient_write
 
-    with guarded_ambient_write("stock.assemble"):
+    with guarded_ambient_write(write_operation) as tracked:
+        if tracked is not None:
+            from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+            from autoresearch.trace.completeness import (
+                card_rating_bands_from_capsule,
+                card_rules_from_capsule,
+            )
+            if card_rules_from_capsule(tracked.capsule) == CURRENT_CARD_RULES and (
+                decision_context is None or decision_context.get("rules_version") != CURRENT_CARD_RULES
+            ):
+                print("[CONTRACT] skills-gap-v3 assembly requires its frozen decision context")
+                return 1
+            if card_rules_from_capsule(tracked.capsule) == CURRENT_CARD_RULES:
+                frozen_bands = card_rating_bands_from_capsule(tracked.capsule)
+                if decision_context.get("rating_bands", frozen_bands) != frozen_bands:
+                    print("[CONTRACT] rating policy differs from frozen run")
+                    return 1
+                decision_context = {**decision_context, "rating_bands": frozen_bands}
+                from autoresearch.news.card_claims import bound_claim_context
+                from autoresearch.trace.frozen_sources import frozen_source_context
+                source_context = frozen_source_context(tracked.staging)
+                if source_context is None or source_context["frame"] != decision_context["frame"]:
+                    print("[CONTRACT] decision frame differs from frozen source")
+                    return 1
+                registry = json.loads((Path(tracked.workspace) / "session/artifacts.json").read_text())
+                decision_context.update(
+                    claim_context=bound_claim_context(tracked, artifact_id="stock.full.4_decision.decision"),
+                    frame_hash=registry["artifacts"]["research.frame"]["sha256"],
+                )
         return _main_unlocked(
             clock=clock,
             reports_root=reports_root,
             context_root=context_root,
+            decision_context=decision_context,
+            write_operation=write_operation,
         )
 
 

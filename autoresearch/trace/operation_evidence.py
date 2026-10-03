@@ -19,6 +19,7 @@ SERVICE_OPERATIONS = frozenset(
     {
         "prewarm",
         "dossier.reconcile",
+        "dossier.delta",
         "broker.ingest",
         "broker.reconcile",
         "research.evaluate",

@@ -34,6 +34,13 @@ CODES = [f"{600000 + i:06d}" for i in range(78)] + ["001283", "300857"]
 FLAT = {"open": 10.0, "close": 10.0, "high": 10.5, "low": 9.5, "pct_chg": 0.0}
 
 
+@pytest.fixture(autouse=True)
+def trusted_calendar(monkeypatch):
+    from autoresearch.scan import exec_anchor, outcome
+    monkeypatch.setattr(exec_anchor, 'trading_sessions', lambda *_: (DAYS, 'trade_cal'))
+    monkeypatch.setattr(outcome, '_normalize_today', lambda today: str(today or DAYS[-1]).replace('-', ''))
+
+
 # ───────────────────────── 合成湖 ─────────────────────────
 
 def _lake(tmp_path, *, days=None, gaps=None, sealed=(), fwd5=None, fwd10=None):
@@ -360,12 +367,12 @@ def test_gap_matures_while_fwd10_stays_pending(tmp_path, monkeypatch):
     缺失。这里 gap 成熟、fwd5/fwd10 各自 PENDING —— 三条腿互不阻塞。"""
     monkeypatch.chdir(tmp_path)
     lake = _lake(tmp_path, days=DAYS[:4])          # 湖只到 D+3
-    table, meta = P.build_population(_full_run(tmp_path), lake_daily=lake)
+    table, meta = P.build_population(_full_run(tmp_path), lake_daily=lake, today=DAYS[3])
     assert set(table[f"status_{P.MAIN}"]) == {P.MATURE}
     assert set(table["status_fwd_5_oc"]) == {P.PENDING}
     assert set(table["status_fwd_10_oc"]) == {P.PENDING}
     assert table[f"matures_on_{P.MAIN}"].iloc[0] == DAYS[2]
-    assert meta["matures_on"]["fwd_10_oc"] is None      # 还不知道那天是哪天,不猜
+    assert meta["matures_on"]["fwd_10_oc"] == DAYS[10]  # trusted calendar determines future maturity
 
 
 def test_fwd10_turns_mature_once_the_lake_reaches_d10(tmp_path, monkeypatch):
@@ -398,10 +405,13 @@ def test_build_reruns_while_any_column_is_pending(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     lake = _lake(tmp_path, days=DAYS[:4])
     _full_run(tmp_path)
+    from autoresearch.scan import outcome
+    monkeypatch.setattr(outcome, "_normalize_today", lambda _: DAYS[3])
     root = tmp_path / ws.reports_root() / "scan"
     assert P.build(reports_root=root, lake_daily=lake)["built"] == 1
     again = P.build(reports_root=root, lake_daily=lake)
     assert again["built"] == 1 and again["skipped"] == 0        # fwd5/10 还 PENDING
+    monkeypatch.setattr(outcome, "_normalize_today", lambda _: DAYS[-1])
     full = _lake(tmp_path, days=DAYS)                          # 湖补到 D+10 之后
     assert P.build(reports_root=root, lake_daily=full)["built"] == 1
     assert P.build(reports_root=root, lake_daily=full)["skipped"] == 1
@@ -785,3 +795,54 @@ def test_size_does_not_materialise_into_the_ledger(tmp_path, monkeypatch):
     run = _full_run(tmp_path)
     P.measure_size(run, lake_daily=lake)
     assert not P.ledger_root(tmp_path / ws.reports_root() / "scan").exists()
+
+
+def test_frozen_sources_refuses_other_run_symlinks_and_escape_names(tmp_path):
+    run = tmp_path / "run"
+    (run / "trace").mkdir(parents=True)
+    other = tmp_path / "other.json"
+    other.write_text('{"secret":1}')
+    (run / "trace" / "linked.json").symlink_to(other)
+    src = P.FrozenSources(run)
+    with pytest.raises(ValueError, match="run|symlink|canonical"):
+        src.json("linked.json")
+    with pytest.raises(ValueError, match="run|path"):
+        src.json("../../other.json")
+
+
+def test_population_freezes_observed_research_fields_and_keeps_missing_null(tmp_path, monkeypatch):
+    from autoresearch.scan.research_provenance import freeze_research_provenance
+    monkeypatch.chdir(tmp_path)
+    run=_full_run(tmp_path)
+    manifest=json.loads((run/'manifest.json').read_text())
+    manifest['run_id']='20260803T210000000000Z'
+    (run/'manifest.json').write_text(json.dumps(manifest))
+    provenance=run/'trace/staging/_research_provenance.json'
+    freeze_research_provenance(provenance,run_id=manifest['run_id'],analysis_date=manifest['analysis_date'],
+        contract_hash='a'*64,profile='two-stage-v1',base_inputs=[],candidates={CODES[0]:{
+            'force_full':True,'force_full_reason':'pinned','force_full_rule_hash':'b'*64,
+            'lane':'pinned','conviction':55,'n_channels':2,'reserved':False,'deep_declared':True,
+            'card_kind':'FULL','early_stop_phase':None,'intel_status':'COMPLETE','dossier_status':'MISSING',
+            'quality_status':'PASS','solvency_status':'UNKNOWN','initial_rating':'Hold',
+            'initial_faces':{'evidence':.4},'final_faces':{'evidence':.8},
+            'initial_raw_metrics':{'source_count':1},'final_raw_metrics':{'source_count':4}}})
+    table,meta=P.build_population(run,lake_daily=_lake(tmp_path))
+    row=table.set_index('code').loc[CODES[0]]
+    assert row['population_schema_version']==2 and bool(row['force_full'])
+    assert row['deep_read_verified'] is None or pd.isna(row['deep_read_verified'])
+    assert row['b3_research_profile']=='two-stage-v1'
+    assert json.loads(row['initial_faces_json'])=={'evidence':.4}
+    assert pd.isna(table.set_index('code').loc[CODES[1]]['force_full'])
+    assert 'deep_read_verified:BOUND_TRANSCRIPT_PROOF_MISSING' in meta['missing']
+
+
+def test_dispatched_orphan_without_card_is_retained_as_unknown(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run=_full_run(tmp_path)
+    (run/'trace/staging/_l4_tasks.json').write_text(json.dumps({'tasks':{'600099':{'state':'FAILED'}}}))
+    table,meta=P.build_population(run,include_outcomes=False)
+    assert '600099' in set(table['code'])
+    row=table.set_index('code').loc['600099']
+    assert bool(row['l4_dispatched']) and pd.isna(row['l4_rejected'])
+    assert row['research_rating'] is None
+    assert meta['counts']['orphans']==1

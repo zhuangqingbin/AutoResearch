@@ -23,7 +23,42 @@ from autoresearch.contracts.agent_output import (
     EXEC_LINE_MAX_PCT_1D,
     EXEC_LINE_MAX_POS_IN_RANGE,
 )
-from autoresearch.contracts.execution import ACTIONABLE, parse_aware
+from autoresearch.contracts.execution import (
+    ACTIONABLE,
+    VENUE_TIMEZONES,
+    VERIFIED_CALENDARS,
+    conditional_gap as conditional_gap,  # compatibility export
+    parse_aware,
+    validate_decision_frame,
+    validate_scenario_estimate as validate_scenario_estimate,
+)
+
+
+def build_decision_frame(*, analysis_session: str, knowledge_cutoff: str,
+                         venue: str, research_depth: str, usage: str,
+                         sessions: list[str], calendar_quality: str) -> dict:
+    """Build the common frame from an injected exchange calendar, without I/O."""
+    if not isinstance(venue, str) or venue not in VENUE_TIMEZONES:
+        raise ValueError("unsupported venue")
+    if not isinstance(calendar_quality, str):
+        raise ValueError("calendar quality must be a string")
+    days = sorted(set(sessions))
+    for day in days:
+        if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+            raise ValueError("calendar session must be an ISO date")
+    future = [day for day in days if day > analysis_session]
+    verified = (calendar_quality in VERIFIED_CALENDARS and analysis_session in days
+                and len(future) >= 2 and venue not in {"CONTINUOUS", "UNSPECIFIED"})
+    return validate_decision_frame({
+        "schema_version": 1, "analysis_session": analysis_session,
+        "knowledge_cutoff": knowledge_cutoff, "venue": venue,
+        "timezone": VENUE_TIMEZONES[venue], "ruler": "gap_c1_o2",
+        "research_depth": research_depth, "usage": usage,
+        "entry_session": future[0] if verified else None, "entry_phase": "CLOSE",
+        "exit_session": future[1] if verified else None, "exit_phase": "OPEN",
+        "return_basis": "ENTRY_PRICE",
+        "calendar_quality": calendar_quality if verified else "UNKNOWN",
+    })
 
 _VISIBILITY_TIMES = ("decision_at", "market_event_at", "provider_published_at",
                      "received_at", "persisted_at")
@@ -276,3 +311,18 @@ def after_hours_fixed_fill(*, code, close_price, wanted_qty, after_hours_volume)
     state = "NO_FILL" if filled == 0 else "PARTIAL_FILL" if filled < wanted else "FILLED"
     return {"state": state, "filled_qty": filled, "price": Decimal(close_price),
             "fill_rule_version": "after_hours_fixed_v1"}
+
+
+def constrain_execution_to_frame(block: dict, frame: dict) -> dict:
+    """Apply frozen calendar uncertainty without changing any research rating or E6 selection."""
+    validate_decision_frame(frame)
+    result = dict(block)
+    if frame["analysis_session"] != result["analysis_date"]:
+        raise ValueError("execution analysis anchor differs from frozen frame")
+    if frame["calendar_quality"] == "UNKNOWN":
+        result.update(actionability_status="UNKNOWN", first_available_session=None,
+                      exec_lag=None, staleness_sessions=None, calendar_quality="UNKNOWN")
+    elif result.get("actionability_status") == "ACTIONABLE" and result.get("first_available_session") != frame["entry_session"]:
+        result["actionability_status"] = "UNKNOWN"
+    result["decision_frame"] = frame
+    return result

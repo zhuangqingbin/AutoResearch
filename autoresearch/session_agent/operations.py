@@ -101,6 +101,8 @@ def _research_calculate(params: dict) -> list[str]:
 
 _OPERATIONS: dict[str, dict[str, object]] = {
     "test.noop": {"builder": _noop, "idempotent": True, "stage": "session"},
+    "research.card.facts": {"builder": lambda params: _no_params("research-card-facts", params),
+                            "idempotent": True, "stage": "card"},
     "research.calculate": {
         "builder": _research_calculate,
         "idempotent": True,
@@ -117,6 +119,11 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "idempotent": True,
         "stage": "publish",
     },
+    "stock.evidence_bundle": {
+        "builder": lambda params: _no_params("stock-evidence-bundle", params),
+        "idempotent": True,
+        "stage": "write",
+    },
     "stock.full.validate": {
         "builder": lambda params: _no_params("stock-full-validate", params),
         "idempotent": True,
@@ -126,6 +133,11 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "builder": lambda params: _no_params("stock-full-assemble", params),
         "idempotent": True,
         "stage": "assemble",
+    },
+    "macro.intel.prepare": {
+        "builder": lambda params: _no_params("macro-intel-prepare", params),
+        "idempotent": True,
+        "stage": "intel",
     },
     "macro.harvest": {
         "builder": lambda params: _no_params("macro-harvest", params),
@@ -156,6 +168,14 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "builder": lambda params: _no_params("macro-full-assemble", params),
         "idempotent": True,
         "stage": "assemble",
+    },
+    "sector.terrain.render": {
+        "builder": lambda params: _no_params("sector-terrain-render", params),
+        "idempotent": True, "stage": "write",
+    },
+    "scan.sector.render": {
+        "builder": lambda params: _no_params("sector-terrain-render", params),
+        "idempotent": True, "stage": "l3",
     },
     "sector.prepare": {
         "builder": lambda params: _no_params("sector-prepare", params),
@@ -285,6 +305,7 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "builder": lambda params: _no_params("scan-review-plan", params),
         "idempotent": True,
         "stage": "l4",
+        "optional_subject": True,
     },
     "scan.review.none": {
         "builder": lambda params: _no_params("scan-review-none", params),
@@ -296,6 +317,7 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "builder": lambda params: _no_params("scan-review-decide", params),
         "idempotent": True,
         "stage": "l4",
+        "optional_subject": True,
     },
     "scan.review.skip": {
         "builder": lambda params: _no_params("scan-review-skip", params),
@@ -354,6 +376,12 @@ _CATALOG_META: dict[str, dict[str, object]] = {
         "limits": "test-only",
         "retained_cli": False,
     },
+    "research.card.facts": {
+        "params": _NO_PARAMS, "side_effects": "writes frozen card facts projection",
+        "outputs": ["stock.card.facts", "scan.l4.*.facts"],
+        "callers": ["two-stage-v1 card"], "errors": ["DOMAIN_VALIDATION", "ARTIFACT_CONFLICT"],
+        "limits": "declared raw evidence only; no network", "retained_cli": False,
+    },
     "research.calculate": {
         "params": {
             "calculator_id": "registered calculator ID",
@@ -400,6 +428,15 @@ _CATALOG_META: dict[str, dict[str, object]] = {
         "limits": "no network",
         "retained_cli": False,
     },
+    "stock.evidence_bundle": {
+        "params": _NO_PARAMS,
+        "side_effects": "freezes source hashes, source index and data gaps in run staging",
+        "outputs": ["stock.evidence_bundle"],
+        "callers": ["stock.evidence_bundle"],
+        "errors": ["MISSING_PRODUCT", "ARTIFACT_CONFLICT"],
+        "limits": "no network; declared frozen inputs only",
+        "retained_cli": False,
+    },
     "stock.full.validate": {
         "params": _NO_PARAMS,
         "side_effects": "writes full-product validation in active run",
@@ -417,6 +454,15 @@ _CATALOG_META: dict[str, dict[str, object]] = {
         "errors": ["MISSING_PRODUCT", "ASSEMBLY_FAILED"],
         "limits": "no network",
         "retained_cli": True,
+    },
+    "macro.intel.prepare": {
+        "params": _NO_PARAMS,
+        "side_effects": "freezes neutral global intel request from bound frame and tape",
+        "outputs": ["macro.intel.request"],
+        "callers": ["macro.intel.prepare"],
+        "errors": ["DATA_CONTRACT"],
+        "limits": "no network",
+        "retained_cli": False,
     },
     "macro.harvest": {
         "params": _NO_PARAMS,
@@ -471,6 +517,16 @@ _CATALOG_META: dict[str, dict[str, object]] = {
         "errors": ["MISSING_PRODUCT", "ASSEMBLY_FAILED"],
         "limits": "no network",
         "retained_cli": True,
+    },
+    "sector.terrain.render": {
+        "params": _NO_PARAMS, "side_effects": "renders frozen sector fields and verified event facts",
+        "outputs": ["sector.report", "sector.stable.snapshot"], "callers": ["sector.*.render"],
+        "errors": ["DOMAIN_VALIDATION", "SOURCE_NOT_BOUND"], "limits": "no network", "retained_cli": False,
+    },
+    "scan.sector.render": {
+        "params": _NO_PARAMS, "side_effects": "renders one selected sector terrain from frozen inputs",
+        "outputs": ["scan.sector.*.brief", "scan.sector.*.stable.snapshot"], "callers": ["scan.sector.*.render"],
+        "errors": ["DOMAIN_VALIDATION", "SOURCE_NOT_BOUND"], "limits": "no network", "retained_cli": False,
     },
     "sector.prepare": {
         "params": _NO_PARAMS,
@@ -691,8 +747,8 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.review.plan": {
         "params": _NO_PARAMS,
         "side_effects": "derives review triggers from original cards and frozen pinned lanes",
-        "outputs": ["scan.review.plan"],
-        "callers": ["scan.review.plan"],
+        "outputs": ["scan.review.plan", "scan.review.plan.*"],
+        "callers": ["scan.review.plan", "scan.review.plan.*"],
         "errors": ["CARD_CONTRACT"],
         "limits": "no network",
         "retained_cli": False,
@@ -709,8 +765,8 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.review.decide": {
         "params": _NO_PARAMS,
         "side_effects": "compares original and second-review tiers to decide third dispatch",
-        "outputs": ["scan.review.decision"],
-        "callers": ["scan.review.decide"],
+        "outputs": ["scan.review.decision", "scan.review.decision.*"],
+        "callers": ["scan.review.decide", "scan.review.decide.*"],
         "errors": ["REVIEW_CONTRACT"],
         "limits": "no network",
         "retained_cli": False,
@@ -806,7 +862,7 @@ def build_argv(operation: str, params: dict, *, subject: str | None = None) -> l
     if not isinstance(params, dict) or not isinstance(builder, Callable):
         raise ValueError("operation params must be an object")
     argv = builder(params)
-    if spec.get("subject"):
+    if spec.get("subject") or (spec.get("optional_subject") and subject is not None):
         if type(subject) is not str or not re.fullmatch(r"[0-9]{6}", subject):
             raise ValueError("six-digit operation subject required")
         argv.extend(["--subject", subject])

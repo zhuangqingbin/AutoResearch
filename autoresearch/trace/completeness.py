@@ -14,7 +14,7 @@ the false green this whole capsule exists to remove.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # profile 工厂**按 kind 动态取**(`contracts.profiles.PROFILE_FACTORIES` 旁有设计意图):
@@ -534,6 +534,49 @@ def evaluate(
     }
 
 
+def card_rules_from_capsule(capsule: Path | str) -> str:
+    """Read the frozen rule version; absent historical profiles remain legacy."""
+    from autoresearch.contracts.profiles import LEGACY_CARD_RULES, validate_card_rules_version
+
+    path = Path(capsule) / "verification/profile.json"
+    payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    return validate_card_rules_version(payload.get("card_rules_version", LEGACY_CARD_RULES))
+
+
+def card_rating_bands_from_capsule(capsule: Path | str) -> dict:
+    from autoresearch.contracts.profiles import (
+        CARD_RATING_BANDS_DEFAULT,
+        validate_card_rating_bands,
+    )
+    path = Path(capsule) / "verification/profile.json"
+    payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    return validate_card_rating_bands(payload.get("card_rating_bands", CARD_RATING_BANDS_DEFAULT))
+
+
+def card_research_profile_from_capsule(capsule: Path | str) -> str:
+    """Missing historical graph identity always means the original single stage."""
+    from autoresearch.contracts.profiles import validate_card_research_profile
+
+    path = Path(capsule) / "verification/profile.json"
+    payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    return validate_card_research_profile(payload.get("card_research_profile", "single-stage-v1"))
+
+
+def freeze_card_rules(capsule: Path | str, *, kind: str, config: dict | None = None) -> str:
+    """Freeze new-run semantics before inference without requiring completed stages."""
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES, card_rating_bands_from_config
+
+    path = Path(capsule) / "verification/profile.json"
+    if path.exists():
+        return card_rules_from_capsule(capsule)
+    atomic_write_json(path, {
+        "schema_version": SCHEMA_VERSION, "kind": kind,
+        "card_source": "legacy_md", "card_rules_version": CURRENT_CARD_RULES,
+        "card_rating_bands": card_rating_bands_from_config(config),
+    })
+    return CURRENT_CARD_RULES
+
+
 def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> RunProfile:
     """Recover the run's declared profile, or rebuild it from the frozen state.
 
@@ -556,6 +599,7 @@ def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> Run
             if payload.get("agent_roles") is not None
             else None,
             card_source=str(payload.get("card_source") or "legacy_md"),
+            card_rules_version=card_rules_from_capsule(root),
             role_stages=(
                 {str(key): str(value) for key, value in payload["role_stages"].items()}
                 if payload.get("role_stages") is not None
@@ -563,14 +607,12 @@ def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> Run
             ),
         )
         if payload.get("replayable_stages") is not None:
-            from dataclasses import replace
-
             profile = replace(
                 profile,
                 replayable_stages=tuple(str(item) for item in payload["replayable_stages"]),
             )
-        return profile
-    return profile_factory(str(kind or _DEFAULT_RUN_KIND))()
+        return replace(profile, card_research_profile=card_research_profile_from_capsule(root))
+    return profile_factory(str(kind or _DEFAULT_RUN_KIND))(card_rules_version=card_rules_from_capsule(root))
 
 
 def write_expected(
@@ -578,7 +620,10 @@ def write_expected(
     profile: RunProfile,
 ) -> Path:
     """Freeze the expectation *and* the profile that produced it."""
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES
     root = Path(capsule)
+    rules_version = (card_rules_from_capsule(root) if (root / "verification/profile.json").exists()
+                     else profile.card_rules_version)
     atomic_write_json(
         root / "verification/profile.json",
         {
@@ -589,6 +634,14 @@ def write_expected(
             "last_stage": profile.last_stage,
             "agent_roles": list(profile.agent_roles),
             "card_source": profile.card_source,
+            "card_rules_version": rules_version,
+            **({"card_rating_bands": card_rating_bands_from_capsule(root)}
+               if rules_version == CURRENT_CARD_RULES else {}),
+            "card_research_profile": (
+                card_research_profile_from_capsule(root)
+                if (root / "verification/profile.json").exists()
+                else profile.card_research_profile
+            ),
             "role_stages": profile.role_stages,
             "expected_stages": list(profile.expected_stages),
             "replayable_stages": list(profile.replayable_stages),

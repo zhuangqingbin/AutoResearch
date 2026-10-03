@@ -48,8 +48,14 @@ def _ind_mom(scan_dir: Path, industry: str) -> float | None:
     return float(m.median()) if len(m) else None
 
 
+def configured_mom_shift_pp() -> float:
+    """`scan_config.sector.reuse_mom_shift_pp`:行业动量位移超此值不复用 brief(缺键 3.0)。"""
+    from autoresearch.scan.user_config import knob
+    return float(knob("sector", "reuse_mom_shift_pp", None, 3.0))
+
+
 def find_reusable(date: str, industries, root: Path | str | None = None,
-                  ttl_days: int = 5, mom_shift_pp: float = 3.0) -> dict[str, dict]:
+                  ttl_days: int = 5, mom_shift_pp: float | None = None) -> dict[str, dict]:
     """逐行业找最近可复用 brief → {行业: {src, prev, shift_pp}};判不中 → 不入结果。
 
     `root=None`(生产)→ 「昨天在哪」交给 `scan.published_days`(修 K4:run 分区下遍历
@@ -57,6 +63,7 @@ def find_reusable(date: str, industries, root: Path | str | None = None,
     opus brief)。显式传 `root` → 仍是该目录下的兄弟枚举(测试注入面,行为逐字不变)。
     **判据一个都没动**:TTL 天数 / regime 同 / 中位动量位移容差全在下面,与从前逐字相同。
     """
+    mom_shift_pp = configured_mom_shift_pp() if mom_shift_pp is None else mom_shift_pp
     if root is None:
         from autoresearch.scan.published_days import previous_staging_dirs
         today_dir = ws.scan_dir(date)
@@ -94,8 +101,8 @@ def render_reused_brief(previous_date: str, shift_pp: float, body: str) -> str:
     """Render the immutable reuse banner around an already captured prior brief."""
     banner = (
         f"> ♻️ 复用自 {previous_date} 的行业 brief(regime 同 · 中位60日动量位移 "
-        f"{shift_pp}pp ≤ 3)。失效条件:regime 翻转 / 行业动量位移 >3pp / "
-        f"重大行业级公告。\n\n"
+        f"{shift_pp}pp，已通过本次配置阈值)。失效条件已检查:TTL / regime / 动量。"
+        f"重大行业级公告未由该复用判定器核验，新闻时效仍需另核。\n\n"
     )
     return banner + body
 
@@ -147,3 +154,111 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def stable_fact_snapshot(pack: dict, facts: list[dict]) -> dict:
+    """Candidate cache contains stable source facts only, never prior Markdown/prices."""
+    from autoresearch.sector.terrain import PROFILE, digest
+    terrain = pack.get('terrain') or {}
+    if terrain.get('profile') != PROFILE:
+        raise ValueError('stable fact reuse requires candidate pack')
+    return {'schema_version': 1, 'profile': PROFILE, 'industry': pack['industry'],
+            'as_of': terrain['target_date'], 'pack_sha256': digest(pack),
+            'fingerprints': dict(terrain['fingerprints']), 'stable_facts': list(facts)}
+
+
+def reuse_stable_facts(pack: dict, previous: dict | None, *, ttl_days: int,
+                      knowledge_cutoff: str, bind_claim=None) -> dict:
+    """Revalidate cached stable facts against current inputs/source lifetimes.
+
+    A trading-day change always rebuilds numeric terrain. Market, financial,
+    event, correction and mapping changes invalidate the stable cache as well.
+    Source checking belongs to the existing evidence owner, not model self-report.
+    """
+    import re
+    from datetime import datetime
+
+    from autoresearch.sector.terrain import DIRECTION, PROFILE, digest
+
+    if type(ttl_days) is not int or ttl_days < 0:
+        raise ValueError('stable fact TTL must be a nonnegative integer')
+    current = pack.get('terrain') or {}
+    if current.get('profile') != PROFILE:
+        raise ValueError('stable fact reuse requires candidate pack')
+    result = {'schema_version': 1, 'profile': PROFILE, 'reused': False,
+              'numeric_rebuilt': True, 'stable_facts': [], 'invalidations': [],
+              'previous_date': None, 'previous_pack_sha256': None}
+    if previous is None:
+        result['invalidations'].append('NO_STABLE_FACT_SNAPSHOT')
+        return result
+    required = {'schema_version', 'profile', 'industry', 'as_of', 'pack_sha256', 'fingerprints', 'stable_facts'}
+    if set(previous) != required or previous['schema_version'] != 1 or previous['profile'] != PROFILE:
+        raise ValueError('invalid stable fact snapshot')
+    if not re.fullmatch('[0-9a-f]{64}', str(previous['pack_sha256'])):
+        raise ValueError('invalid previous pack identity')
+    result.update(previous_date=previous['as_of'], previous_pack_sha256=previous['pack_sha256'])
+    today, before = _date.fromisoformat(current['target_date']), _date.fromisoformat(previous['as_of'])
+    age = (today - before).days
+    if age < 0 or age > ttl_days:
+        result['invalidations'].append('TTL_OR_FUTURE_DATE')
+    if previous['industry'] != pack['industry']:
+        result['invalidations'].append('INDUSTRY_CHANGED')
+    if set(previous['fingerprints']) != set(current['fingerprints']):
+        result['invalidations'].append('FINGERPRINT_CONTRACT_CHANGED')
+    else:
+        for key, value in current['fingerprints'].items():
+            if previous['fingerprints'][key] != value:
+                result['invalidations'].append(key.upper() + '_CHANGED')
+    if result['invalidations']:
+        return result
+    cutoff = datetime.fromisoformat(knowledge_cutoff.replace('Z', '+00:00'))
+    if cutoff.tzinfo is None:
+        raise ValueError('stable fact cutoff must have timezone')
+    fields = {'kind', 'claim', 'as_of', 'valid_until', 'available_at', 'source_url', 'source_text_sha256', 'source_observation_id'}
+    for fact in previous['stable_facts']:
+        if not isinstance(fact, dict) or set(fact) != fields:
+            raise ValueError('invalid stable fact contract')
+        if not all(isinstance(item, str) and item for item in fact.values()):
+            raise ValueError('stable fact fields required')
+        if fact['kind'] not in {'industry_structure', 'policy_rule', 'supply_chain_relation'}:
+            raise ValueError('only declared stable fact kinds may be reused')
+        available = datetime.fromisoformat(fact['available_at'].replace('Z', '+00:00'))
+        valid_until = _date.fromisoformat(fact['valid_until'])
+        original_day = _date.fromisoformat(fact['as_of'])
+        valid = (available.tzinfo is not None and available <= cutoff and original_day <= before
+                 and valid_until >= today and fact['source_url'].startswith(('https://', 'http://'))
+                 and re.fullmatch('[0-9a-f]{64}', fact['source_text_sha256'])
+                 and not DIRECTION.search(fact['claim']))
+        if not valid or bind_claim is None or bind_claim(fact, {'knowledge_cutoff': knowledge_cutoff,
+                'industry': pack['industry'], 'pack_sha256': digest(pack)}).get('verdict') != 'PASS':
+            result['invalidations'].append('STABLE_SOURCE_UNAVAILABLE:' + fact['source_observation_id'])
+            continue
+        result['stable_facts'].append(dict(fact))
+    result['reused'] = bool(result['stable_facts'])
+    return result
+
+
+def find_stable_snapshot(date: str, industry: str, *, root: Path | str | None = None,
+                         ttl_days: int) -> dict | None:
+    """Locate source-dated candidate facts; legacy Markdown is never admitted."""
+    from autoresearch.common.atomic import canonical_json, sha256_bytes
+    from autoresearch.sector.pack import _safe
+    if root is None:
+        from autoresearch.scan.published_days import previous_staging_dirs
+        days = previous_staging_dirs(date, limit=max(30, ttl_days * 2))
+    else:
+        base = Path(root)
+        days = sorted(base.iterdir(), reverse=True) if base.is_dir() else []
+    candidates = []
+    for day in days:
+        source = day / 'sector_briefs' / f'{_safe(industry)}.facts.json'
+        if not source.is_file():
+            continue
+        raw = source.read_bytes()
+        value = json.loads(raw)
+        actual_date = value.get('as_of')
+        age = (_date.fromisoformat(date) - _date.fromisoformat(actual_date)).days
+        if value.get('industry') == industry and 0 < age <= ttl_days:
+            candidates.append({'source': str(source), 'source_sha256': sha256_bytes(raw),
+                'snapshot_sha256': sha256_bytes(canonical_json(value).encode()), 'snapshot': value})
+    return max(candidates, key=lambda item: item['snapshot']['as_of']) if candidates else None

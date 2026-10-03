@@ -42,7 +42,7 @@ def render_request(task: dict, host_profile: dict) -> dict:
     if task["independent_context"] and host_profile["independent_context"] is not True:
         raise HostCapabilityError("independent_context capability is unavailable or unknown")
     role = get_role(task["role"])
-    if role["output_contract"] != task["expected_output_contract"]:
+    if task["expected_output_contract"] not in role["accepted_output_contracts"]:
         raise ValueError("role output contract does not match task")
     if "WEB" in role["tool_policy"].split("_") and not (
         host_profile["web_search"] is True or host_profile["web_fetch"] is True

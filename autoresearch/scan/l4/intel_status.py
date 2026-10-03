@@ -165,7 +165,10 @@ def from_guard(result: dict | None, *, code: str, scan_dir: Path | str,
         claimed_queries=result.get("claimed"), hard_cap=result.get("hard_cap"),
         dropped_rows=result.get("dropped_rows"), pretrim_ref=result.get("pretrim_as"),
         attempts=attempts, error_class=error_class,
-        note=str(result.get("note") or result.get("warn") or ""))
+        note="；".join(part for part in (
+            str(result.get("note") or result.get("warn") or ""),
+            str((result.get("claim_events") or {}).get("diagnostic_note") or ""),
+        ) if part))
 
 
 def is_transient(error_class: str | None) -> bool:
@@ -177,6 +180,14 @@ def is_transient(error_class: str | None) -> bool:
 
 _EVENT_ROW = re.compile(r"^\|\s*(\d{4}-\d{2}-\d{2})\s*\|")
 _STALE_GAP_DAYS = 7
+
+
+def status_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4_intel.{stale_gap_days, max_attempts, resume_max_age_s}`(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"stale_gap_days": int(knob("l4_intel", "stale_gap_days", None, _STALE_GAP_DAYS, cfg)),
+            "max_attempts": int(knob("l4_intel", "max_attempts", None, MAX_ATTEMPTS, cfg)),
+            "resume_max_age_s": int(knob("l4_intel", "resume_max_age_s", None, RESUME_MAX_AGE_S, cfg))}
 _CATALYST_WINDOW = "催化挂"
 _KNOWN_WINDOWS = ("T0", "24h", _CATALYST_WINDOW, "背景", ">1周")
 
@@ -318,12 +329,13 @@ def normalize_stale_scores(text: str, analysis_date: str, *,
             out_lines.append(line)
             continue
         score = float(m.group("num"))
-        if gap > _STALE_GAP_DAYS and window != _CATALYST_WINDOW and score != 0:
+        stale_gap = status_cfg()["stale_gap_days"]
+        if gap > stale_gap and window != _CATALYST_WINDOW and score != 0:
             cells[idx["score"]] = f" 0.0(A7 归一:{score:+g} → 0,gap {gap}d) "
             norm.changed.append({"row": line.strip()[:80], "date": raw_date,
                                  "window": window, "gap_days": gap,
                                  "before": score, "after": 0.0,
-                                 "reason": f"gap {gap}d > {_STALE_GAP_DAYS}d 且窗非催化挂"})
+                                 "reason": f"gap {gap}d > {stale_gap}d 且窗非催化挂"})
             line = "|" + "|".join(cells) + "|"
         out_lines.append(line)
     return "\n".join(out_lines) + ("\n" if text.endswith("\n") else ""), norm
@@ -390,7 +402,7 @@ def resumable(scan_dir: Path | str, code: str, *, now: float | None = None) -> b
     import time as _time
     ref = _time.time() if now is None else now
     for p in (draft, status_path(scan_dir, code)):
-        if ref - p.stat().st_mtime > RESUME_MAX_AGE_S:
+        if ref - p.stat().st_mtime > status_cfg()["resume_max_age_s"]:
             return False
     return True
 

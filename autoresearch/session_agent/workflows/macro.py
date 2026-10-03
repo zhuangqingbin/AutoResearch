@@ -17,8 +17,10 @@ from autoresearch.common.atomic import (
 )
 from autoresearch.contracts.session_plan import plan_hash
 from autoresearch.macro import assemble
+from autoresearch.macro.grouped_products import required_macro_products
 from autoresearch.session_agent import artifacts
 from autoresearch.session_agent.roles import roles_hash
+from autoresearch.session_agent.workflows.macro_groups import grouped_products
 
 
 def _task(
@@ -43,7 +45,7 @@ def _task(
         "expected_output_contract": contract,
         "owner": "SESSION",
         "subject": None,
-        "independent_context": False,
+        "independent_context": kind == "INFERENCE" and role in {"macro.research", "global.intel"},
         "parent_task": None,
     }
 
@@ -60,14 +62,9 @@ def macro_product_artifacts() -> dict[str, str]:
     return {relative: _artifact_id(relative) for relative in sorted(relatives)}
 
 
-def required_macro_products() -> set[str]:
-    required = {assemble.DECISION_REL}
-    for _, items in assemble.SPINE + assemble.MESO + assemble.APPENDIX:
-        required.update(relative for _, relative, optional in items if not optional)
-    return required
 
 
-def _full_tasks() -> list[dict]:
+def _full_tasks(profile: str = "serial21", optional_products: tuple[str, ...] = ()) -> list[dict]:
     products = macro_product_artifacts()
     tasks = [
         _task(
@@ -103,38 +100,66 @@ def _full_tasks() -> list[dict]:
         ("spine.premortem", "1_spine/premortem.md"),
         ("spine.decision", "1_spine/decision.md"),
     )
-    previous_task = "macro.harvest"
-    previous_artifact = "macro.data"
-    for name, relative in sequence:
-        task_id = f"macro.{name}"
-        contract = (
-            "macro.allocation.v1"
-            if relative in {assemble.DECISION_REL, assemble.SECTOR_MAP_REL}
-            else "macro.section.v1"
-        )
-        tasks.append(
-            _task(
-                task_id,
-                "INFERENCE",
-                dependencies=[previous_task],
-                inputs=["macro.data", previous_artifact]
-                if previous_artifact != "macro.data"
-                else ["macro.data"],
-                outputs=[products[relative]],
-                contract=contract,
+    tasks.extend([
+        _task("macro.intel.prepare", "DETERMINISTIC", dependencies=["macro.harvest"],
+              inputs=["research.frame", "macro.global_tape", "macro.intel.policy"], outputs=["macro.intel.request"],
+              contract="macro.intel.request.v1", operation="macro.intel.prepare"),
+        _task("macro.global_intel", "INFERENCE", dependencies=["macro.intel.prepare"],
+              inputs=["macro.intel.request"], outputs=["macro.intel"],
+              contract="global.intel.v1", role="global.intel"),
+    ])
+    raw_inputs = ["research.frame", "macro.data", "macro.global_tape", "macro.scan_meta", "macro.intel"]
+    research_tasks = []
+    if profile == "six_groups_v1":
+        for name, relatives, dependencies in grouped_products(optional_products):
+            upstream = [task for task in research_tasks if task["task_id"] in dependencies]
+            research_tasks.append(_task(
+                f"macro.group.{name}", "INFERENCE",
+                dependencies=dependencies or ["macro.global_intel"],
+                inputs=[*raw_inputs, *(output for task in upstream for output in task["output_artifact_ids"])],
+                outputs=[products[relative] for relative in relatives],
+                contract="macro.allocation.v1" if name == "decision" else "macro.section.v1",
                 role="macro.research",
+            ))
+    elif profile == "serial21":
+        previous_task = "macro.global_intel"
+        # Optional files are frozen before dispatch, never late unregistered writes.
+        optional_after = {
+            "4_crossasset/crypto.md": ("crossasset.credit", "4_crossasset/credit.md"),
+            "2_meso/themes.md": ("meso.industry_cycle", "6_meso_evidence/industry_cycle.md"),
+            "1_spine/premortem.md": ("spine.debate", "1_spine/debate.md"),
+        }
+        expanded = []
+        for name, relative in sequence:
+            expanded.append((name, relative))
+            optional = optional_after.get(relative)
+            if optional and optional[1] in optional_products:
+                expanded.append(optional)
+        for name, relative in expanded:
+            task_id = f"macro.{name}"
+            contract = (
+                "macro.allocation.v1"
+                if relative in {assemble.DECISION_REL, assemble.SECTOR_MAP_REL}
+                else "macro.section.v1"
             )
-        )
-        previous_task = task_id
-        previous_artifact = products[relative]
-    required_inputs = [products[relative] for relative in sorted(required_macro_products())]
+            research_tasks.append(_task(
+                task_id, "INFERENCE", dependencies=[previous_task],
+                inputs=[*raw_inputs, *(output for task in research_tasks for output in task["output_artifact_ids"])],
+                outputs=[products[relative]], contract=contract, role="macro.research",
+            ))
+            previous_task = task_id
+    else:
+        raise ValueError(f"unknown macro research profile: {profile}")
+    tasks.extend(research_tasks)
+    previous_task = research_tasks[-1]["task_id"]
+    required_inputs = [products[relative] for relative in sorted(required_macro_products() | set(optional_products))]
     tasks.extend(
         [
             _task(
                 "macro.full.validate",
                 "DETERMINISTIC",
                 dependencies=[previous_task],
-                inputs=required_inputs,
+                inputs=["macro.data", *required_inputs],
                 outputs=["macro.full.validation"],
                 contract="macro.full.validation.v1",
                 operation="macro.full.validate",
@@ -162,6 +187,7 @@ def _full_tasks() -> list[dict]:
     ]
     tasks[-1]["input_artifact_ids"] = [
         "macro.full.validation",
+        "macro.data",
         "macro.global_tape",
         "macro.scan_meta",
         *dict.fromkeys(assembled_products),
@@ -213,6 +239,16 @@ def _lite_tasks() -> list[dict]:
 def build_macro_plan(request: dict, handle) -> dict:
     if request["kind"] != "macro-research":
         raise ValueError("macro plan requires macro-research request")
+    profile = request.get("macro_research_profile", "serial21")
+    optional_products = tuple(request.get("macro_optional_products", []))
+    if (profile != "serial21" or optional_products) and request.get("schema_version", 1) < 4:
+        raise ValueError("macro profile selection requires frozen begin request v4")
+    if (profile != "serial21" or optional_products) and request["requested_mode"] != "FULL":
+        raise ValueError("macro profile selection requires FULL")
+    # Validate selections even for serial layouts; the assembler remains the path owner.
+    optional_scope = set(macro_product_artifacts()) - required_macro_products()
+    if len(set(optional_products)) != len(optional_products) or set(optional_products) - optional_scope:
+        raise ValueError("invalid macro optional products")
     config_hash = getattr(handle.contract, "config_hash", None) or sha256_bytes(
         canonical_json(getattr(handle.contract, "user_config", {})).encode("utf-8")
     )
@@ -228,12 +264,20 @@ def build_macro_plan(request: dict, handle) -> dict:
         "config_hash": config_hash,
         "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
-        "tasks": _lite_tasks() if request["requested_mode"] == "LITE" else _full_tasks(),
+        "tasks": _lite_tasks() if request["requested_mode"] == "LITE" else _full_tasks(profile, optional_products),
         "task_templates": [],
         "plan_hash": "0" * 64,
     }
     value["plan_hash"] = plan_hash(value)
     return value
+
+
+def global_intel_policy(config: dict | None) -> dict:
+    """`session.global_intel_max_queries` is frozen once as a replayable input."""
+    cap = (config or {}).get("session", {}).get("global_intel_max_queries", 8)
+    if type(cap) is not int or cap < 1:
+        raise ValueError("global intel source budget must be a positive integer")
+    return {"schema_version": 1, "source_budget": {"max_queries": cap, "unit": "SEARCH_AND_FETCH"}}
 
 
 def register_macro_artifacts(request: dict, handle, plan: dict) -> None:
@@ -250,8 +294,14 @@ def register_macro_artifacts(request: dict, handle, plan: dict) -> None:
         }
     else:
         root = staging / "macro" / request["analysis_date"]
+        policy_path = output / "macro.intel.policy.json"
+        if not policy_path.exists():
+            atomic_write_json(policy_path, global_intel_policy(getattr(handle.contract, "user_config", {})))
         registrations = {
+            "macro.intel.policy": policy_path,
             "macro.data": root / "data.md",
+            "macro.intel.request": output / "macro.intel.request.json",
+            "macro.intel": root / "_global_intel.md",
             "macro.global_tape": root / "global_tape.json",
             "macro.scan_meta": root / "scan_meta.json",
             **{
@@ -264,7 +314,8 @@ def register_macro_artifacts(request: dict, handle, plan: dict) -> None:
             "macro.publication.bundle": output / "macro.publication.json",
         }
     for artifact_id, path in registrations.items():
-        artifacts.register_artifact(handle, artifact_id, path, "WRITE")
+        artifacts.register_artifact(handle, artifact_id, path,
+                                    "READ" if artifact_id == "macro.intel.policy" else "WRITE")
 
 
 def validate_macro_operation_params(request: dict, task: dict, params: dict) -> None:
@@ -293,23 +344,26 @@ def _publish_macro_active(
     request = json.loads(
         (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
     )
-    output = Path(handle.staging) / "session_outputs"
-    bundle = json.loads((output / "macro.publication.json").read_text(encoding="utf-8"))
+    with artifacts.open_artifact(handle, "macro.publication.bundle") as stream:
+        bundle = json.load(stream)
     mode = bundle["mode"]
-    source = output / ("market_view.md" if mode == "LITE" else "macro.full.report.md")
-    if sha256_bytes(source.read_bytes()) != bundle["report_sha256"]:
+    report_id = "macro.market_view" if mode == "LITE" else "macro.full.report"
+    with artifacts.open_artifact(handle, report_id) as stream:
+        report = stream.read()
+    if sha256_bytes(report) != bundle["report_sha256"]:
         raise RuntimeError("macro report changed after publication preparation")
     base = Path(reports_root) if reports_root is not None else ws.reports_root() / "macro"
     target_dir = base / request["analysis_date"].replace("-", "")
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / bundle["output_name"]
     with _locked(target):
-        if target.is_file() and target.read_bytes() != source.read_bytes():
+        if target.is_file() and target.read_bytes() != report:
             raise RuntimeError("macro report publication conflict")
         if not target.is_file():
-            atomic_write_bytes(target, source.read_bytes())
+            atomic_write_bytes(target, report)
     if mode == "FULL":
-        candidate = json.loads((output / "macro_state.json").read_text(encoding="utf-8"))
+        with artifacts.open_artifact(handle, "macro.state.candidate") as stream:
+            candidate = json.load(stream)
         latest = (
             Path(state_path)
             if state_path is not None
@@ -347,11 +401,8 @@ def publish_macro(
             request = json.loads(
                 (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
             )
-            bundle = json.loads(
-                (Path(handle.staging) / "session_outputs/macro.publication.json").read_text(
-                    encoding="utf-8"
-                )
-            )
+            with artifacts.open_artifact(handle, "macro.publication.bundle") as stream:
+                bundle = json.load(stream)
             assert_output_path(
                 base / request["analysis_date"].replace("-", "") / bundle["output_name"],
                 base,
@@ -367,8 +418,8 @@ def publish_macro(
 
 def prepare_macro_bundle(handle) -> dict:
     """Describe the immutable report and optional latest-state mutation."""
-    output = Path(handle.staging) / "session_outputs"
-    bundle = json.loads((output / "macro.publication.json").read_text(encoding="utf-8"))
+    with artifacts.open_artifact(handle, "macro.publication.bundle") as stream:
+        bundle = json.load(stream)
     report_id = "macro.market_view" if bundle["mode"] == "LITE" else "macro.full.report"
     mutations = []
     if bundle["mode"] == "FULL":

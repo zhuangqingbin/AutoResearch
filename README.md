@@ -29,6 +29,8 @@
 
 > **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM provider path has been removed; research inference runs inside Codex or Claude Code subscription sessions. The unified `session_v1` control plane is `uv run --no-sync python -m autoresearch.session_agent` and covers scan, stock, macro, sector, and dossier workflows. Start with [`docs/session-agent/README.md`](docs/session-agent/README.md). Sections below that describe upstream provider clients are legacy reference material.
 
+> **C4 status:** `session_v1` remains an explicit PILOT; loaded-host enforcement is unverified. Legacy research entrypoints currently return `HOST_CAPABILITY_REQUIRED` because they lack task access bindings. Run the preflight and bind actual research identities before inference; see [access-boundary.md](docs/session-agent/access-boundary.md).
+
 ## 架构
 
 `session_v1` uses the same host loop for both supported subscription sessions:

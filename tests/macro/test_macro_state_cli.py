@@ -9,15 +9,20 @@ from __future__ import annotations
 import json
 
 from autoresearch.macro import state as S
+from autoresearch.macro.assemble import CROSS_ASSET_KEYS
 
 _DECISION = """# S1 执行摘要
 当前处于「增长下行 + 流动性宽松」象限。
 
 - OVERALL 风险档: **Rating**: Overweight
-- A股: **Rating**: Overweight
+- A股·港股: **Rating**: Overweight
 - 美股: **Rating**: Hold
 - 黄金: **Rating**: Buy
 """
+_DECISION += "\n".join(
+    f"- {key}: **Rating**: Hold" for key in CROSS_ASSET_KEYS
+    if key not in {"OVERALL 风险档", "A股·港股", "美股", "黄金"}
+)
 
 
 def _spine(tmp_path, date="2026-07-25", with_optional=False):
@@ -25,6 +30,11 @@ def _spine(tmp_path, date="2026-07-25", with_optional=False):
     (root / "1_spine").mkdir(parents=True)
     (root / "1_spine" / "decision.md").write_text(_DECISION, encoding="utf-8")
     if with_optional:
+        (root / "data.md").write_text(
+            "**行业资金净流入(tushare)**:\n| 行业 | 主力净流入(亿) | 领涨股 |\n"
+            "|---|---:|---|\n| 半导体 | 1 | 示例甲 |\n| 银行 | -1 | 示例乙 |\n",
+            encoding="utf-8",
+        )
         (root / "2_meso").mkdir()
         (root / "2_meso" / "sector_map.md").write_text(
             "- 半导体: **Rating**: Overweight\n- 银行: **Rating**: Underweight\n", encoding="utf-8")

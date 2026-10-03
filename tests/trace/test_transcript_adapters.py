@@ -2420,3 +2420,40 @@ def test_parse_token_count_distinguishes_absent_zero_and_unparseable():
     assert parse_token_count(True) is None
     assert parse_token_count(12.5) is None
     assert parse_token_count([1, 2]) is None
+
+
+def test_codex_discovery_distinguishes_child_id_from_root_session_id(tmp_path):
+    import json
+    from datetime import datetime, timezone
+    from autoresearch.trace.transcripts.codex import discover_rollout_candidates
+
+    day = tmp_path / '2026/10/01'
+    day.mkdir(parents=True)
+    paths = {}
+    for thread in ('root', 'child', 'sibling'):
+        path = day / f'rollout-{thread}.jsonl'
+        path.write_text(json.dumps({'type': 'session_meta', 'payload': {
+            'id': thread, 'session_id': 'root'}}) + '\n')
+        paths[thread] = path
+    for thread, path in paths.items():
+        found = discover_rollout_candidates(
+            RunIdentity('probe', 'codex', session_ref=thread), sessions_root=tmp_path,
+            now=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        assert found.candidates == (path,)
+
+
+def test_claude_bound_segment_is_positional(tmp_path):
+    """Claude rows have no native ordinal: a ref's ordinals are row positions."""
+    import json
+
+    path = tmp_path / "agent-seg.jsonl"
+    rows = [{"type": "user", "timestamp": f"2026-10-01T07:00:0{i}Z",
+             "message": {"role": "user", "content": f"turn {i}"}} for i in range(4)]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    adapter = ClaudeTranscriptAdapter(projects_root=tmp_path)
+    whole = adapter.normalize(TranscriptRef(engine="claude", path=path))
+    segment = adapter.normalize(
+        TranscriptRef(engine="claude", path=path, start_ordinal=1, end_ordinal=2))
+    assert [item.payload["text"] for item in whole.items] == [f"turn {i}" for i in range(4)]
+    assert [item.payload["text"] for item in segment.items] == ["turn 1", "turn 2"]
+

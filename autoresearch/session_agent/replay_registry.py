@@ -60,6 +60,22 @@ def _operation_request_ref(capsule: Path, task_id: str, attempt: int) -> dict:
     return _artifact_ref(path, capsule, f"operation.request:{task_id}:a{attempt}")
 
 
+def semantics_context_ref(
+    capsule: Path, task_id: str, attempt: int, operation: str | None
+) -> tuple[dict | None, list[str]]:
+    """The card-semantics context a live publish/assemble froze, plus its receipt ids."""
+    from autoresearch.session_agent import card_semantics_context
+
+    if operation not in card_semantics_context.OPERATIONS:
+        return None, []
+    path = (capsule / "evidence/attempt_records" / task_id / f"a{attempt}"
+            / f"{card_semantics_context.RECORD_KIND}.json")
+    if not path.is_file():
+        return None, []
+    receipt_ids = list(_read_json(path).get("source_receipt_ids") or [])
+    return _artifact_ref(path, capsule, card_semantics_context.ARTIFACT_ID), receipt_ids
+
+
 def _session_request_ref(capsule: Path) -> dict | None:
     path = capsule / "identity/session/request.json"
     return _artifact_ref(path, capsule, "session.request") if path.is_file() else None
@@ -189,6 +205,18 @@ def build_replay_plan(handle) -> dict:
                             )
                         )
         source_receipt_ids = list((evidence or {}).get("source_receipt_ids") or [])
+        if operation == "scan.l4.intel.status":
+            claim_sources = capsule / "evidence/attempt_records" / task_id / f"a{attempt}" / "claim_source_context.json"
+            if claim_sources.is_file():
+                snapshot = _read_json(claim_sources)
+                if snapshot["task_id"] != task_id or snapshot["attempt"] != attempt or snapshot["run_id"] != handle.run_id or snapshot["engine"] != handle.engine:
+                    raise ValueError("claim source replay owner mismatch")
+                input_refs.append(_artifact_ref(claim_sources, capsule, "claim.source_context"))
+                source_receipt_ids = sorted(set(source_receipt_ids) | set(snapshot["source_receipt_ids"]))
+        semantics_ref, semantics_receipts = semantics_context_ref(capsule, task_id, attempt, operation)
+        if semantics_ref is not None and mode in {"COMPUTE", "SOURCE_REPLAY", "EFFECT_PLAN"}:
+            input_refs.append(semantics_ref)
+            source_receipt_ids = sorted(set(source_receipt_ids) | set(semantics_receipts))
         if mode in {"COMPUTE", "SOURCE_REPLAY", "EFFECT_PLAN"}:
             request_ref = _operation_request_ref(capsule, task_id, attempt)
             if request_ref["artifact_id"] not in {ref["artifact_id"] for ref in input_refs}:

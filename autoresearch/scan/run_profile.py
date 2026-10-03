@@ -16,6 +16,8 @@ here is the *policy*: which of those names a given mode owes evidence for.
 
 from __future__ import annotations
 
+from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+
 from autoresearch.contracts import stages as vocab
 
 # `RunProfile` / `ArtifactRule` / `_BASE_RULES` used to be declared right here.  They
@@ -127,6 +129,7 @@ def scan_profile(
     agent_roles: tuple[str, ...] | None = None,
     replayable_stages: tuple[str, ...] = REPLAYABLE_STAGES,
     card_source: str = "legacy_md",
+    card_rules_version: str = CURRENT_CARD_RULES,
     role_stages: dict[str, str] | None = None,
 ) -> RunProfile:
     """Build the `scan-market` evidence profile for one run's mode and terminal state."""
@@ -156,6 +159,7 @@ def scan_profile(
         last_stage=last_stage,
         conditional_roles=CONDITIONAL_AGENT_ROLES,
         card_source=card_source,
+        card_rules_version=card_rules_version,
         role_stages=role_stages,
     )
 

@@ -81,7 +81,7 @@ def test_three_layers_are_recorded_separately(tmp_path):
     assert set(linted.lint["verdicts"]) == set(cl.LINT_LAYERS)
 
 
-def test_artifact_present_but_text_unsupportive_is_refuted_and_blamed_on_model(tmp_path):
+def test_artifact_without_independent_field_check_is_unknown(tmp_path):
     cat = _cat(tmp_path, [_obs()])
     oid = cat.observations().iloc[0]["source_observation_id"]
     claim = cl.parse_claims("- 公司宣布重大重组 [巨潮|2026-08-01|https://x/1]",
@@ -89,12 +89,12 @@ def test_artifact_present_but_text_unsupportive_is_refuted_and_blamed_on_model(t
     claim.citation_observation_ids = [oid]
     linted = cl.lint_claim(claim, catalog=cat,
                            artifacts={oid: {"text": "关于回购股份的公告全文"}})
-    assert linted.lint["verdicts"][cl.CONTENT_SUPPORTS] == cl.FAIL
-    assert linted.status == cl.REFUTED
-    assert linted.blame == cl.BLAME_MODEL
+    assert linted.lint["verdicts"][cl.CONTENT_SUPPORTS] == cl.UNKNOWN
+    assert linted.status == cl.UNVERIFIED
+    assert linted.blame == cl.BLAME_UNKNOWN
 
 
-def test_supportive_artifact_and_matching_date_is_verified(tmp_path):
+def test_keyword_and_matching_date_leave_semantic_support_unknown(tmp_path):
     cat = _cat(tmp_path, [_obs()])
     oid = cat.observations().iloc[0]["source_observation_id"]
     claim = cl.parse_claims("- 公司回购股份 [巨潮|2026-08-01|https://x/1]",
@@ -102,7 +102,7 @@ def test_supportive_artifact_and_matching_date_is_verified(tmp_path):
     claim.citation_observation_ids = [oid]
     linted = cl.lint_claim(claim, catalog=cat,
                            artifacts={oid: {"text": "关于回购股份的公告全文"}})
-    assert linted.status == cl.VERIFIED
+    assert linted.status == cl.UNVERIFIED
 
 
 def test_uncontrolled_predicate_is_unknown_not_refuted(tmp_path):
@@ -131,7 +131,7 @@ def test_naive_substring_matching_would_produce_false_miscitation(tmp_path):
     artifact_text = "关于回购股份的公告全文"
     assert claim.value not in artifact_text          # 子串确实对不上
     linted = cl.lint_claim(claim, catalog=cat, artifacts={oid: {"text": artifact_text}})
-    assert linted.status == cl.VERIFIED              # 但受控谓语「回购」对得上
+    assert linted.status == cl.UNVERIFIED              # 谓语匹配仍不能确认本公司事件
 
 
 def test_no_artifact_is_unknown_not_fail(tmp_path):
@@ -313,3 +313,10 @@ def test_price_verifier_is_not_reused_for_announcement_facts():
     assert "price_claims" in source                 # 只在注释里说明边界
     assert "from autoresearch.scan.price_claims" not in source
     assert "import price_claims" not in source
+
+
+def test_industry_keyword_cannot_establish_company_benefit():
+    claim = cl.Claim(claim_id="benefit", subject="600000", predicate="回购",
+                    value="本公司已完成回购并受益", effective_date=None)
+    verdict, _ = cl._supports(claim, ["行业鼓励上市公司回购，未提及这家公司。"])
+    assert verdict == cl.UNKNOWN

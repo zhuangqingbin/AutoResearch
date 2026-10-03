@@ -50,6 +50,72 @@ _CODE = re.compile(r"[0-9]{6}")
 _TEXT_FIELDS = ("management", "summary", "target", "rr", "rating_deviation_reason")
 _NULLABLE_TEXT_FIELDS = ("base_rate_row", "ev", "conviction", "as_of", "engine", "model")
 
+# B3 uses separate artifacts: an initial assessment can never satisfy validate_card.
+INITIAL_ASSESSMENT_FIELDS = frozenset({
+    "schema_version", "subject", "frame_hash", "fact_manifest_hash",
+    "initial_dimensions", "initial_gates", "initial_rating", "key_risks",
+    "missing_evidence", "evidence_refs",
+})
+DECISION_CHANGE_FIELDS = frozenset({
+    "schema_version", "subject", "initial_hash", "changed_fields", "change_reason",
+    "new_evidence_refs",
+})
+DECISION_TRACKED_FIELDS = frozenset({
+    "rating", *(f"dimensions.{name}" for name in RUBRIC_DIMENSIONS),
+    *(f"gates.{name}" for name in OW_GATES),
+})
+_SUBJECT = re.compile(r"[A-Za-z0-9^][A-Za-z0-9_.=^-]{0,127}", re.ASCII)
+
+
+def _validate_assessment_identity(value: dict, fields: frozenset[str]) -> None:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("missing or unknown assessment fields")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise ValueError("unsupported assessment schema")
+    if not isinstance(value["subject"], str) or not _SUBJECT.fullmatch(value["subject"]):
+        raise ValueError("invalid assessment subject")
+
+
+def _validate_text_list(value, field: str) -> None:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip()
+                                          for item in value):
+        raise ValueError(f"{field} must contain nonempty text references or statements")
+
+
+def validate_initial_assessment(value: dict) -> dict:
+    """Validate the facts-only preliminary artifact; binding checks belong to submit."""
+    _validate_assessment_identity(value, INITIAL_ASSESSMENT_FIELDS)
+    for field in ("frame_hash", "fact_manifest_hash"):
+        if not isinstance(value[field], str) or not _SHA256.fullmatch(value[field]):
+            raise ValueError(f"invalid {field}")
+    for field, keys, levels in (("initial_dimensions", RUBRIC_DIMENSIONS, DIMENSION_LEVELS),
+                                ("initial_gates", OW_GATES, GATE_STATES)):
+        data = value[field]
+        if (not isinstance(data, dict) or set(data) != set(keys)
+                or any(not isinstance(item, str) or item not in levels for item in data.values())):
+            raise ValueError(f"invalid {field}")
+    if not isinstance(value["initial_rating"], str) or value["initial_rating"] not in RATING_ORDER:
+        raise ValueError("invalid initial rating")
+    for field in ("key_risks", "missing_evidence", "evidence_refs"):
+        _validate_text_list(value[field], field)
+    return value
+
+
+def validate_decision_changes(value: dict) -> dict:
+    """Validate an auditable explanation; submit compares fields with both judgments."""
+    _validate_assessment_identity(value, DECISION_CHANGE_FIELDS)
+    if not isinstance(value["initial_hash"], str) or not _SHA256.fullmatch(value["initial_hash"]):
+        raise ValueError("invalid initial_hash")
+    for field in ("changed_fields", "new_evidence_refs"):
+        _validate_text_list(value[field], field)
+    changed = value["changed_fields"]
+    if len(set(changed)) != len(changed) or not set(changed) <= DECISION_TRACKED_FIELDS:
+        raise ValueError("unknown or duplicate changed_fields")
+    reason = value["change_reason"]
+    if not isinstance(reason, str) or (changed and not reason.strip()):
+        raise ValueError("changed fields require a change_reason")
+    return value
+
 
 def _number(value) -> bool:
     return type(value) in {int, float} and math.isfinite(value)
@@ -87,15 +153,25 @@ def validate_nested(card: dict) -> None:
 
 def validate_card(card: dict) -> dict:
     """形状 + 词表。返回原 dict,不改写、不补缺省、不做研究判断。"""
-    if not isinstance(card, dict) or set(card) != REQUIRED:
-        missing = sorted(REQUIRED - set(card or {}))
-        extra = sorted(set(card or {}) - REQUIRED)
+    version = card.get('schema_version') if isinstance(card, dict) else None
+    required = (REQUIRED - {'code'}) | {'subject', 'venue', 'scenario_estimate'} if version == 2 else REQUIRED
+    if not isinstance(card, dict) or set(card) != required:
+        missing = sorted(required - set(card or {}))
+        extra = sorted(set(card or {}) - required)
         raise ValueError(f"missing or unknown card fields (missing={missing}, unknown={extra})")
-    if type(card["schema_version"]) is not int or card["schema_version"] != CARD_SCHEMA_VERSION:
+    if type(card["schema_version"]) is not int or card["schema_version"] not in {CARD_SCHEMA_VERSION, 2}:
         raise ValueError("unsupported research card schema")
     if card["card_origin"] not in CARD_ORIGINS:
         raise ValueError("unknown card origin")
-    if not isinstance(card["code"], str) or not _CODE.fullmatch(card["code"]):
+    if version == 2:
+        from autoresearch.contracts.execution import VENUE_TIMEZONES, validate_scenario_estimate
+        if card["scenario_estimate"] is not None:
+            validate_scenario_estimate(card["scenario_estimate"])
+        if not isinstance(card['subject'], str) or not _SUBJECT.fullmatch(card['subject']):
+            raise ValueError('invalid card subject')
+        if not isinstance(card['venue'], str) or card['venue'] not in VENUE_TIMEZONES:
+            raise ValueError('invalid card venue')
+    elif not isinstance(card["code"], str) or not _CODE.fullmatch(card["code"]):
         raise ValueError("invalid code")
     date.fromisoformat(card["analysis_date"])
     if card["ruler"] != "gap_c1_o2":

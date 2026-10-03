@@ -3,46 +3,36 @@ name: macro-research
 description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行业配置 read (「研究全球宏观」「现在该超配什么资产」). Also owns the LITE 市场研判 daily brief: invoked by scan-market Stage 0 or 「今天大盘怎么看」, writes market_view.md from the deterministic market_pack. NOT for one ticker (→ stock-research), a full A-share screen (→ scan-market), or single-industry depth (→ sector-research). Project-local."
 ---
 
-> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+# 全球宏观与市场研判
 
-# macro-research — 在 session 内零付费 API 跑全球+中美宏观 + A股中观 → 配置
+## 输入与模式
 
-> session_v1 编排入口(PILOT,默认仍 legacy):见 `docs/session-agent/README.md`;`finish` 后用 `session_agent verify-report --level full` 的机器结果交付。
+输入分析日及 FULL/LITE。默认 FULL；“今天大盘怎么看”或 scan Stage 0 使用 LITE。
 
-## 核心原理
-宏观研究 = `确定性数据(免费)` + `多 agent 推理(本来要钱)`。本 skill 调项目数据工具取真宏观/中观数据(FRED/akshare/yfinance),把推理换成你(Claude,本 session)——零 LLM API,产出 regime 判断 + 跨资产配置表 + A股行业配置表。
+- FULL：冻结宏观原始数据、全球情报和决策时间，生成跨资产配置表与 A 股行业配置表。规范角色为 `.claude/agents/macro-full.md`；按需参考 [macro-playbook.md](macro-playbook.md)。
+- LITE：从确定性 market_pack 写 `market_view.md`；规范角色为 `.claude/agents/macro-brief.md`。只有描述性地形进入 L3/L4，配置方向留给 L5/独立报告。
+- FULL 的 `six_groups_v1` 是显式冻结候选；默认仍为 `serial21`。组内全部产物通过才接受，失败只重试对应组。两种布局保留相同必需产物；质量、证据与真实成本对拍完成前不宣称六组更优。
 
-## 档位路由(一个 skill 两档)
-- **full(默认,用户触发)**:全球宏观 6 步流程(下节)→ 两张配置表报告。
-- **lite = 市场研判(首席策略师)**:被 **scan-market 调用**(Stage 0,与 universe 并行跑)或用户要日频大盘 brief。输入 = 确定性 `market_pack`(盘前帧入口 `uv run --no-sync python -m autoresearch.scan.frame <date> --json`;或 L2 后 `autoresearch.scan.market.market_pack(scan_dir)`,两口径同字段)+ `macro_state.json`(full 档机读产物,presence-gated:缺/过期只用 pack);产出 `$CTX/scan/<date>/market_view.md`。**prompt 模板与防锚定铁律见 `macro-playbook.md` 末节「lite 档:市场研判」**(自 scan-market 迁入,2026-07-03 海拔重构:市场层 = 宏观能力的 lite 档)。
+## 数据与输出
 
-## 何时用 / 不用
-- ✅ 自上而下的宏观/中美/中观研究,收在跨资产 + A股行业的超-中-低配(full)。
-- ✅ scan-market Stage 0 的市场研判 / "今天大盘怎么看"(lite)。
-- ❌ 单只票 → stock-research;❌ 全 A股选股 → scan-market。
+宏观数据使用登记的 FRED、tushare 等来源；`FRED_API_KEY`、`TUSHARE_TOKEN` 由环境提供。数字来自冻结 context，网查必须有来源、日期和可用时间；情景概率、政策路径与相关性假设标为判断。
 
-## 前置
-- 仓库根目录运行;`.env` 需 `FRED_API_KEY`(免费)。A股中观需 `uv add akshare`。报告默认中文。
+交付 regime、两张配置表、触发条件、来源缺口和报告路径。宏观配置背景不替代个股隔夜三门；LITE 不输出个股评级。
 
-## 流程(6 步)
-1. **取数(零 LLM)**:`uv run python -m autoresearch.macro.harvest [YYYY-MM-DD]` → `$CTX/macro/<date>/data.md`(区域宏观 US/China/Global + 跨资产 basket + A股中观骨架)。日期默认今天。
-2. **读 context**:分页读 `$CTX/macro/<date>/data.md`(文件较大,用 offset/limit 或 grep 定位),锁定 US/China/Global 宏观、跨资产价(含 USD/CNY/JPY/黄金/大宗/BTC)、A股中观(tushare 优先:北向官方汇总/**两融余额**/行业资金净流入(亿)/涨停情绪/**指数估值分位** + akshare 补游资龙虎榜)。
-3. **读 playbook**:读本目录 `macro-playbook.md` 拿报告骨架 + 各 agent 角色/输出格式 + 两张配置表的机器可读约定 + 数据坑,**不要回翻代码**。
-4. **扮演各 agent**:按 playbook 顺序逐段产出到 `$CTX/macro/<date>/`(分节草稿,gitignored;目录结构见 playbook)。**每个数字必出 context;判断性内容(情景概率/政策路径/央行反应函数)显式标『判断』或『实时网查』。** 两张配置表(跨资产 `decision.md`、A股行业 `sector_map.md`)每行带 keyed `**Rating**` 行。
-5. **组装+校验**:`uv run python -m autoresearch.macro.assemble $CTX/macro/<date>` → `$RPT/macro/<YYYYMMDD>/<HHMM>_summary.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
-6. **汇报**:regime 判断 + 两张配置表(关键超/低配 + 表达 + 触发位)+ 诚实局限。
+## 入口与交付
 
-## 铁律(防幻觉,违反即作废重来)
-- 每个价格/宏观/中观数字都出自 context;实时网查数标来源/日期。
-- 宏观判断性内容(情景概率、政策路径、央行反应函数)显式标注,不冒充确定性数据。
-- 分析窗口钉死分析日,绝不用未来数据。
-- 中美对撞 / Risk Debate 必须有真实张力(不许橡皮图章一边倒)。
-- 北向个股实时披露 2024-08 已停 → 中观北向用 tushare `moneyflow_hsgt` 官方**日频汇总**(可靠);仍是汇总非个股口径。
-- 跨资产相关性随 regime 漂移(通胀期股债翻正)→ 配置表声明当前相关性假设。
-- 收尾写明:这是 Claude 的推理产出、非自动引擎;仅供研究,非投资建议。
+在项目根固定本宿主的 `AUTORESEARCH_ENGINE`，使用 `uv run --no-sync`。只读写本引擎的 `context_<engine>/`、`reports_<engine>/`，只有 `lake/` 共享。
 
-## 常见坑
-- 必须 `uv run` + 仓库根目录,否则 `.env`/依赖加载不到。
-- akshare 版本漂/限流 → harvester 已防御降级 + WebSearch 兜底;context 出现『取数失败 → WebSearch』时,推理阶段务必网查补回逐日/逐行颗粒度,**别静默跳过或塌缩成一个累计数**。
-- FRED 国际 series 若 `MACRO_DATA_UNAVAILABLE` → 该指标走 WebSearch,标『实时网查』。
-- A股中观 **tushare 优先**(`tushare_macro`:北向/两融/行业资金/涨停/指数估值,非 push2 更稳),akshare(Eastmoney→THS)补龙虎榜游资;都失败才 WebSearch。
+显式 `session_v1` 的控制循环、请求样例与 CLI 以 [统一入口](../../../docs/session-agent/README.md) 为准。取数前运行 `uv run --no-sync python -m autoresearch.session_agent.task_access preflight --orchestration session_v1`。`CONFIGURED_UNVERIFIED` 只表示配置可用；真实双宿主验收未齐时仍为 **PILOT**，不自行切换默认入口。旧 Workflow 当前返回 `HOST_CAPABILITY_REQUIRED`，保留为维护参考，不能绕过能力门启动。
+
+研究角色只读冻结任务包与角色片段；主会话负责认领、真实身份绑定、提交、恢复和发布。`finish` 后对机器返回的 canonical 报告路径及 run_id 执行 `verify-report --level full`；交付只引用该 VerificationResult，缺项原样披露。
+
+## 决策约束
+
+FULL/LITE 仅表示研究深度。交易结论统一使用冻结 DecisionFrame 的 `gap_c1_o2`：D1 收盘入场、D2 开盘退出。所属交易所、日历与截止时间必须有来源；UNKNOWN 限制执行可用性，不自动改写研究评级。情景收益需要明确假设入场价或区间；缺分母时不发布精确 EV/R:R。
+
+个股评级与动作由共同的六维、三门和冻结阈值校验。保留模型原判断、机器建议及偏离理由；宏观和行业只向个股传递描述性地形。0 买日可以成立，不能放宽门凑单。规则实现以 `autoresearch/common/card_decision.py`、`autoresearch/contracts/execution.py` 为准。
+
+## 复盘与候选实验
+
+主会话按 [研究质量闭环](../../../docs/session-agent/research-quality-workflow.md) 保存诊断、冻结案例并比较候选；缺真实计量或人工标签保持未知，不自动改默认 profile。研究角色仍只读本次冻结任务包。

@@ -362,3 +362,25 @@ def test_evidence_level_never_changes_the_completeness_verdict(tmp_path):
     assert baseline["levels"] != relabeled["levels"]
     assert relabeled["levels"]["L2"] == {"required": 1, "hit": 1}
     assert set(baseline["levels"]) == {"L0"}
+
+
+def test_card_rule_version_is_frozen_and_missing_historical_field_is_legacy(tmp_path):
+    from dataclasses import replace
+    from autoresearch.scan.run_profile import scan_profile
+
+    capsule = tmp_path / "capsule"
+    profile = scan_profile(card_rules_version="skills-gap-v2")
+    assert profile.card_rules_version == "skills-gap-v2"
+    write_expected(capsule, profile)
+    assert profile_from_capsule(capsule).card_rules_version == "skills-gap-v2"
+    path = capsule / "verification/profile.json"
+    payload = json.loads(path.read_text())
+    payload.pop("card_rules_version")
+    path.write_text(json.dumps(payload))
+    assert profile_from_capsule(capsule).card_rules_version == "legacy-v1"
+    # Re-finalization must preserve an already frozen historical version.
+    write_expected(capsule, profile)
+    assert profile_from_capsule(capsule).card_rules_version == "legacy-v1"
+    assert profile_from_capsule(tmp_path / "historical").card_rules_version == "legacy-v1"
+    with pytest.raises(ValueError):
+        replace(profile, card_rules_version="unknown")

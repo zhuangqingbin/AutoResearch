@@ -325,7 +325,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
       此前会静默跳过、不判也不报——与 `wire_breaks`"配置写了没人接"的方向不对称(一边
       主动报断线,一边默默把看不懂的行扔掉)。现在这类行会被记进本字段并计入 `ok`——
       分不清、判不了本身就是一种"这份对账不完整"的信号,不该被 0 mismatches 悄悄冲平。
-    - `checked` 只计 `role == "subagent"` 的行数(2026-08-06 review Minor 1 修正):此前
+    - `checked` 计传统 subagent 与登记 session role 的行数(2026-08-06 review Minor 1 修正):此前
       用 `len(rows)` 会把 `role == "main"`(主会话自身)的那一行也算进去,但比对循环一开
       头就跳过了它——"实测行 N 条"这句话此前会让人以为 N 行都真的参与了对账,其实最多
       N-1 行。
@@ -356,11 +356,30 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
     by_type: dict[str, list[tuple[str, str]]] = {}
     checked = 0
     unmeasured = 0
+    from autoresearch.contracts.agent_roles import dispatch_mapping
+
+    session_roles = dispatch_mapping()
+    session_seen = set()
     for r in rows:
-        if r.get("role") != "subagent":
+        session_role = session_roles.get(r.get("role"))
+        if r.get("role") != "subagent" and session_role is None:
             continue
         checked += 1
         atype = r.get("agent") or ""
+        if session_role is not None:
+            config_role = session_role[1]
+            session_seen.add(config_role)
+            if r.get("model") in _UNMEASURED and r.get("effort") in _UNMEASURED:
+                unmeasured += 1
+                continue
+            expected = _normalise_expected_spec(agents_cfg.get(config_role) or {})
+            if not expected:
+                unknown_types.add(atype)
+            for field, got in (("model", _norm_model(r.get("model"))), ("effort", r.get("effort") or "(unset)")):
+                if field in expected and got != expected[field]:
+                    mismatches.append({"agent": atype, "role": config_role, "field": field,
+                                       "expected": expected[field], "actual": got})
+            continue
         seen_types.add(atype)
         if r.get("model") in _UNMEASURED and r.get("effort") in _UNMEASURED:
             # limit-killed(I-1):两个请求参数字段都没记下 —— 判不了,不装判得了。
@@ -411,13 +430,14 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
                                        "expected": exp[field], "actual": got_val})
 
     wire_breaks = [role for role in _EXPECT_PRESENT if role in agents_cfg
+                   and role not in session_seen
                    and not any(role in AGENTTYPE_ROLES.get(t, ()) for t in seen_types)]
     unknown_agent_types = sorted(unknown_types)
 
     # Wave12-T33 ⑤:resolved 产物**缺任一实际派发 role** → 直接 ok=false。
     # 「今天真派过这个 role,但单一事实源里没有它」= 那次派发的档位无从对账,
     # 等于对账表自称干净却漏掉了一整个角色 —— 不该被 0 mismatches 冲平。
-    dispatched: set[str] = set()
+    dispatched: set[str] = set(session_seen)
     for atype in seen_types:
         roles_t = AGENTTYPE_ROLES.get(atype)
         if roles_t:

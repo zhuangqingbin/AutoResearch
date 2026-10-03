@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import re
 import sys
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
 from autoresearch.scan.run_contract import load_run_contract, sha256_json
 
-DECISION_RECORD_SCHEMA_VERSION = 1
+DECISION_RECORD_SCHEMA_VERSION = 3
 DECISION_BOOK_SCHEMA_VERSION = 1
 _CODE_RE = re.compile(r"^\d{6}$")
 _RATINGS = {"Buy", "Overweight", "Hold", "Underweight", "Sell", "—"}
@@ -24,6 +24,16 @@ _RATINGS = {"Buy", "Overweight", "Hold", "Underweight", "Sell", "—"}
 #: 保持读评级,只降语义 + 改文档。谁想拿 `proposal == "BUY"` 当买入建议渲染,先读这段。
 _PROPOSALS = {"BUY", "HOLD", "SELL", "—"}
 _GATE_STATES = {"PASS", "FAIL", "UNKNOWN"}
+
+
+def complete_review_results(source_rating: str, ratings: object) -> bool:
+    """Completion needs observed valid ratings, not a model's completion flag."""
+    return (
+        isinstance(ratings, list) and 2 <= len(ratings) <= 3
+        and all(isinstance(item, str) and item in _RATINGS - {"—"} for item in ratings)
+        and ratings[0] == source_rating
+        and (len(ratings) == 3 or ratings[0] == ratings[1])
+    )
 
 
 @dataclass(frozen=True)
@@ -43,14 +53,26 @@ class DecisionRecord:
     evidence_refs: list[str]
     first_rejection_stage: str | None
     record_hash: str
+    review_policy_version: str | None = None
+    review_trigger: str | None = None
+    review_required: bool | None = None
+    review_status: str = "UNKNOWN"
+    review_coverage_reason: str = "historical_coverage_not_recorded"
+
+    post_verify_rating: str | None = None
 
     def _hash_payload(self) -> dict:
-        payload = asdict(self)
+        payload = self.to_dict()
         payload.pop("record_hash")
         return payload
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        value = asdict(self)
+        if self.schema_version == 1:
+            value = {key: item for key, item in value.items() if not key.startswith("review_")}
+        if self.schema_version < 3:
+            value.pop("post_verify_rating")
+        return value
 
     @classmethod
     def build(
@@ -69,12 +91,33 @@ class DecisionRecord:
         reason: str,
         evidence_refs: list[str],
         first_rejection_stage: str | None,
+        review_policy_version: str | None = None,
+        review_trigger: str | None = None,
+        review_required: bool | None = None,
+        review_status: str = "UNKNOWN",
+        review_coverage_reason: str = "historical_coverage_not_recorded",
+        post_verify_rating: str | None = None,
     ) -> DecisionRecord:
+        if post_verify_rating is not None and post_verify_rating not in _RATINGS:
+            raise ValueError("invalid post verify rating")
+        if review_status not in {"UNKNOWN", "NOT_REQUIRED", "MISSING", "INCOMPLETE", "COMPLETE"}:
+            raise ValueError("invalid review status")
+        if review_required is not None and type(review_required) is not bool:
+            raise ValueError("invalid review required flag")
+        if review_trigger not in {None, "ow_review", "sell_review"}:
+            raise ValueError("invalid review trigger")
+        if review_status != "UNKNOWN":
+            if not review_policy_version or not review_coverage_reason or review_required != (review_trigger is not None):
+                raise ValueError("inconsistent review coverage")
+            if (review_status == "NOT_REQUIRED") != (review_required is False):
+                raise ValueError("inconsistent review status")
+        if review_status == "COMPLETE" and not complete_review_results(post_verify_rating if post_verify_rating is not None else source_rating, ensemble_ratings):
+            raise ValueError("complete review requires actual review results")
         code = str(code).zfill(6)
         if not _CODE_RE.fullmatch(code):
             raise ValueError(f"invalid decision code: {code!r}")
         ratings = (source_rating, rubric_rating, final_rating, *ensemble_ratings)
-        if any(rating not in _RATINGS for rating in ratings):
+        if any(not isinstance(rating, str) or rating not in _RATINGS for rating in ratings):
             raise ValueError(f"invalid decision rating: {ratings}")
         if proposal not in _PROPOSALS:
             raise ValueError(f"invalid decision proposal: {proposal}")
@@ -106,11 +149,26 @@ class DecisionRecord:
                 None if first_rejection_stage is None else str(first_rejection_stage)
             ),
             record_hash="",
+            review_policy_version=review_policy_version,
+            review_trigger=review_trigger,
+            review_required=review_required,
+            review_status=review_status,
+            review_coverage_reason=review_coverage_reason,
+            post_verify_rating=post_verify_rating,
         )
         return replace(base, record_hash=sha256_json(base._hash_payload()))
 
     @classmethod
     def from_dict(cls, raw: dict) -> DecisionRecord:
+        if type(raw.get("schema_version")) is not int:
+            raise ValueError("invalid decision schema version")
+        required = {field.name for field in fields(cls)}
+        if raw["schema_version"] == 1:
+            required = {key for key in required if not key.startswith("review_")}
+        if raw["schema_version"] < 3:
+            required.discard("post_verify_rating")
+        if set(raw) != required:
+            raise ValueError("invalid decision record fields")
         record = cls(**raw)
         rebuilt = cls.build(
             **{
@@ -119,10 +177,15 @@ class DecisionRecord:
                 if key not in {"schema_version", "record_hash"}
             }
         )
-        if record.schema_version != DECISION_RECORD_SCHEMA_VERSION:
+        if record.schema_version not in {1, 2, DECISION_RECORD_SCHEMA_VERSION}:
             raise ValueError(
                 f"unsupported decision schema_version={record.schema_version}"
             )
+        if record.schema_version == 1 and any(key.startswith("review_") for key in raw):
+            raise ValueError("legacy decision cannot declare review coverage")
+        if record.schema_version < 3:
+            rebuilt = replace(rebuilt, schema_version=record.schema_version)
+            rebuilt = replace(rebuilt, record_hash=sha256_json(rebuilt._hash_payload()))
         if record.record_hash != rebuilt.record_hash:
             raise ValueError("decision record hash mismatch")
         return record

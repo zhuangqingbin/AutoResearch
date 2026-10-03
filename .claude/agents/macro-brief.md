@@ -2,7 +2,7 @@
 name: macro-brief
 description: macro-research lite 档市场研判写手(首席策略师)。scan-market Stage 0(prelude 并行)派一个:读确定性 strategist_pack(market_pack 的单向投影,+ presence-gated macro_state)写 market_view.md 六小节(前3描述性地形喂 L3/L4、后2规范性仅 L5)。数字全出自 pack,不编。
 model: opus
-effort: high
+effort: max
 tools: Read, Write, Grep, Glob, WebSearch, WebFetch
 ---
 

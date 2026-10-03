@@ -85,7 +85,7 @@ launchctl list | grep nightly-close        # 只应剩 …nightly-close.claude(�
 
 ## 活体情报站
 
-铁律见 STAGES.md L4 节(价格断言须与 verified OHLCV 对账)。已知线头:限频自报仍会超 cap(warn 信号已按实测中位对齐 `max_queries=20`)。
+铁律见 STAGES.md L4 节(价格断言须与 verified OHLCV 对账)。已知线头:限频自报仍会超 cap(warn 信号按 `l4_intel.max_queries` 对账)。
 
 ## 覆盖档案:重做首覆的正确姿势
 

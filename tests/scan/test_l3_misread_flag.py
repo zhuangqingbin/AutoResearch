@@ -70,7 +70,8 @@ def test_table_column_and_legend(tmp_path):
     # 的话,删掉 df.apply(l3_misread_flags) 行照样绿(review Important #1)。
     row_line = next(ln for ln in on.splitlines() if ln.startswith("| 000001"))
     assert "低基" in row_line
-    assert "misread" not in off
+    assert "misread" not in "\n".join(line for line in off.splitlines() if line.startswith("|"))
+    assert "misread 预警:" not in off
 
 
 def test_l3_rank_agent_has_constraint_e():

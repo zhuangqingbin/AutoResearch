@@ -579,3 +579,55 @@ def test_never_raises_on_garbage(tmp_path):
     rows = self_review.brief_lint(empty, empty)
     assert isinstance(rows, list)
     assert "brief·缺失" in _checks(rows)
+
+
+# ───── ⑥ 续:E6 v4 分级行(2026-09-27/28/29 三场真扫的 GATE4 假 fail) ─────
+#
+# R 级把 ③ 行的前导字形从 ✅ 换成了 🟥(`brief._buy_lines`),而 ⑥ 仍按「行里有 🕶 或 ✅」找那一行
+# → 找不到 → brief 侧代码集合恒空 → 与决策文件 `buys[].code` 对不上 → fail → GATE4 毙掉一场
+# 已经出了 BUY 的扫描。定位口径改为渲染器导出的 `brief.relative_buy_line`(同一组前缀常量)。
+
+def _tiered_decision(tier: str) -> dict:
+    decision = _decision(mode="active", buys=1)
+    decision["buys"][0].update(
+        {"tier": tier, "basis": "relative_forced" if tier == "R" else "card_backed"})
+    decision["tiering"] = True
+    decision["tier_counts"] = {"A": int(tier == "A"), "R": int(tier == "R")}
+    return decision
+
+
+@pytest.mark.parametrize("tier", ["R", "A"])
+def test_active_tiered_relative_buy_is_same_source(tmp_path, tier):
+    scan = _scan(tmp_path, decision=_tiered_decision(tier))
+    report = _publish(tmp_path, scan)
+    text = (report / brief.BRIEF_FILENAME).read_text(encoding="utf-8")
+    assert ("🟥" in text) == (tier == "R"), "夹具没渲染出本用例要测的前导字形"
+    assert "600018" in text
+    rows = self_review.brief_lint(report, scan)
+    assert _E6_CHECK not in _checks(rows), rows
+    assert not _fails(rows), _fails(rows)
+
+
+def test_forced_tier_code_mismatch_is_still_fail(tmp_path):
+    """修定位不能把判据修没:R 级行里的代码被换掉,仍然必须 fail 并同时点出两边的代码。"""
+    scan = _scan(tmp_path, decision=_tiered_decision("R"))
+    report = _publish(tmp_path, scan)
+    path = report / brief.BRIEF_FILENAME
+    text = path.read_text(encoding="utf-8")
+    assert "🟥" in text and "600018" in text, "锚点没先出现,后面的篡改是空操作"
+    path.write_text(text.replace("600018", "600188"), encoding="utf-8")
+    hit = [r for r in self_review.brief_lint(report, scan) if r["check"] == _E6_CHECK]
+    assert hit and hit[0]["severity"] == "fail"
+    assert "600188" in hit[0]["detail"] and "600018" in hit[0]["detail"]
+
+
+def test_forced_tier_fail_reaches_gate4_only_when_codes_differ(tmp_path):
+    """端到端到门:R 级干净盘 GATE4 必过(09-29 真扫的形状);同一份盘改掉代码后 GATE4 必拦。"""
+    scan = _scan(tmp_path, decision=_tiered_decision("R"))
+    report = _publish(tmp_path, scan)
+    _, gate, fails = _lint_then_gate4(report, scan)
+    assert gate["ok"] is True, (gate, fails)
+    path = report / brief.BRIEF_FILENAME
+    path.write_text(path.read_text(encoding="utf-8").replace("600018", "600188"), encoding="utf-8")
+    _, gate, fails = _lint_then_gate4(report, scan)
+    assert gate["ok"] is False and any(r["check"] == _E6_CHECK for r in fails), (gate, fails)

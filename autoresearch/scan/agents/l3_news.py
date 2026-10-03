@@ -125,7 +125,7 @@ def _trade_days_for(date: str, lookback_days: int) -> list[str]:
         return []
 
 
-def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: int = 10) -> dict:
+def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: int | None = None) -> dict:
     """对 codes 拉最近 ~lookback_days 公告(anns_d 按 ann_date 入湖)→ 按 code 分桶 + 落 staging。
 
     best-effort:任一 ann_date 拉取失败 → 跳过该日;全失败 → 各 code 空列表。返回 {code: [anns]}。
@@ -142,6 +142,9 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     `source=="cninfo"`,`health.anns_source_status` 据此判 `fallback`)。B 级契约:兜底
     本身炸了/仍空 → 保持空桶,不阻断、只记账(见下方 stderr)。已有主源真数据的桶不覆盖。
     """
+    if lookback_days is None:                       # l3.lookback_days.news(缺省 10 交易日)
+        from autoresearch.scan.user_config import knob
+        lookback_days = int((knob("l3", "lookback_days", None, {}) or {}).get("news", 10))
     from autoresearch.data.tushare_source import _code6
     root = root or ws.scan_root()
     out_dir = root / date / "L3_news"

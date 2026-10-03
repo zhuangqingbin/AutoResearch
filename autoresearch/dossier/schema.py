@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
-from autoresearch.common.published_state import read_committed_bytes
+from autoresearch.common.published_state import committed_pointer, read_committed_bytes
 
 DOSSIER_DIR = ws.knowledge_root() / "dossiers"
 
@@ -51,8 +51,11 @@ def dossier_path(code6: str) -> Path:
     return DOSSIER_DIR / f"{str(code6).zfill(6)}.md"
 
 
-def read_dossier_bytes(code6: str) -> bytes | None:
-    """Read exact latest committed dossier bytes, or a historical mirror."""
+def read_dossier_snapshot(code6: str) -> tuple[bytes | None, str | None]:
+    """Return visible bytes and the distinct committed publication base hash."""
+    from autoresearch.common.atomic import sha256_bytes
+    from autoresearch.dossier.maintenance import read_overlay
+
     code = str(code6).zfill(6)
     payload = read_committed_bytes(
         f"dossier.stock.{code}",
@@ -60,9 +63,17 @@ def read_dossier_bytes(code6: str) -> bytes | None:
         reports_root=ws.run_reports_root("dossier-init"),
     )
     if payload is not None:
-        return payload
+        return read_overlay(code, payload), sha256_bytes(payload)
+    if committed_pointer(f"dossier.stock.{code}", state_root=ws.context_root() / "_published_state",
+                         reports_root=ws.run_reports_root("dossier-init")) is not None:
+        raise ValueError("committed dossier payload missing or corrupt")
     path = dossier_path(code)
-    return path.read_bytes() if path.is_file() else None
+    return (path.read_bytes() if path.is_file() else None), None
+
+
+def read_dossier_bytes(code6: str) -> bytes | None:
+    """Read committed publication plus verified maintenance, or a legacy mirror."""
+    return read_dossier_snapshot(code6)[0]
 
 
 def read_dossier_text(code6: str) -> str | None:
@@ -123,7 +134,13 @@ def _summary_block(text: str) -> str:
     return _section_block(text, SUMMARY_HEAD)
 
 
-def dossier_sections(code6: str, keys: tuple[str, ...], *, cap: int = RESEARCH_BODY_CAP) -> str:
+def _caps() -> dict:
+    """`scan_config.dossier.{summary_cap, research_body_cap, stale_days}`(缺键 = 模块常量)。"""
+    from autoresearch.dossier.config import dossier_cfg
+    return dossier_cfg()
+
+
+def dossier_sections(code6: str, keys: tuple[str, ...], *, cap: int | None = None) -> str:
     """按 `§N` 简写拼接档案对应小节全文(研报体素材;Wave9 B-3)。
 
     `keys` 用 `"§N"` 简写(N=1..8),映射到 `SECTIONS[N-1]` 的真实标题字面量
@@ -144,11 +161,16 @@ def dossier_sections(code6: str, keys: tuple[str, ...], *, cap: int = RESEARCH_B
     `injectable_summary` 的"超帽即弃"刻意不同,四节是研报体叙事主体,弃了等于卡片
     啥也没有)。
     """
+    cap = _caps()["research_body_cap"] if cap is None else cap
     try:
         p = dossier_path(code6)
         text = read_dossier_text(code6)
         if text is None:
             return ""
+        current_view = current_fact_view(code6, text)
+        if current_view is not None:
+            from autoresearch.dossier.facts import render_reusable
+            return render_reusable(current_view, sections={key.removeprefix('§') for key in keys})
         blocks = []
         for key in keys:
             if not (key.startswith("§") and key[1:].isdigit()):
@@ -188,18 +210,30 @@ def injectable_summary(code6: str) -> str:
         text = read_dossier_text(code6)
         if text is None:
             return ""
+        current_view = current_fact_view(code6, text)
+        if current_view is not None:
+            from autoresearch.dossier.facts import render_reusable
+            return render_reusable(current_view)
         if not parse_frontmatter(text).get("initiated"):
             return ""
         block = _summary_block(text)
-        if not block or est_tokens(block) > SUMMARY_CAP:
+        if not block or est_tokens(block) > _caps()["summary_cap"]:
             return ""
         return block
     except Exception:  # noqa: BLE001 — 坏档=不可注入,不抛
         return ""
 
 
-def lint_dossier(text: str, cap: int = SUMMARY_CAP) -> list[str]:
+def lint_dossier(text: str, cap: int | None = None) -> list[str]:
+    cap = _caps()["summary_cap"] if cap is None else cap   # dossier.summary_cap
     issues = [f"缺节锚:{s}" for s in SECTIONS if s not in text]
+    from autoresearch.dossier.facts import parse_ledger
+    try:
+        ledger = parse_ledger(text)
+        if ledger is not None and ledger['subject'] != parse_frontmatter(text).get('code'):
+            issues.append('档案事实主体不一致')
+    except (ValueError, TypeError, KeyError) as exc:
+        issues.append(f'档案事实契约:{exc}')
     if SUMMARY_HEAD not in text:
         issues.append(f"缺节锚:{SUMMARY_HEAD}")
         return issues
@@ -208,6 +242,39 @@ def lint_dossier(text: str, cap: int = SUMMARY_CAP) -> list[str]:
         issues.append(f"summary>cap({est_tokens(block)}>{cap})")
     issues += [f"摘要缺锚:{a}" for a in SUMMARY_ANCHORS if a not in block]
     return issues
+
+
+def current_fact_view(code6: str, text: str) -> dict | None:
+    """v3 production reads only source-verified facts; old runs keep their contract."""
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+    from autoresearch.dossier.facts import (
+        empty_ledger,
+        evidence_from_capsule,
+        parse_ledger,
+        reusable_view,
+    )
+    from autoresearch.trace.capsule import require_active_run
+    from autoresearch.trace.completeness import card_rules_from_capsule
+    from autoresearch.trace.frozen_sources import frozen_source_context
+
+    run_id = ws.active_run_id()
+    if run_id is None:
+        return None
+    handle = require_active_run(run_id)
+    if card_rules_from_capsule(handle.capsule) != CURRENT_CARD_RULES:
+        return None
+    source = frozen_source_context(handle.staging)
+    if source is None:
+        raise ValueError('current dossier reuse requires frozen decision frame')
+    ledger = parse_ledger(text) or empty_ledger(str(code6).zfill(6))
+    if ledger['subject'] != str(code6).zfill(6):
+        raise ValueError('dossier fact subject mismatch')
+    frame = source['frame']
+    import os
+    evidence = evidence_from_capsule(handle, frame, subject=ledger['subject'],
+                                     consumer_task_id=os.environ.get('AUTORESEARCH_TASK_ID') or None)
+    return reusable_view(ledger, analysis_date=frame['analysis_session'],
+                         knowledge_cutoff=frame['knowledge_cutoff'], evidence=evidence, timezone=frame['timezone'])
 
 
 STALE_DAYS = 90  # 档案陈旧告警阈值(spec 风险节:last_refresh 超 90 日 → warn)
@@ -243,7 +310,7 @@ def staleness_age(text: str, today: str) -> int | None:
         return None
 
 
-def staleness_issues(text: str, today: str, *, cap_days: int = STALE_DAYS) -> list[str]:
+def staleness_issues(text: str, today: str, *, cap_days: int | None = None) -> list[str]:
     """档案陈旧度探针:`last_refresh`(缺则退 `initiated`)距 today 超 cap_days → 一条 issue。
 
     与 `lint_dossier`(结构契约)分开:结构对但内容陈旧是另一类病,且需要"今天"这个
@@ -257,6 +324,7 @@ def staleness_issues(text: str, today: str, *, cap_days: int = STALE_DAYS) -> li
     手误就能把畸形日期写进档案且此后 1.5 年都不再告警)。`today` 本身畸形不在此吞,
     经 `staleness_age` 原样抛出,不伪装成"档案新鲜"。
     """
+    cap_days = _caps()["stale_days"] if cap_days is None else cap_days
     meta = parse_frontmatter(text)
     has_refresh = bool(meta.get("last_refresh"))
     ref = meta.get("last_refresh") or meta.get("initiated")

@@ -1285,3 +1285,40 @@ def test_seat_pointer_reads_the_registered_file_name_not_a_literal(scan, monkeyp
     assert "**⑦ 10 日观察席(影子)**:2 只 → summary §12" in built["markdown"]
     row = next(r for r in built["sources"] if r["field"] == "swing_seat.n")
     assert row["file"] == "_swing_seat_renamed.json"
+
+
+# ───────── ③ 行定位口径与渲染器同源(2026-10-02;09-27/28/29 GATE4 假 fail 的根因) ─────────
+#
+# `self_review.brief_lint` ⑥ 要在 brief 正文里找到「相对 BUY 那一行」。它过去按行内字形(🕶/✅)
+# 自己找,渲染器把 R 级换成 🟥 之后就找不到了。现在定位函数 `brief.relative_buy_line` 与
+# `_buy_lines` 共用同一组前缀常量;本组用例把「渲染器能产出的每一种 ③ 行」都过一遍定位器,
+# 谁再给 ③ 行加第四种前导而不登记常量,这里先红。
+
+def _relative_doc(scan, *, mode, tier, shape):
+    path = scan / brief.DECISION_FILENAME
+    if shape == "absent":
+        path.unlink()
+        return
+    doc = _decision(mode=mode, blocked=(shape == "blocked"))
+    if tier is not None and shape == "buy":
+        doc["buys"][0].update(
+            {"tier": tier, "basis": "relative_forced" if tier == "R" else "card_backed"})
+        doc["tiering"], doc["tier_counts"] = True, {"A": int(tier == "A"), "R": int(tier == "R")}
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["shadow", "active"])
+@pytest.mark.parametrize("tier", [None, "A", "R"])
+@pytest.mark.parametrize("shape", ["buy", "blocked", "absent"])
+def test_relative_buy_line_locator_is_same_source_as_renderer(scan, mode, tier, shape):
+    _relative_doc(scan, mode=mode, tier=tier, shape=shape)
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    rendered = [ln for ln in md.splitlines() if "relative BUY**" in ln or "relative BUY(" in ln]
+    assert len(rendered) == 1, rendered
+    assert brief.relative_buy_line(md) == rendered[0]
+    codes = [c for c in ("600018",) if c in rendered[0]]
+    assert bool(codes) == (shape == "buy"), rendered[0]
+
+
+def test_relative_buy_line_returns_none_when_the_line_is_gone():
+    assert brief.relative_buy_line("**③ 结论**\n- **研究评级分布**(…BUY 见下一行…)\n") is None

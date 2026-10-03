@@ -27,6 +27,14 @@ DATE = "2026-08-27"
 TICKER = "300857.SZ"
 
 
+@pytest.fixture(autouse=True)
+def simulated_legacy_body_access(monkeypatch):
+    # Historical runctl lifecycle only. C4 entry refusal has dedicated unmocked tests.
+    from autoresearch.contracts import research_access
+    monkeypatch.setattr(research_access, 'require_legacy_access',
+                        lambda *args: {'status': 'SIMULATED_LEGACY_BODY'})
+
+
 @pytest.fixture()
 def tmp_ws(tmp_path, monkeypatch):
     redirect_roots(monkeypatch, tmp_path)
@@ -335,6 +343,9 @@ def test_record_codex_escape_hatch_is_a_silent_noop_without_environment_json(
     handle = capsule_mod.load_run(started["run_id"])
     assert not (handle.capsule / "identity" / "environment.json").is_file()
 
+    # Startup can emit its separate daily-rollout completeness warning.
+    # This assertion covers only the optional metadata writer below.
+    capsys.readouterr()
     runctl._record_codex_escape_hatch(handle)
 
     assert capsys.readouterr().err == ""
@@ -412,3 +423,58 @@ def test_warn_if_codex_rollout_missing_silent_without_codex_env(
     )
 
     assert capsys.readouterr().err == ""
+
+
+def test_session_validate_checkpoints_the_card_stage_like_legacy(tmp_ws, monkeypatch):
+    """session_v1 LITE owes `stages/card` exactly as the legacy runctl step did."""
+    from autoresearch.session_agent import domain_ops
+    from autoresearch.trace.capsule import load_run
+    from autoresearch.trace.replay import REPLAY_ENV
+
+    started = _begin(monkeypatch, mode="LITE")
+    handle = load_run(started["run_id"])
+    card = handle.staging / "card.md"
+    card.write_text("**Rating**: Hold\n", encoding="utf-8")
+    value = {"rating": "Hold", "proposal": "HOLD", "card_sha256": "a" * 64}
+
+    domain_ops._record_card_stage(handle, card, value)
+
+    stage = handle.capsule / "stages/card/attempt-1/result.json"
+    result = json.loads(stage.read_text(encoding="utf-8"))
+    assert result["status"] == "SUCCEEDED"
+    assert result["metrics"]["rating"] == "Hold"
+    outputs = json.loads((stage.parent / "outputs.json").read_text(encoding="utf-8"))
+    assert [row["status"] for row in outputs["artifacts"]] == ["PRESENT"]
+    # Offline replay re-runs validate in a sandbox: it never writes live run stages.
+    monkeypatch.setenv(REPLAY_ENV, str(tmp_ws))
+    domain_ops._record_card_stage(handle, card, value)
+    assert not (handle.capsule / "stages/card/attempt-2").exists()
+
+
+# ------------------------------------------------ session_v1 FULL 的写身份(2026-10-02)
+#
+# session_v1 的单股 FULL 计划登记的装配操作叫 `stock.full.assemble`,而装配器自己的 checkpoint
+# 一直以 `stock.assemble` 的身份过写守卫。带 session 计划的 run 只认计划里登记的操作,
+# 于是 FULL 跑完 15 个推理任务后会在最后一步被 `RUN_OPERATION_NOT_OWNED` 拦下。
+
+def test_session_full_assemble_checkpoint_is_owned_by_its_registered_operation(tmp_ws, monkeypatch):
+    from pathlib import Path
+
+    from autoresearch.session_agent.workflows.stock import build_stock_plan
+    from tests.session_agent.test_stock_full import _context, _full_request
+
+    started = _begin(monkeypatch, mode="FULL")
+    handle = capsule_mod.load_run(started["run_id"])
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])     # 角色登记表按仓库根读 agent 定义
+    plan = build_stock_plan(_full_request(subject=TICKER), _context(tmp_ws / "plan-only"))
+    monkeypatch.chdir(tmp_ws)
+    session = handle.workspace / "session"
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    operation = next(task["operation"] for task in plan["tasks"] if task["task_id"] == "stock.assemble")
+    assert operation == "stock.full.assemble"
+
+    with pytest.raises(RuntimeError, match="RUN_OPERATION_NOT_OWNED"):
+        runctl.record_stage("assemble", outputs=[])                    # 旧身份不在这份计划里
+    recorded = runctl.record_stage("assemble", outputs=[], operation=operation)
+    assert recorded is not None and recorded["stage"] == "assemble"

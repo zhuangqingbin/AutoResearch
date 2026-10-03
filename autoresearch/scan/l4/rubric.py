@@ -1,7 +1,7 @@
 """L4 rating rubric and progressive-depth guard."""
 from __future__ import annotations
 
-from autoresearch.agents.utils.rating import RATINGS_5_TIER
+from autoresearch.common.card_decision import _norm_dim as _norm_dim
 from autoresearch.contracts.agent_output import OW_GATES, RUBRIC_DIMENSIONS
 
 # 2026-09-07(D1):六维与三门词表下沉 `contracts.agent_output`,这里是同对象引用;评分公式不动。
@@ -10,44 +10,30 @@ _DIM_SCORE = {"强": 1, "中": 0, "弱": -1}
 _OW_GATES = OW_GATES
 
 
-def _norm_dim(k: str) -> str:
-    """维度名归一:技术·资金→技术资金、偿付(爆雷)→偿付,去修饰/空白对齐锚键。"""
-    s = str(k)
-    for ch in "·()（）爆雷 　":
-        s = s.replace(ch, "")
-    return s
+def rubric_rating(dims: dict, gates: dict, *, bands: dict | None = None) -> tuple[str, str]:
+    from autoresearch.common.card_decision import rubric_rating as shared_rating
+    return shared_rating(dims, gates, bands=rubric_cfg()["rating_bands"] if bands is None else bands)
 
-def rubric_rating(dims: dict, gates: dict) -> tuple[str, str]:
-    """C·LLM-as-judge 评分卡:6 维(强+1/中0/弱−1)净分定档 + 3 道 OW 硬门 → 确定性建议评级 + 约束因。
 
-    动机:Sonnet 凭 gestalt 过度多报(实测 6-18:10 OW vs Opus 3 OW),撑大 Tier-2 复核量。把评级
-    **派生**自评分卡——净分映射档位,但**任一 OW 门未过则 ≥Overweight 一律压到 Hold**(对齐 Tier-1
-    『三条全中才 OW』)。卡片据此自检:`**Rating**` 必须 = 建议,否则显式写 `**偏离**:<硬理由>`。
+def validate_card_decision(card: dict, *, bands: dict | None = None) -> tuple[str, str]:
+    from autoresearch.common.card_decision import validate_card_decision as shared_validation
+    return shared_validation(card, bands=rubric_cfg()["rating_bands"] if bands is None else bands)
 
-    dims: {维度: 强|中|弱}(缺/不识别按 中=0;键名容错 技术·资金 / 偿付(爆雷));
-    gates: {主力真在|业绩真兑现|估值不透支: bool}(缺按 False 保守)。
-    返回 (建议评级, 约束因)。
-    """
-    nd = {_norm_dim(k): v for k, v in (dims or {}).items()}
-    net = sum(_DIM_SCORE.get(str(nd.get(d, "中")).strip(), 0) for d in _RUBRIC_DIMS)
-    if net >= 4:
-        base = "Buy"
-    elif net >= 2:
-        base = "Overweight"
-    elif net >= -1:
-        base = "Hold"
-    elif net >= -3:
-        base = "Underweight"
-    else:
-        base = "Sell"
-    order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
-    failed = [g for g in _OW_GATES if not (gates or {}).get(g, False)]
-    if order[base] < order["Hold"] and failed:        # 想给 ≥OW 但有门没过 → 压 Hold(防过度多报)
-        return "Hold", f"净分{net:+d}→{base},OW门未过({'、'.join(failed)})→压Hold"
-    suffix = "(OW门3/3)" if order[base] < order["Hold"] else ""
-    return base, f"净分{net:+d}→{base}{suffix}"
+RATING_BANDS_DEFAULT: dict = {"Buy": 4, "Overweight": 2, "Hold": -1, "Underweight": -3}
+FORCE_FULL_DEFAULT: dict = {"conviction_min": 70.0, "channels_min": 4}
 
-def force_full_card(priors: dict, *, conv_min: float = 70.0, channels_min: int = 4) -> bool:
+
+def rubric_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4.rubric` → 净分档位 / 强制满卡阈(缺键 = 上面两个缺省字典)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l4", "rubric", None, {}, cfg) or {}
+    if not isinstance(user, dict):
+        user = {}
+    return {"rating_bands": {**RATING_BANDS_DEFAULT, **(user.get("rating_bands") or {})},
+            "force_full": {**FORCE_FULL_DEFAULT, **(user.get("force_full") or {})}}
+
+
+def force_full_card(priors: dict, *, conv_min: float | None = None, channels_min: int | None = None) -> bool:
     """**强先验白名单**:P0 先验极强者强制跑满卡(P4+P5),不被表面 P1-P3 早停误杀真龙头。
 
     两条独立通路,任一成立即强制满卡:
@@ -67,6 +53,9 @@ def force_full_card(priors: dict, *, conv_min: float = 70.0, channels_min: int =
     """
     if str(priors.get("lane", "") or "").strip() == "pinned":
         return True
+    ff = rubric_cfg()["force_full"]
+    conv_min = float(ff["conviction_min"]) if conv_min is None else conv_min
+    channels_min = int(ff["channels_min"]) if channels_min is None else channels_min
     conv = priors.get("conviction")
     try:
         conv = float(conv)

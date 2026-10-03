@@ -60,7 +60,7 @@ $CTX/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble 
 
 | 评级 | 现价 | EV目标(+%) | 上行/下行 | R:R | 时间框架 | 建议仓位 | 止损 | 置信度 |
 |---|---|---|---|---|---|---|---|---|
-| Overweight | 369 | 417 (+13%) | +44% / −23% | ~1.9:1(至极值) | 6–12月 | 上限½ | 335→294 | 中 |
+| Hold | 分析参考价 | D2开盘情景价 | 相对声明的 D1 入场价；未知则未核 | 未核 | 隔夜 D1收→D2开 | 条件核定后填写 | 入场否决与开盘退出分别写 | 待核 |
 > R:R = (上行空间)/(下行空间);**至 base 的 R:R 也算一遍**(常 <1,别只报极值那个好看的)。
 
 **② 维度评分卡（紧随仪表盘,6 行表）** — 一眼看出论点强在哪、弱在哪：
@@ -120,7 +120,7 @@ $CTX/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble 
 - **同业/相对(peer.md)**：相对估值(前瞻 PE vs 同业) + 相对强度(1/3/6 月)。解读"便宜+落后=待补涨 or 叙事转移"。
 - **多头/空头(bull.md/bear.md)**：对话式直接交锋,文件以 `Bull Analyst:` / `Bear Analyst:` 开头,**必须有真实张力**;浓缩版进 faceoff。
 - **研究经理(manager.md)**：`**Recommendation**: <Buy|Overweight|Hold|Underweight|Sell>` + `**Rationale**` + `**Strategic Actions**`。仅证据均衡才 Hold。
-- **预审红队(premortem.md)**：设"12 个月后亏 30%,写复盘";列 **3-4 个最可能失败原因**(可证伪) + 每个配**早期预警触发位**;**末尾接 ⑥ 持仓监控 KPI 表**。喂 PM。
+- **预审红队(premortem.md)**：设"D1 收盘入场后，D2 开盘出现不利跳空或无法退出，写复盘";列 **3-4 个最可能失败原因**(可证伪) + 每个配**早期预警触发位**;**末尾接 ⑥ 持仓监控 KPI 表**。喂 PM。
 
 ## 合并棒（4）
 **① News & Narrative (news.md)** ← News + Sentiment：个股新闻 + 全球/宏观(FRED 实测) + 社交情绪三合一;抬头 `**Overall Sentiment:** **<Band>**`(Bullish/Mildly Bullish/Neutral/Mixed/Mildly Bearish/Bearish)。社交常缺→明说降级。预测市场取数失败→WebSearch 取 FedWatch/衰退概率,标注『实时网查』。**A股个股新闻**走 akshare 东财/WebSearch 兜底。
@@ -149,13 +149,13 @@ $CTX/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble 
 - Base (≈P%): 目标 $Y — <…>
 - Bear (≈P%): 目标 $Z — <…>   (三档概率之和≈100%)
 
-**Expected Value**: <概率加权目标 + 对现价隐含 %> ｜ **R:R**: <上行/下行;至 base 也算>
+**Expected Value**: <D2开盘情景价 / 声明的 assumed_entry_price − 1；无入场价则未核> ｜ **R:R**: <上行/下行;至 base 也算>
 
 **Tripwires / Invalidation**: <红队失效位:价/指标/事件>
 
-**Execution**: <入场阶梯 + 止损 + 仓位上限;**消化可交易性**(A股涨跌停/停牌→名义止损可能跳空穿越,需缓冲) + **组合相关性**(同类暴露需降配)>
+**Execution**: <D1收盘入场前提 + D2开盘退出 + 仓位上限;退出未完成标 holding_window_breached；**消化可交易性**(A股涨跌停/停牌→名义止损可能跳空穿越,需缓冲) + **组合相关性**(同类暴露需降配)>
 
-**Time Horizon**: <如 6-12 个月>
+**Time Horizon**: 隔夜 `gap_c1_o2`（D1 收盘入场 → D2 开盘退出；以 DecisionFrame 交易日为准）
 
 FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 ```
@@ -237,7 +237,7 @@ FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 
 ## 首覆建档(dossier)扩展
 full 档的另一种产出形态:不写一次性报告,直接建**常备覆盖档案**(`$CTX/knowledge/dossiers/<code>.md`,券商 standing coverage 的 initiation)。
-编排:`.claude/workflows/dossier-init.js`(单票一 workflow,与 l4-stock 同型)—— 确定性骨架 `autoresearch.dossier.builder` 幂等生成八节+prefetch 素材 → `dossier-init` agent 首覆 → `schema.lint_dossier` 校验。
+编排:`.claude/workflows/dossier-init.js`(单票一 workflow,与 l4-stock 同型,args 必带 `cfg` = `frame --json` 回显的 user_config,空 cfg 直接 throw)—— 确定性骨架 `autoresearch.dossier.builder` 幂等生成八节+prefetch 素材 → `dossier-init` agent 首覆 → `schema.lint_dossier` 校验。
 `dossier-init` agent 只填四个 `<!-- LLM:待首覆 -->` 节,**不改确定性节**(§3估值带/§4筹码资金史/§6催化剂日历/§7判例账本/§8变化项日志全出自确定性脚本):
 - **§1 业务模型**叙事:收入驱动公式 + 产业链上下游映射(供应商/客户/竞品)。
 - **§2 盈利驱动**:3~5 关键驱动变量 + **三情景方向框架**(Bull/Base/Bear,禁 EPS 点估)。

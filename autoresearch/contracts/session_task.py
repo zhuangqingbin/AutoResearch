@@ -179,8 +179,49 @@ def validate_host_profile(value: dict) -> dict:
 
 
 def validate_begin_request(value: dict, *, expected_engine: str | None = None) -> dict:
-    require_exact_fields(value, BEGIN_REQUEST_FIELDS)
-    require_version(value["schema_version"])
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    if type(version) is not int or version not in (1, 2, 3, 4):
+        raise ValueError("unsupported begin request schema")
+    require_exact_fields(value, BEGIN_REQUEST_FIELDS | (
+        {"card_research_profile"} if version >= 2 else set()) | (
+        {"research_context"} if version >= 3 else set()) | (
+        {"macro_research_profile", "macro_optional_products", "sector_brief_profile"} if version >= 4 else set()))
+    if version >= 4:
+        if value['macro_research_profile'] not in {'serial21', 'six_groups_v1'}:
+            raise ValueError('invalid macro research profile')
+        _unique_strings(value['macro_optional_products'], 'macro_optional_products')
+        allowed = {'4_crossasset/credit.md', '6_meso_evidence/industry_cycle.md', '1_spine/debate.md'}
+        if not set(value['macro_optional_products']) <= allowed:
+            raise ValueError('invalid optional macro product')
+        if (value['macro_research_profile'] != 'serial21' or value['macro_optional_products']) and (
+                value['kind'] != 'macro-research' or value['requested_mode'] != 'FULL'):
+            raise ValueError('macro candidate requires macro FULL')
+        if value['sector_brief_profile'] not in {'legacy', 'deterministic-v1'}:
+            raise ValueError('invalid sector brief profile')
+        if value['sector_brief_profile'] != 'legacy' and not (
+                value['kind'] == 'scan-market' or (value['kind'] == 'sector-research' and value['requested_mode'] == 'LITE')):
+            raise ValueError('sector candidate requires scan or sector LITE')
+    if version >= 2:
+        from autoresearch.contracts.profiles import validate_card_research_profile
+
+        profile = validate_card_research_profile(value["card_research_profile"])
+        if profile == "two-stage-v1" and not (
+            value["kind"] == "scan-market"
+            or (value["kind"] == "stock-research" and value["requested_mode"] == "LITE")
+        ):
+            raise ValueError("two-stage-v1 requires scan-market or stock LITE")
+    if version >= 3:
+        from autoresearch.contracts.execution import VENUE_TIMEZONES
+        context = value["research_context"]
+        require_exact_fields(context, frozenset({"venue", "usage", "calendar_source_path"}))
+        if context["venue"] not in VENUE_TIMEZONES:
+            raise ValueError("invalid explicit venue")
+        allowed_usage = {"stock-research": {"standalone", "holding_review"},
+                         "scan-market": {"scan"}, "macro-research": {"macro"},
+                         "sector-research": {"sector"}, "dossier-init": {"dossier"}}
+        if context["usage"] not in allowed_usage.get(value["kind"], set()):
+            raise ValueError("invalid explicit research usage")
+        _optional_string(context["calendar_source_path"], "calendar_source_path")
     kind = value["kind"]
     if kind not in RUN_MODES:
         raise ValueError("invalid run kind")

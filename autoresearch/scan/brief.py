@@ -64,6 +64,18 @@ SCHEMA_VERSION = 1
 #: 硬预算(字节)。T27 的 lint 用同一个常量量,不另写一份字面量。
 MAX_BYTES = 3000
 
+
+def max_bytes() -> int:
+    """`scan_config.report.brief_max_bytes`(缺省 = MAIN 常量 MAX_BYTES,调用时现读;self_review 的 brief lint 同源)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("report", "brief_max_bytes", None, MAX_BYTES))
+
+
+def tone_chars() -> int:
+    """`scan_config.report.tone_chars`(缺省 = TONE_CHARS,调用时现读)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("report", "tone_chars", None, TONE_CHARS))
+
 #: B-1(2026-08-09 全支终审)—— `rel_gap_market` 的**评分人口**短语。
 #: 决策文档的 `benchmark.market.eval_population` 是权威原文(往往一整句),brief ③ 只有
 #: ~3KB 预算装不下,所以正文渲染这个短语、边表 `value` 仍记原文。老决策文档(T23 的 I-2
@@ -285,11 +297,11 @@ def _market_tone(scan_dir: Path) -> str:
     body = re.sub(r"[*`]", "", m.group(1)).strip()
     for stop in ("——", "。", ";", ";"):
         idx = body.find(stop)
-        if 0 < idx <= TONE_CHARS:
+        if 0 < idx <= tone_chars():
             body = body[:idx]
             break
     body = body.replace("\n", " ").strip()
-    return (body[:TONE_CHARS] + "…") if len(body) > TONE_CHARS else body
+    return (body[:tone_chars()] + "…") if len(body) > tone_chars() else body
 
 
 def _menu_sick(scan_dir: Path) -> bool | None:
@@ -543,7 +555,7 @@ def _e6_realized_stats(reports_root: Path | None = None) -> dict:
             except (TypeError, ValueError):
                 continue
         n = len(vals)
-        if n < _REALIZED_MIN_N:
+        if n < __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["realized_min_n"]:
             return {"n": n, "mean_pp": None, "win": None}
         return {"n": n, "mean_pp": round(100 * sum(vals) / n, 2),
                 "win": round(sum(1 for v in vals if v > 0) / n, 2)}
@@ -557,7 +569,7 @@ def _e6_realized_stats(reports_root: Path | None = None) -> dict:
 def _realized_text(stat: dict, label: str) -> str:
     """n<20:只给 n;为负 → 固定 `弱市相对最优`(语义纪律②)。"""
     if stat.get("mean_pp") is None:
-        return f"账本 {label} 实测 n={stat.get('n', 0)},不足 {_REALIZED_MIN_N} 不给区间"
+        return f"账本 {label} 实测 n={stat.get('n', 0)},不足 {__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["realized_min_n"]} 不给区间"
     body = f"账本 {label} 实测 {stat['mean_pp']:+.2f}pp(n={stat['n']},胜率 {stat['win']:.0%},未扣成本)"
     if stat["mean_pp"] < 0:
         body += f" → **{WEAK_MARKET_PHRASE}**(相对 BUY 从不承诺绝对收益为正)"
@@ -613,6 +625,26 @@ def _rebalance_unresolved_line(rel: dict, src: list[dict]) -> str | None:
     return text
 
 
+#: ③ 段「相对 BUY 行」的三种前导标签 —— 渲染器 `_buy_lines` 与 `self_review.brief_lint` ⑥ 的
+#: **唯一**定位口径。字形只在这里定义:R 级曾把 ✅ 换成 🟥 而 lint 仍按旧字形找行,于是
+#: 2026-09-27/28/29 连续三场把「已出 BUY」判成「brief 没印代码」→ GATE4 假 fail。
+#: 要加第四种前导,先加常量并进 `_REL_LINE_PREFIXES`,再改渲染。
+REL_TAG_SHADOW = "🕶 **影子 relative BUY(非正式·不执行)**"
+REL_TAG_ACTIVE = "✅ **relative BUY**"
+REL_TAG_FORCED = "🟥 **relative BUY**"
+_REL_LINE_PREFIXES = tuple(f"- {tag}" for tag in (REL_TAG_SHADOW, REL_TAG_ACTIVE, REL_TAG_FORCED))
+
+
+def relative_buy_line(text: str) -> str | None:
+    """brief 正文里 ③ 段的相对 BUY 行;没有这一行 → None。
+
+    未生成 / BLOCKED / 正常三个出口渲染的都是这一行(只是冒号后的内容不同),所以调用方
+    拿到行之后自己取代码:BLOCKED 与未生成行里没有六位代码,集合为空。
+    """
+    return next((line for line in str(text).splitlines()
+                 if line.startswith(_REL_LINE_PREFIXES)), None)
+
+
 def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     lines: list[str] = []
     buys = facts["buys"]
@@ -644,21 +676,20 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
              "records[].early_stop.reason + gate_states==FAIL", why)
         lines.append("  " + why)
 
-    tag = ("🕶 **影子 relative BUY(非正式·不执行)**"
-           if not active else "✅ **relative BUY**")
+    tag = REL_TAG_ACTIVE if active else REL_TAG_SHADOW
     # Task 20:E6 v4.0 的 A/R 分级(裁定①)—— A=卡面自己允许入场,R=卡面没给买点、
     # 靠「每天至少一只」的相对硬规则强出。缺 `tier`(v3.0 决策书 / tiering=False)不挂标,
     # 逐字兼容;present=False 或 blocked=True 时 `rel.get("tier")` 恒 None,同样不挂标。
     # fix round 1(reviewer minor):R 级不能只在 ✅ 后面追加说明——brief 是被快速略读的,
     # 先入眼的字形才是真正落地的信号,追加在后面读者仍先看见绿勾。R 级改**替换**前导
     # 字形(✅→🟥,行首即转红),标签里原来的 🟥 随之去重(否则会双红)。影子期前导
-    # 本来就不是 ✅ 而是 🕶,`str.replace` 找不到 ✅ 是无操作的 no-op——不补红也不留双
+    # 本来就不是 ✅ 而是 🕶,所以只在 active 期换成 `REL_TAG_FORCED`——影子期不补红也不留双
     # 标,那句「非正式·不执行」本身已经是限定语,不需要额外的红色标记。
     tier = rel.get("tier")
     if tier == "A":
         tag += " · **A 级·卡面允许入场**"
     elif tier == "R":
-        tag = tag.replace("✅", "🟥") + " · **R 级·卡面无买点·强制相对(裁定①)**"
+        tag = (REL_TAG_FORCED if active else tag) + " · **R 级·卡面无买点·强制相对(裁定①)**"
     if not rel.get("present"):
         lines.append(f"- {tag}:—(`{DECISION_FILENAME}` 未生成 —— 缺证据不等于没候选)")
         if ba_line:
@@ -892,7 +923,7 @@ def build(scan_dir: Path | str, *, analysis_date: str | None = None,
     md = "\n".join(lines) + "\n"
     # ⑦ 影子指针最不值钱:超预算先把它退成「⑦ 见 summary §12」,再走 ④/⑥ 的裁剪梯度。
     for pinned_cap, delta_cap in _FIT_LADDER:
-        if len(md.encode("utf-8")) <= MAX_BYTES:
+        if len(md.encode("utf-8")) <= max_bytes():
             break
         lines, sources = _sections(facts, pinned_cap=pinned_cap, delta_cap=delta_cap,
                                    seat_compact=True)
@@ -934,7 +965,7 @@ def write(scan_dir: Path | str, out_dir: Path | str, *, built: dict | None = Non
     target.write_text(out["markdown"], encoding="utf-8")
     payload = {"schema_version": SCHEMA_VERSION, "date": out["facts"]["date"],
                "run_folder": out["facts"]["run_folder"], "n_bytes": out["n_bytes"],
-               "max_bytes": MAX_BYTES, "rows": out["sources"]}
+               "max_bytes": max_bytes(), "rows": out["sources"]}
     (Path(scan_dir) / SOURCES_FILENAME).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target
@@ -998,7 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         write(scan, args.out, run_folder=args.run_folder)
     print(out["markdown"])
-    print(f"[brief] {out['n_bytes']}B / 预算 {MAX_BYTES}B · sources {len(out['sources'])} 行",
+    print(f"[brief] {out['n_bytes']}B / 预算 {max_bytes()}B · sources {len(out['sources'])} 行",
           file=sys.stderr)
     return 0
 

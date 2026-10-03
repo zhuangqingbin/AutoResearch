@@ -10,13 +10,15 @@ design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §B。
     其它   → 文件存在即命中;否则拉 + 原子写。
   空结果也写空 parquet:存在 == "取过且为空",避免反复重拉空端点。
 
-原子写:写 `<path>.tmp` → os.replace(同目录 rename,原子),并发/中断不留半截文件。
+同 key 冷 miss 用共享文件锁去重；写入使用同目录唯一临时文件再 os.replace。
 lake 根 = 模块级 LAKE,测试 monkeypatch 成 tmp 目录,绝不污染真 context/lake/。
 """
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -221,19 +223,46 @@ def _read_snapshot(path: Path, *, capture_bytes: bool) -> tuple[pd.DataFrame, by
 
 
 def _atomic_write(path: Path, df: pd.DataFrame, *, capture_bytes: bool = False) -> bytes | None:
-    """ZSTD parquet 原子写:tmp → os.replace。空帧也写(存在==取过且为空)。"""
+    """Publish one complete parquet; failure cleans only this writer's temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
     table = pa.Table.from_pandas(df, preserve_index=False)
-    pq.write_table(table, tmp, compression=_COMPRESSION)
-    payload = None
-    if capture_bytes:
-        try:
-            payload = _read_file_bytes(tmp)
-        except BaseException:
-            _trace_warning()
-    os.replace(tmp, path)
-    return payload
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            tmp = Path(stream.name)
+            pq.write_table(table, stream, compression=_COMPRESSION)
+            stream.flush()
+            os.fsync(stream.fileno())
+        payload = None
+        if capture_bytes:
+            try:
+                payload = _read_file_bytes(tmp)
+            except BaseException:
+                _trace_warning()
+        os.replace(tmp, path)
+        return payload
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def _key_lock(path: Path):
+    """Local POSIX process lock keyed by the shared lake target, independent of engine.
+
+    Leave the lock inode in place: unlinking it can give two waiting writers
+    different locks. The kernel releases the lock when a process exits.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | _NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _lake_params(params: dict) -> dict:
@@ -303,8 +332,7 @@ def get_or_fetch(
         key = _cache_key(endpoint, params, t)
         path = LAKE / endpoint / f"{key}.parquet"
 
-        # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
-        if path.exists():
+        def cached_result():
             raw_result, source_bytes = _read_snapshot(
                 path, capture_bytes=_trace_enabled(trace)
             )
@@ -316,14 +344,9 @@ def get_or_fetch(
             )
             return result
 
-        # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
-        # 快照接口只有"此刻",所以 as-of 键必须等于真实今天;否则这次取数会把今天的观测钉成
-        # 过去某天的假历史(补跑 / 节假日 launchd 触发 / 手工传日期都会撞上),事后不可甄别。
-        if pol.get("snapshot") and t != _real_today():
-            raise SnapshotDateError(
-                f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
-                f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
-                f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
+        # Valid hits do not wait for unrelated writers; validate captured bytes as before.
+        if path.exists():
+            return cached_result()
 
         # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
         # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
@@ -348,25 +371,33 @@ def get_or_fetch(
                 _finish_source_success(trace, result, "FETCHED_UNSETTLED", None)
                 return result
 
-        # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
-        # 湖快照,毒化所有后来的调用方——2026-07-12 M1 对拍实证)。
-        df = fetch(endpoint, _lake_params(params))
-        if df is None:
-            df = pd.DataFrame()
-        df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
-        if pol.get("snapshot"):
-            df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
-        df = _stable_source_frame(trace, df)
-        # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
-        # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
-        if refuses_lake(endpoint, df):
-            _finish_source_success(trace, df, "FETCHED_REFUSED_LAKE", None)
+        with _key_lock(path):
+            if path.exists():
+                return cached_result()
+
+            # Check after waiting: crossing midnight must not create a false historical snapshot.
+            if pol.get("snapshot") and t != _real_today():
+                raise SnapshotDateError(
+                    f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
+                    f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
+                    f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
+
+            # Full fields and the existing data contract remain mandatory for lake publication.
+            df = fetch(endpoint, _lake_params(params))
+            if df is None:
+                df = pd.DataFrame()
+            df = check(endpoint, df, key=str(key), source="fetch")
+            if pol.get("snapshot"):
+                df = _stamp_observed(df)
+            df = _stable_source_frame(trace, df)
+            if refuses_lake(endpoint, df):
+                _finish_source_success(trace, df, "FETCHED_REFUSED_LAKE", None)
+                return df
+            source_bytes = _atomic_write(path, df, capture_bytes=_trace_enabled(trace))
+            _finish_source_success(
+                trace, df, "FETCHED_CACHED", path, source_bytes=source_bytes
+            )
             return df
-        source_bytes = _atomic_write(path, df, capture_bytes=_trace_enabled(trace))
-        _finish_source_success(
-            trace, df, "FETCHED_CACHED", path, source_bytes=source_bytes
-        )
-        return df
     except BaseException as exc:
         _finish_source_failure(trace, exc)
         raise

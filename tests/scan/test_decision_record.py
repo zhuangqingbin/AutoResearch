@@ -160,3 +160,23 @@ def test_proposal_stays_rating_derived_and_never_reads_the_decision_file(
 
     assert [r.proposal for r in records] == ["BUY"]        # ① 仍由评级派生
     assert [r.final_rating for r in records] == ["Overweight"]
+
+
+def test_post_verify_rating_is_hashed_and_old_versions_keep_original_shape():
+    from dataclasses import replace
+
+    from autoresearch.scan.run_contract import sha256_json
+    record=_record()
+    arguments={key:value for key,value in record.to_dict().items() if key not in {'schema_version','record_hash'}}
+    arguments['post_verify_rating']='Underweight'
+    new=DecisionRecord.build(**arguments)
+    assert new.schema_version==3 and new.post_verify_rating=='Underweight'
+    assert new.record_hash!=record.record_hash
+    assert DecisionRecord.from_dict(new.to_dict())==new
+    for version in (1,2):
+        legacy=replace(new,schema_version=version)
+        raw=legacy.to_dict()
+        assert 'post_verify_rating' not in raw
+        raw['record_hash']=sha256_json({k:v for k,v in raw.items() if k!='record_hash'})
+        loaded=DecisionRecord.from_dict(raw)
+        assert loaded.post_verify_rating is None and loaded.to_dict()==raw

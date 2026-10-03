@@ -66,3 +66,15 @@ def two_step_plan():
             expected_output_contract="test.markdown.v1",
         ),
     ])
+
+
+@pytest.fixture(autouse=True)
+def offline_decision_calendar(monkeypatch):
+    """Session orchestration tests must not fetch live exchange calendars.
+
+    Calendar behavior is tested with explicit injected rosters in DecisionFrame tests.
+    An absent roster remains UNKNOWN; do not fabricate weekdays as verified sessions.
+    """
+    from autoresearch.scan import exec_anchor
+
+    monkeypatch.setattr(exec_anchor, "trading_sessions", lambda start, end: ([], "UNKNOWN"))

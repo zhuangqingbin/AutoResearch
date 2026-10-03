@@ -11,6 +11,8 @@ from pathlib import Path
 
 from autoresearch.common.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.common.execution_context import current_execution_context
+from autoresearch.common.execution_math import conditional_gap
+from autoresearch.contracts.execution import parse_amount
 from autoresearch.common.uzi_lenses import dcf_sensitivity, simple_dcf
 from autoresearch.contracts.calculation import (
     CALCULATOR_IDS,
@@ -255,10 +257,21 @@ def _dcf(inputs: dict, parameters: dict) -> tuple[dict, dict]:
     }
 
 
+def _conditional_gap(inputs: dict, parameters: dict) -> tuple[dict, dict]:
+    _exact(inputs, {"entry_price", "exit_price"}, "inputs")
+    _exact(parameters, {"ruler", "return_basis"}, "parameters")
+    if parameters != {"ruler": "gap_c1_o2", "return_basis": "ENTRY_PRICE"}:
+        raise CalculationInputError("overnight scenario requires gap_c1_o2 / ENTRY_PRICE")
+    return {"return_fraction": conditional_gap(inputs["exit_price"], inputs["entry_price"])}, {
+        **parameters, "price_basis": "DECLARED_SCENARIO", "realized_fill": False,
+    }
+
+
 _CALCULATORS: dict[str, tuple[Callable, tuple[Callable, ...]]] = {
     "financial_period_ratios.v1": (_financial_period_ratios, ()),
     "ah_premium.v1": (_ah_premium, ()),
     "conditional_base_rates.v1": (_conditional_base_rates, ()),
+    "conditional_gap.v1": (_conditional_gap, (conditional_gap, parse_amount)),
     "dcf_sensitivity.v1": (_dcf, (dcf_sensitivity, simple_dcf)),
 }
 if frozenset(_CALCULATORS) != CALCULATOR_IDS:  # pragma: no cover - import-time contract guard

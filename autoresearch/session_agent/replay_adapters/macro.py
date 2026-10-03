@@ -6,6 +6,7 @@ from autoresearch.macro.harvest import render_harvest_snapshot
 from autoresearch.session_agent import domain_ops
 from autoresearch.session_agent.replay_adapters.common import (
     export_outputs,
+    input_path,
     session_request,
     source_snapshot,
     stage_inputs,
@@ -15,6 +16,7 @@ from autoresearch.session_agent.workflows.macro import register_macro_artifacts
 from autoresearch.trace.operation_clock import operation_clock
 
 _OPERATIONS = {
+    "macro.intel.prepare": domain_ops.macro_intel_prepare,
     "macro.lite.validate": domain_ops.macro_lite_validate,
     "macro.publish": domain_ops.macro_prepare_publication,
     "macro.full.validate": domain_ops.macro_full_validate,
@@ -58,6 +60,12 @@ def execute(unit: dict, context) -> list[dict]:
         raise KeyError(f"unsupported macro replay operation: {operation}")
     request = session_request(context)
     handle = virtual_handle(context, request)
+    # Seed the immutable policy before registration: a nondefault frozen cap must
+    # not be reinterpreted from the replay process's empty user_config.
+    if any(ref["artifact_id"] == "macro.intel.policy" for ref in unit["input_refs"]):
+        target = handle.staging / "session_outputs/macro.intel.policy.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(input_path(context, "macro.intel.policy").read_bytes())
     stage_inputs(
         context,
         handle,

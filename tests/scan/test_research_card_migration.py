@@ -95,7 +95,7 @@ def test_missing_card_is_none_not_an_empty_card(scan_dir):
 def test_render_preserves_the_rating_anchor(scan_dir):
     from autoresearch.agents.utils.rating import parse_rating
     card = card_io.card_from_markdown(scan_dir, "600000", analysis_date="2026-09-01")
-    text = "# 另一种研究标题\n" + card_render.render_anchors(card)
+    text = "# 另一种研究标题\n" + card_render.render_anchors(card, rules_version="legacy-v1")
     assert parse_rating(text, strict=True) == "Overweight"
     assert "**偏离**" in text and "FINAL TRANSACTION PROPOSAL: BUY" in text
 
@@ -178,3 +178,118 @@ def test_structured_and_text_paths_agree_on_the_same_card(scan_dir, monkeypatch)
                   df._build_decision_records(scan_dir, [legacy], {}, {}))
     assert a.gate_states == b.gate_states and a.early_stop == b.early_stop
     assert a.final_rating == b.final_rating and a.proposal == b.proposal
+
+
+def _freeze_rules(scan_dir, version="skills-gap-v2"):
+    capsule = scan_dir.parent.parent / "capsule"
+    profile = capsule / "verification/profile.json"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text(json.dumps({"kind": "scan-market", "card_rules_version": version}))
+    return capsule
+
+
+def test_v2_row_preserves_failed_model_card_and_machine_suggestion(tmp_path):
+    scan = tmp_path / "run/staging/2026-09-01"
+    (scan / "details").mkdir(parents=True)
+    _freeze_rules(scan)
+    path = scan / "details/600000.md"
+    path.write_text(FULL_CARD)
+    before = path.read_bytes()
+    row = _finalist_row(scan, {"code": "600000", "lane": "pinned"})
+    assert row["rating"] == "Overweight" and row["proposal"] == "BUY"
+    assert row["rubric_suggest"] == "Hold"
+    assert row["card_incomplete"] is True
+    assert "PASS" in row["card_validation_error"]
+    assert path.read_bytes() == before
+
+
+def test_v2_pinned_unreviewed_card_remains_in_coverage_denominator(tmp_path):
+    from autoresearch.scan.report_sections import _review_ctx
+    from autoresearch.scan.self_review import review
+
+    scan = tmp_path / "run/staging/2026-09-01"
+    (scan / "details").mkdir(parents=True)
+    _freeze_rules(scan)
+    (scan / "details/000001.md").write_text(
+        "**Rating**: Hold\n**早停**:停于 P3 ｜ 停因:资金流出\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"
+    )
+    row = _finalist_row(scan, {"code": "000001", "lane": "pinned"})
+    ctx = _review_ctx(scan, [row])
+    result = review(ctx)
+    assert ctx["n_cards_expected"] == 1 and ctx["n_cards_present"] == 0
+    assert len(ctx["finalists"]) == 1 and row["rating"] == "Hold"
+    assert result["ok"] is False
+    assert any("PINNED" in item["detail"] for item in result["failures"])
+
+
+def test_explicit_legacy_bridge_keeps_missing_dimensions_unknown():
+    card = card_io.card_from_text(
+        EARLY_STOP_CARD, code="000001", analysis_date="2026-09-01", holding=False,
+        rules_version="legacy-v1",
+    )
+    assert set(card["dimensions"].values()) == {"未核"}
+    assert card["proposal"] == "HOLD" and card["initial_rating"] == "Underweight"
+
+
+def test_current_renderer_cannot_use_deviation_to_bypass_gate_fail(scan_dir):
+    card = card_io.card_from_markdown(scan_dir, "600000", analysis_date="2026-09-01")
+    with pytest.raises(ValueError, match="PASS"):
+        card_render.render_anchors(card)
+
+
+def test_invalid_v2_decision_record_retains_raw_rating_and_failure(tmp_path):
+    scan = tmp_path / "run/staging/2026-09-01"
+    (scan / "details").mkdir(parents=True)
+    _freeze_rules(scan)
+    (scan / "details/600000.md").write_text(FULL_CARD)
+    row = _finalist_row(scan, {"code": "600000", "lane": "pinned"})
+    row["_source_rating"] = row["rating"]
+    (record,) = df._build_decision_records(scan, [row], {}, {})
+    assert record.source_rating == "Overweight"
+    assert record.final_rating == "—" and record.proposal == "—"
+    assert record.first_rejection_stage == "L4_CARD_INVALID"
+    assert "PASS" in record.reason
+    assert row["rating"] == "Overweight"
+
+
+def test_v2_valid_card_uses_calculated_suggestion_and_stays_complete(tmp_path):
+    from autoresearch.scan.report_sections import _review_ctx
+    from autoresearch.scan.self_review import review
+
+    scan = tmp_path / "run/staging/2026-09-01"
+    (scan / "details").mkdir(parents=True)
+    _freeze_rules(scan)
+    text = FULL_CARD.replace("估值不透支 ✗", "估值不透支 ✓")
+    (scan / "details/600000.md").write_text(text)
+    row = _finalist_row(scan, {"code": "600000", "lane": "pinned"})
+    assert row["rating"] == "Overweight" and row["rubric_suggest"] == "Overweight"
+    assert row["card_incomplete"] is False
+    ctx = _review_ctx(scan, [row])
+    assert ctx["n_cards_expected"] == ctx["n_cards_present"] == 1
+    assert review(ctx)["ok"] is True
+
+
+def test_v2_empty_deviation_cannot_borrow_next_line_as_reason():
+    from autoresearch.scan.l4.rubric import validate_card_decision
+
+    text = "**Rating**: Underweight\n**偏离**:\nFINAL TRANSACTION PROPOSAL: **SELL**\n"
+    card = card_io.card_from_text(text, code="600000", analysis_date="2026-09-01", holding=False)
+    assert card["rating_deviation_reason"] == ""
+    with pytest.raises(ValueError, match="deviation"):
+        validate_card_decision(card)
+
+
+def test_v2_missing_rating_does_not_fabricate_hold(tmp_path):
+    scan = tmp_path / "run/staging/2026-09-01"
+    (scan / "details").mkdir(parents=True)
+    _freeze_rules(scan)
+    (scan / "details/600000.md").write_text("分析无结论\nFINAL TRANSACTION PROPOSAL: **HOLD**\n")
+    row = _finalist_row(scan, {"code": "600000"})
+    assert row["card_incomplete"] and row["rating"] == "—"
+
+
+def test_v2_invalid_card_is_not_exported_as_a_final_rating(tmp_path):
+    rows = [{"code": "600000", "rating": "Overweight", "card_incomplete": True}]
+    df._dump_final_ratings(tmp_path, rows)
+    assert json.loads((tmp_path / "_final_ratings.json").read_text()) == {"600000": "—"}
+    assert rows[0]["rating"] == "Overweight"

@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
+from autoresearch.trace.atomic import sha256_bytes
 from autoresearch.trace.identity import redact_value
 from autoresearch.trace.transcripts.base import (
     NormalizedItem,
@@ -142,6 +143,30 @@ class ClaudeTranscriptAdapter:
         return redacted if isinstance(redacted, dict) else {}
 
     @staticmethod
+    def _host_read(row: Mapping, blocks: list) -> dict | None:
+        """Digest of the host's raw Read record (``toolUseResult.file``).
+
+        The model-visible result is line-numbered text, so a complete read can
+        only be proven from this harness-written record. A row carrying more
+        than one tool_result cannot be attributed and yields nothing.
+        """
+        results = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
+        record = row.get("toolUseResult")
+        if len(results) != 1 or not isinstance(record, dict) or record.get("type") != "text":
+            return None
+        meta = record.get("file")
+        if not isinstance(meta, dict):
+            return None
+        path, content = meta.get("filePath"), meta.get("content")
+        lines = [meta.get(key) for key in ("startLine", "numLines", "totalLines")]
+        if (not isinstance(path, str) or not path or not isinstance(content, str)
+                or any(type(value) is not int or value < 0 for value in lines)):
+            return None
+        raw = content.encode("utf-8")
+        return {"file_path": path, "content_sha256": sha256_bytes(raw), "byte_count": len(raw),
+                "start_line": lines[0], "num_lines": lines[1], "total_lines": lines[2]}
+
+    @staticmethod
     def _is_user_turn(row: dict) -> bool:
         """Distinguish a human/user turn from harness tool-result envelopes."""
         if row.get("type") != "user":
@@ -236,6 +261,12 @@ class ClaudeTranscriptAdapter:
         """
         self._validate_engine(ref, "inspect")
         rows = list(rows)
+        if ref.start_ordinal is not None or ref.end_ordinal is not None:
+            # Claude rows carry no native ordinal, so a bound segment is positional
+            # (as bound by runner/host_evidence): later appends never change it.
+            start = ref.start_ordinal or 0
+            end = len(rows) - 1 if ref.end_ordinal is None else ref.end_ordinal
+            rows = rows[start:end + 1]
         last_message_row: dict[str, int] = {}
         for idx, row in enumerate(rows):
             msg = row.get("message") or {}
@@ -343,15 +374,15 @@ class ClaudeTranscriptAdapter:
                     )
                 elif block_type == "tool_result":
                     request_id = block.get("tool_use_id")
-                    add(
-                        "tool_result",
-                        {
-                            "tool_use_id": request_id,
-                            "content": block.get("content"),
-                            "is_error": bool(block.get("is_error")),
-                        },
-                        timestamp,
-                    )
+                    result = {
+                        "tool_use_id": request_id,
+                        "content": block.get("content"),
+                        "is_error": bool(block.get("is_error")),
+                    }
+                    host_read = self._host_read(row, blocks)
+                    if host_read is not None:
+                        result["host_read"] = host_read
+                    add("tool_result", result, timestamp)
         normalized = NormalizedTranscript(
             ref=ref,
             items=tuple(items),

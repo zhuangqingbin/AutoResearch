@@ -318,7 +318,10 @@ def _model_payload(artifact_id: str) -> bytes:
     if artifact_id.endswith("4_portfolio.decision"):
         return b"**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"
     if artifact_id.endswith("1_spine.decision"):
-        return "- OVERALL 风险档: **Rating**: Hold\n置信度: 中\n".encode()
+        from autoresearch.macro.assemble import CROSS_ASSET_KEYS
+
+        return ("\n".join(f"- {key}: **Rating**: Hold" for key in CROSS_ASSET_KEYS)
+                + "\n置信度: 中\n").encode()
     if artifact_id.endswith("2_meso.sector_map"):
         return "- 电子: **Rating**: Overweight\n置信度: 中\n".encode()
     if artifact_id == "stock.card.output":
@@ -356,7 +359,11 @@ def _source_snapshot(kind: str, mode: str, request: dict) -> tuple[str, dict]:
         return "macro.harvest.snapshot.v1", {
             "schema_version": 1,
             "analysis_date": request["analysis_date"],
-            "sections": [{"title": "US macro (FRED)", "body": "fixture"}],
+            "sections": [
+                {"title": "US macro (FRED)", "body": "fixture"},
+                {"title": "A股中观", "body": "**行业资金净流入(tushare)**:\n"
+                 "| 行业 | 主力净流入(亿) | 领涨股 |\n|---|---:|---|\n| 电子 | 1 | 示例甲 |\n"},
+            ],
             "tape": {"as_of": request["analysis_date"], "ok": False, "numbers": {}},
             "calendar": {"ok": False},
             "scan_meta": {"regime": {"label": "range"}},
@@ -402,6 +409,18 @@ def _forensic_case(
     _write_json(identity / "session/request.json", request)
 
     artifact_values: dict[str, bytes] = {}
+    if kind == "macro-research" and mode == "FULL":
+        from autoresearch.session_agent.workflows.macro import global_intel_policy
+
+        artifact_values["macro.intel.policy"] = canonical_json(global_intel_policy({"session": {"global_intel_max_queries": 3}})).encode("utf-8")
+    if any("research.frame" in task["input_artifact_ids"] for task in plan["tasks"]):
+        from autoresearch.common.execution_math import build_decision_frame
+
+        artifact_values["research.frame"] = canonical_json(build_decision_frame(
+            analysis_session=request["analysis_date"], knowledge_cutoff="2026-09-14T04:01:02Z",
+            venue="XSHG", research_depth=mode, usage="standalone", sessions=[],
+            calendar_quality="UNKNOWN",
+        )).encode("utf-8")
     evidence_rows = []
     source_task = "stock.harvest" if kind == "stock-research" else (
         "macro.harvest" if mode == "FULL" else "macro.frame"

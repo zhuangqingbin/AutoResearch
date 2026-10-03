@@ -214,7 +214,9 @@ def discover_rollout_candidates(
         if meta is None:
             continue
         if session_ref is not None:
-            if str(meta.get("session_id") or "") == session_ref:
+            # Newer child rollouts retain the root session_id; id identifies
+            # this thread. Only old formats without id use session_id.
+            if str(meta.get("id") or meta.get("session_id") or "") == session_ref:
                 decided.append(path)
             continue
         if cwd is not None:
@@ -657,7 +659,41 @@ class CodexTranscriptAdapter:
             timestamp = row.get("timestamp")
             kind = payload.get("type")
             if row.get("type") == "event_msg":
-                if kind == "task_complete" and payload.get("error"):
+                if kind == "item_completed":
+                    # Nested functions.exec calls have their own native exec-* ID.
+                    # This is execution evidence, not the pre-hook request time;
+                    # boundary_proof additionally checks the enclosing literal call.
+                    item = payload.get("item")
+                    if not isinstance(item, dict) or item.get("type") != "CommandExecution":
+                        continue
+                    argv = item.get("command")
+                    if (item.get("source") != "unified_exec_startup"
+                            or item.get("status") != "completed"
+                            or not isinstance(item.get("id"), str) or not item["id"]
+                            or not isinstance(payload.get("thread_id"), str)
+                            or not payload["thread_id"]
+                            or not isinstance(payload.get("turn_id"), str) or not payload["turn_id"]
+                            or type(item.get("exit_code")) is not int
+                            or not isinstance(item.get("aggregated_output"), str)
+                            or not isinstance(argv, list) or len(argv) != 3
+                            or argv[:2] not in [["/bin/zsh", "-lc"], ["/bin/zsh", "-c"],
+                                              ["/bin/bash", "-lc"], ["/bin/bash", "-c"]]
+                            or not isinstance(argv[2], str)):
+                        continue
+                    metadata_ids = {self._payload(r).get("id") or self._payload(r).get("session_id")
+                                    for r in rows if r.get("type") == "session_meta"}
+                    if metadata_ids and metadata_ids != {payload["thread_id"]}:
+                        continue
+                    common = {"tool_call_id": item["id"], "call_id": item["id"],
+                              "native_source": "CommandExecution"}
+                    add("tool_request", {**common, "tool_name": "exec_command",
+                                         "input": {"cmd": argv[2]}}, timestamp)
+                    add("tool_result", {**common, "is_error": item["exit_code"] != 0,
+                                        "content": {"exit_code": item["exit_code"],
+                                                    "output": item["aggregated_output"],
+                                                    "truncated": any(item.get(k) for k in
+                                                        ("truncated", "is_truncated", "output_truncated"))}}, timestamp)
+                elif kind == "task_complete" and payload.get("error"):
                     error = payload.get("error")
                     add(
                         "error",

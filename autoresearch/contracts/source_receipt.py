@@ -17,7 +17,6 @@ from autoresearch.contracts.forensic import (
 from autoresearch.contracts.session_task import (
     require_exact_fields,
     require_sha256,
-    require_version,
 )
 
 SOURCE_RECEIPT_FIELDS = frozenset({
@@ -26,6 +25,7 @@ SOURCE_RECEIPT_FIELDS = frozenset({
     "status", "codec", "payload_hash", "raw_hash", "error", "as_of", "available_at",
     "consumer_refs",
 })
+SOURCE_RECEIPT_V2_FIELDS = SOURCE_RECEIPT_FIELDS | {"source_timing", "source_status", "supersedes_receipt_ids"}
 ERROR_FIELDS = frozenset({"category", "message"})
 CONSUMER_REF_FIELDS = frozenset({
     "task_id", "attempt", "artifact_id", "consumption_kind",
@@ -71,8 +71,20 @@ def _validate_consumer_ref(value: dict) -> tuple:
 
 
 def validate_source_receipt(value: dict) -> dict:
-    require_exact_fields(value, SOURCE_RECEIPT_FIELDS)
-    require_version(value["schema_version"])
+    version = value.get("schema_version")
+    if type(version) is not int or version not in {1, 2}:
+        raise ValueError("unsupported source receipt schema")
+    require_exact_fields(value, SOURCE_RECEIPT_FIELDS if version == 1 else SOURCE_RECEIPT_V2_FIELDS)
+    if version == 2:
+        from autoresearch.contracts.source_time import validate_source_times
+        validate_source_times(value["source_timing"])
+        if value["source_status"] not in {"CURRENT", "CORRECTED", "RETRACTED"}:
+            raise ValueError("invalid source_status")
+        ids = value["supersedes_receipt_ids"]
+        if type(ids) is not list or len(ids) != len(set(ids)):
+            raise ValueError("invalid supersedes_receipt_ids")
+        for item in ids:
+            require_sha256(item, "supersedes receipt")
     require_sha256(value["receipt_id"], "receipt_id")
     _engine(value["engine"])
     _run_id(value["run_id"])

@@ -1,0 +1,5 @@
+name = "stock full"
+description = "stock-full session_v1 专用研究角色。"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+developer_instructions = """C4：下文角色文件路径只标示契约来源；执行时仅使用派发 instruction_refs 的冻结片段和逐项声明输入，包内路径不新增授权。文件操作使用宿主已绑定的规范 task_file_broker 命令（UTF-8 JSON正文，单引号用Unicode转义）；普通shell/export/解释器调用均不授权。只写本次attempt列出的输出。宿主已设置 AUTORESEARCH_ENGINE=codex。任务包已从 `.claude/agents/stock-full.md` 内联 common 与当前 full_role 章节；仅使用该摘录，不再读取整份角色文件或其它章节；不读 CLAUDE.md、skills、源码、测试、workflow、docs、数据湖或其它 run。每个 task 使用独立上下文；共享物理角色不共享其它任务上下文。只执行派发指定的逻辑角色与章节。只写派发指定的 Codex 引擎输出；确定性校验在交付后执行，仅使用已绑定的规范文件 broker，不运行通用命令。"""

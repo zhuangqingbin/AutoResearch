@@ -245,7 +245,7 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
             if scan_root_dir.is_dir()
             else []
         )
-        for prev in reversed(prior[-5:]):  # 最近 5 日里找第一个跑到 L3 的
+        for prev in reversed(prior[-announcement_lookback():]):  # 最近 N 日里找第一个跑到 L3 的(prelude.announcement_lookback)
             st = anns_source_status(prev).get("status")
             if st == "pending":
                 continue
@@ -367,9 +367,26 @@ def _write_t0(scan_dir: Path) -> None:
         pass
 
 
+def configured_skip_steps() -> tuple[str, ...]:
+    """`scan_config.prelude.skip_steps`:常态跳过的前奏步骤(缺省空;与 CLI --skip 取并集)。"""
+    from autoresearch.scan.user_config import knob
+    raw = knob("prelude", "skip_steps", None, []) or []
+    bad = [s for s in raw if s not in STEP_NAMES]
+    if bad:
+        raise ValueError(f"scan_config prelude.skip_steps 含未知步骤 {bad}(STEP_NAMES={list(STEP_NAMES)})")
+    return tuple(str(s) for s in raw)
+
+
+def announcement_lookback() -> int:
+    """`scan_config.prelude.announcement_lookback`:公告源盲区往回查几个 scan 日(缺省 5)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("prelude", "announcement_lookback", None, 5))
+
+
 def run_prelude(
     date: str, regime_aware: bool | None = None, skip: tuple[str, ...] = ()
 ) -> list[dict]:
+    skip = tuple(skip) + tuple(s for s in configured_skip_steps() if s not in skip)   # prelude.skip_steps
     # 新 run 开工前先冻结上一次被 SIGKILL/断电打断的 run:它的现场随时间只会更烂,
     # 而且不冻结就没人知道它停在哪。失败只警告,绝不挡住本次运行。
     from autoresearch.trace.capsule import recover_stale_runs_quietly
@@ -404,7 +421,10 @@ def run_prelude(
         from autoresearch.scan.universe import run
 
         res = run(date, regime_aware=regime_aware)
-        return universe_line(res)
+        from autoresearch.data.benchmark_members import freeze_current_membership
+        membership = freeze_current_membership(date)
+        return universe_line(res) + f"; sector membership={membership['status']}"
+
 
     def _calendar():
         import pandas as pd
@@ -591,7 +611,11 @@ def run_prelude(
         """
         import contextlib
 
-        from autoresearch.scan import ledger_views as _views, populations as _pop, swing_seat as _seat
+        from autoresearch.scan import (
+            ledger_views as _views,
+            populations as _pop,
+            swing_seat as _seat,
+        )
 
         try:
             res = _views.build()

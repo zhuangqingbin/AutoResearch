@@ -25,8 +25,9 @@ EXPANSION_FIELDS = frozenset({
 })
 REGISTERED_EXPANDERS = frozenset({
     "scan.sectors", "scan.l3", "scan.l3.repair", "scan.l4", "scan.reviews", "scan.review3",
-    "stock.optional_lenses",
+    "stock.optional_lenses", "scan.l4.two-stage-v1",
     "macro.sections", "sector.sections",
+    "scan.reviews.per-stock-v1", "scan.review3.per-stock-v1", "scan.review.join",
 })
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}", re.ASCII)

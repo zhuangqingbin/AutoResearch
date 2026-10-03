@@ -117,7 +117,7 @@ def ruler_readout(path: Path | None = None) -> dict:
            "ci_high": row.get("ci_high") or "", "row_status": row.get("status") or "",
            # 与 `populations._blocked` 同一分簇:有序日按 block 天一簇 → ceil(n_days / block)
            "block": block, "n_clusters": -(-n_days // block) if n_days > 0 else 0}
-    thin = n_days < READOUT_MIN_DAYS or out["row_status"] != "MATURE" or not value
+    thin = n_days < __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["swing_readout_min_days"] or out["row_status"] != "MATURE" or not value
     return {**out, "status": "THIN" if thin else "OK"}
 
 
@@ -230,12 +230,12 @@ def _readout_line(readout: dict | None) -> str:
     if not readout or readout.get("status") == "ABSENT":
         return head + "stage_rulers 暂无这一格(视图未重建或特性未上线),不猜。"
     if readout.get("status") == "THIN":
-        return head + f"样本不足(n_days {readout.get('n_days')} < {READOUT_MIN_DAYS})。"
+        return head + f"样本不足(n_days {readout.get('n_days')} < {__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["swing_readout_min_days"]})。"
     try:
         pp = 100.0 * float(readout["value"])
         clusters = int(readout.get("n_clusters", -(-int(readout.get("n_days") or 0) // 10)))
-        if clusters < READOUT_MIN_CLUSTERS:
-            ci = f",区间不可信(簇数 {clusters}<{READOUT_MIN_CLUSTERS}),不印"
+        if clusters < __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["swing_readout_min_clusters"]:
+            ci = f",区间不可信(簇数 {clusters}<{__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["swing_readout_min_clusters"]}),不印"
         else:
             lo, hi = 100.0 * float(readout["ci_low"]), 100.0 * float(readout["ci_high"])
             ci = f",块 bootstrap [{lo:+.2f}, {hi:+.2f}]pp"

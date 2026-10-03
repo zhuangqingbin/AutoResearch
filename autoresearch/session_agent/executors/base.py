@@ -47,49 +47,24 @@ from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 from autoresearch.contracts.retry import TASK_ATTEMPT
+from autoresearch.session_agent.roles import codex_agent_names, dispatch_mapping
 
 SCHEMA_VERSION = 1
 #: Run-scoped mailbox / runner status directory: ``<staging>/_dispatch/``.
 DISPATCH_DIR = "_dispatch"
 
-#: session role → (project agent definition, scan_config ``agents`` role).
-#: Seven judgment roles of the scan (spec §4 A1-3); the review reuses the l4-card agent
-#: with its own config role ``ens_review`` exactly like ``l4-stock.js`` does.
-ROLE_DISPATCH: Mapping[str, tuple[str, str | None]] = MappingProxyType({
-    "macro.brief": ("macro-brief", "strategist"),
-    "sector.brief": ("sector-brief", "sector_brief"),
-    "scan.l3": ("l3-rank", "l3_rank"),
-    "scan.l3.repair": ("l3-rank", "l3_repair"),
-    "scan.l4.intel": ("l4-intel", "l4_intel"),
-    "scan.l4.card": ("l4-card", "l4_card"),
-    "scan.l4.review": ("l4-card", "ens_review"),
-    # Non-scan entry points reuse the same agents when they are driven by the runner.
-    "stock.card": ("l4-card", "l4_card"),
-    "dossier.init": ("dossier-init", "dossier_init"),
-    "company.intel": ("company-intel", None),
-    "us.intel": ("us-intel", None),
-    "sector.intel": ("sector-intel", None),
-})
+# Compatibility views; role/config/host mappings are owned by roles.py.
 
-#: Codex project agents (``.codex/agents/<config_role>.toml``) by scan_config role.  Codex
-#: dispatches a project agent by — and its hooks report ``agent_type`` as — the toml
-#: ``name`` field, not the file stem; a parity test re-reads the toml files.
-CODEX_AGENT_NAMES: Mapping[str, str] = MappingProxyType({
-    "strategist": "scan strategist",
-    "sector_brief": "sector brief",
-    "l3_rank": "L3 rank",
-    "l3_repair": "L3 repair",
-    "l4_intel": "L4 intel",
-    "l4_card": "L4 card",
-    "ens_review": "ensemble review",
-    "dossier_init": "dossier init",
-})
+ROLE_DISPATCH = MappingProxyType(dispatch_mapping())
+CODEX_AGENT_NAMES = MappingProxyType(codex_agent_names())
 
 
 def agent_type_for(role_id: str, engine: str) -> str:
     """The project agent a host of ``engine`` dispatches for one session role."""
+    if engine not in {"claude", "codex"}:
+        raise KeyError(f"unsupported engine: {engine}")
     agent_type, config_role = ROLE_DISPATCH[role_id]
-    if engine != "codex":
+    if engine == "claude":
         return agent_type
     if config_role is None or config_role not in CODEX_AGENT_NAMES:
         raise KeyError(f"no Codex project agent for session role {role_id}")
@@ -153,6 +128,7 @@ class DispatchRequest:
     host_session_ref: str             # the host session (parent context of a subagent)
     resolution: str = "RESOLVED"      # how model/effort were obtained (see runner/dispatch)
     schema_version: int = SCHEMA_VERSION
+    access_manifest_path: str | None = None  # absent in historical frozen requests
 
     def __post_init__(self):
         object.__setattr__(self, "agent_spec", _frozen_map(self.agent_spec))

@@ -39,6 +39,15 @@ BARK_ENDPOINT = "https://api.day.app/push"
 #: 推送正文里 brief 部分的字节上限(Bark/APNs 单条约 4KB,留出标题与报告路径的余量)。
 BARK_BODY_LIMIT = 3000
 HTTP_TIMEOUT = 15.0
+MAIL_TIMEOUT = 60
+
+
+def delivery_limits(cfg: dict | None = None) -> dict:
+    """`scan_config.delivery.{bark_body_limit, http_timeout_s, mail_timeout_s}`(缺键 = 模块常量)。"""
+    from autoresearch.scan.user_config import knob
+    return {"bark_body_limit": int(knob("delivery", "bark_body_limit", None, BARK_BODY_LIMIT, cfg)),
+            "http_timeout_s": float(knob("delivery", "http_timeout_s", None, HTTP_TIMEOUT, cfg)),
+            "mail_timeout_s": int(knob("delivery", "mail_timeout_s", None, MAIL_TIMEOUT, cfg))}
 TOKEN_ENV = "BARK_TOKEN"
 MAIL_TO_ENV = "DELIVERY_MAIL_TO"
 
@@ -88,7 +97,7 @@ def _http_post(url: str, payload: dict, timeout: float) -> int:
 
 def _mail_send(to: str, subject: str, body: str) -> int:
     proc = subprocess.run(  # noqa: S603 - argv list, no shell
-        ["mail", "-s", subject, to], input=body, text=True, capture_output=True, timeout=60)
+        ["mail", "-s", subject, to], input=body, text=True, capture_output=True, timeout=delivery_limits()["mail_timeout_s"])
     return proc.returncode
 
 
@@ -122,11 +131,11 @@ def _transport(
             token = str(environ.get(TOKEN_ENV) or "").strip()
             if not token:
                 raise RuntimeError(f"{TOKEN_ENV} 未设置(放进 .env),未发送")
-            body, truncated = compose(text, report_path, limit=BARK_BODY_LIMIT)
+            body, truncated = compose(text, report_path, limit=delivery_limits()["bark_body_limit"])
             result.update(truncated=truncated, body_bytes=len(body.encode("utf-8")),
                           target=BARK_ENDPOINT)
             status = http_post(BARK_ENDPOINT, {"device_key": token, "title": title,
-                                               "body": body, "group": "scan"}, HTTP_TIMEOUT)
+                                               "body": body, "group": "scan"}, delivery_limits()["http_timeout_s"])
             if not 200 <= int(status) < 300:
                 raise RuntimeError(f"Bark HTTP {status}")
         elif channel == "mail":

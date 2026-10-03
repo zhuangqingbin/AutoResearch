@@ -56,3 +56,9 @@ def render_terrain_block(industry, scan_dir: Path | str) -> str:
         return ""
     return (f"### 🏭 行业地形 — {industry}(行业 brief · 描述性;个股评级仍由本卡 rubric 三门定)\n"
             f"{terr}")
+
+
+def render_deterministic_terrain(pack: dict, **kwargs) -> str:
+    """Public candidate renderer; existing extraction/injection contract is unchanged."""
+    from autoresearch.sector.terrain import render_terrain
+    return render_terrain(pack, **kwargs)

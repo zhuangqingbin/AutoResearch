@@ -168,7 +168,8 @@ def render_reconcile_candidate(
     }
 
 
-def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
+def reconcile_one(code6: str, period: str, today: str, *, fetch=None,
+                  fact_updates: list[dict] | None = None, knowledge_cutoff: str | None = None) -> dict:
     """单票对账;presence-gated(无档案/未首覆 skip)。
 
     两端点皆空(未披露)**也落痕**(R2-I-1):§5 写一行可识别的「未披露」记账、§8 同款
@@ -181,15 +182,23 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
     """
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)
-    text = schema.read_dossier_text(code6)
+    opening, base_hash = schema.read_dossier_snapshot(code6)
+    text = opening.decode("utf-8") if opening is not None else None
     if text is None:
         return {"code": code6, "skipped": "no_dossier"}
     if not schema.parse_frontmatter(text).get("initiated"):
         return {"code": code6, "skipped": "not_initiated"}
+    import tempfile
+
+    from autoresearch.dossier import facts
+
+    context = facts.capture_fact_context(text, fact_updates, analysis_date=today, knowledge_cutoff=knowledge_cutoff)
     actual = _fetch_actual(code6, period, fetch=fetch)
     candidate, result = render_reconcile_candidate(text, code6, period, today, actual)
-    if candidate != text or result.get("recorded") or result.get("updated"):
-        path.write_text(candidate, encoding="utf-8")
+    if context is not None:
+        with tempfile.TemporaryDirectory(prefix="dossier-reconcile-") as scratch:
+            candidate, result['fact_delta'] = facts.apply_fact_context(candidate, context, scratch_root=Path(scratch))
+        result['issues'] = schema.lint_dossier(candidate)
     from autoresearch.common.atomic import sha256_bytes
     from autoresearch.trace.operation_evidence import record_operation_evidence
 
@@ -201,15 +210,21 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
             "after_sha256": sha256_bytes(candidate.encode("utf-8")),
         }
     ]
+    inputs = {"dossier.opening": text, "dossier.actual": actual}
+    if context is not None:
+        inputs['dossier.fact_context'] = context
     evidence = record_operation_evidence(
         "dossier.reconcile",
         parameters={"code": code6, "period": period, "today": today},
-        inputs={"dossier.opening": text, "dossier.actual": actual},
+        inputs=inputs,
         outputs={"dossier.candidate": candidate, "dossier.result": result},
         effects=effects,
-        code_paths=[Path(__file__)],
+        code_paths=[Path(__file__), Path(facts.__file__), Path(delta.__file__)],
         evidence_root=path.parent / "_operation_evidence",
     )
+    from autoresearch.dossier.maintenance import commit
+
+    commit(code6, opening, base_hash, evidence["operation_id"])
     return {**result, "operation_id": evidence["operation_id"]}
 
 
@@ -259,7 +274,29 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("period", help="报告期 YYYYMMDD,如 20260630")
     ap.add_argument("--code", default=None, help="单票;缺省 = 全池 active")
     ap.add_argument("--today", default=None, help="记账日 YYYY-MM-DD,缺省=今天")
+    ap.add_argument("--fact-updates", help="JSON list of typed facts; never accepts evidence verdicts")
+    ap.add_argument("--knowledge-cutoff", help="Aware timestamp for offline UNKNOWN fact updates")
     args = ap.parse_args(argv)
+    fact_updates = None
+    if args.fact_updates:
+        import json
+
+        from autoresearch.common import workspace as ws
+        from autoresearch.dossier.facts import validate_fact
+
+        if not args.code:
+            ap.error("--fact-updates requires --code")
+        source = Path(args.fact_updates)
+        forbidden = {f"context_{engine}" for engine in ('codex', 'claude') if engine != ws.ENGINE}
+        forbidden |= {name.replace('context_', 'reports_') for name in forbidden}
+        if forbidden.intersection(source.absolute().parts) or forbidden.intersection(source.resolve(strict=True).parts):
+            ap.error("fact input belongs to another engine")
+        fact_updates = json.loads(source.read_bytes())
+        if not isinstance(fact_updates, list):
+            ap.error("--fact-updates must contain a JSON list")
+        for row in fact_updates:
+            validate_fact(row)
+
     if not _valid_period(args.period):
         ap.error(f"period 格式非法(需 YYYYMMDD,如 20260630):{args.period!r}")
     from datetime import datetime
@@ -274,7 +311,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     n = 0
     for c in codes:
-        res = reconcile_one(c, args.period, today)
+        kwargs = {}
+        if fact_updates is not None or args.knowledge_cutoff is not None:
+            kwargs = {"fact_updates": fact_updates, "knowledge_cutoff": args.knowledge_cutoff}
+        res = reconcile_one(c, args.period, today, **kwargs)
         if res.get("updated"):
             tag = "✓"
         elif res.get("recorded"):

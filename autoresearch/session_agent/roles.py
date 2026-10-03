@@ -4,106 +4,38 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import MappingProxyType
+
+from autoresearch.contracts.agent_roles import (
+    _ROLES,
+    PHYSICAL_AGENTS as _PHYSICAL,
+    configured_agents,
+    dispatch_mapping,
+)
+
+# Capabilities describe the adapter boundary, not REAL_SESSION proof or filesystem
+# isolation. Host receipts and output validation still have to demonstrate execution.
+EXECUTOR_CAPABILITIES = MappingProxyType({
+    "mailbox": {"engines": ("claude", "codex"), "independent_context": "HOST",
+                "web": "HOST", "tool_policy": "HOST_ROLE_CONTRACT",
+                "output_boundary": "REGISTERED_ARTIFACT_VALIDATION"},
+    "headless": {"engines": ("claude",), "independent_context": True,
+                 "web": "HOST", "tool_policy": "PROJECT_AGENT_TOOL_SUPERSET",
+                 "output_boundary": "REGISTERED_ARTIFACT_VALIDATION"},
+})
 
 _FIELDS = frozenset({
-    "role_id", "instruction_refs", "input_policy", "output_contract", "context_policy",
-    "tool_policy", "config_role",
+    "role_id", "instruction_refs", "instruction_section", "input_policy", "output_contract",
+    "context_policy", "tool_policy", "config_role", "stage", "accepted_output_contracts",
 })
 
 
-def _role(
-    role_id: str,
-    refs: list[str],
-    output: str,
-    *,
-    context: str = "SEQUENTIAL",
-    tools: str = "READ_WRITE",
-    config_role: str | None = None,
-) -> dict:
-    return {
-        "role_id": role_id,
-        "instruction_refs": refs,
-        "input_policy": f"{role_id}.inputs.v1",
-        "output_contract": output,
-        "context_policy": context,
-        "tool_policy": tools,
-        "config_role": config_role,
-    }
 
 
-_ROLES = {
-    "stock.card": _role(
-        "stock.card",
-        [".claude/agents/l4-card.md"],   # 2026-09-26 A2-6:lite-playbook 只剩指针
-        "stock.lite.v1",
-        config_role="l4-card",
-    ),
-    "stock.market": _role("stock.market", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.news": _role("stock.news", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1", tools="READ_WEB_WRITE"),
-    "stock.fundamentals": _role("stock.fundamentals", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.quality": _role("stock.quality", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.valuation": _role("stock.valuation", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.positioning": _role("stock.positioning", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.peer": _role("stock.peer", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.solvency": _role("stock.solvency", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.reality_check": _role("stock.reality_check", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.bull": _role("stock.bull", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.bear": _role("stock.bear", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.manager": _role("stock.manager", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.premortem": _role("stock.premortem", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.risk": _role("stock.risk", [".claude/skills/stock-research/engine-playbook.md"], "stock.section.v1"),
-    "stock.pm": _role("stock.pm", [".claude/skills/stock-research/engine-playbook.md"], "stock.pm.v1"),
-    "company.intel": _role("company.intel", [".claude/agents/company-intel.md"], "company.intel.v1", tools="WEB_WRITE", config_role="company-intel"),
-    "us.intel": _role("us.intel", [".claude/agents/us-intel.md"], "company.intel.v1", tools="WEB_WRITE", config_role="us-intel"),
-    "macro.brief": _role("macro.brief", [".claude/agents/macro-brief.md"], "macro.brief.v1", config_role="macro-brief"),
-    "macro.research": _role("macro.research", [".claude/skills/macro-research/macro-playbook.md"], "macro.section.v1", tools="READ_WEB_WRITE"),
-    "sector.brief": _role("sector.brief", [".claude/agents/sector-brief.md"], "sector.terrain.v1", config_role="sector-brief"),
-    "sector.research": _role("sector.research", [".claude/skills/sector-research/sector-playbook.md"], "sector.full.v1", tools="READ_WEB_WRITE"),
-    "sector.intel": _role("sector.intel", [".claude/agents/sector-intel.md"], "sector.intel.v1", tools="WEB_WRITE", config_role="sector-intel"),
-    "dossier.init": _role("dossier.init", [".claude/agents/dossier-init.md"], "dossier.v1", tools="READ_WEB_WRITE", config_role="dossier-init"),
-    "scan.l3": _role("scan.l3", [".claude/agents/l3-rank.md"], "scan.l3.v1", config_role="l3-rank"),
-    "scan.l3.repair": _role("scan.l3.repair", [".claude/agents/l3-rank.md"], "scan.l3.repair.v1", config_role="l3-repair"),
-    "scan.l4.intel": _role("scan.l4.intel", [".claude/agents/l4-intel.md"], "scan.l4.intel.v1", tools="WEB_WRITE", config_role="l4-intel"),
-    "scan.l4.card": _role("scan.l4.card", [".claude/agents/l4-card.md"], "stock.lite.v1", config_role="l4-card"),
-    "scan.l4.review": _role("scan.l4.review", [".claude/agents/l4-card.md"], "stock.lite.v1", context="INDEPENDENT", config_role="l4-card"),
-    "scan.l5": _role("scan.l5", [".claude/skills/scan-market/STAGES.md"], "scan.l5.v1"),
-}
 
-_ROLE_STAGES = {
-    "stock.card": "card",
-    "stock.market": "write",
-    "stock.news": "write",
-    "stock.fundamentals": "write",
-    "stock.quality": "write",
-    "stock.valuation": "write",
-    "stock.positioning": "write",
-    "stock.peer": "write",
-    "stock.solvency": "write",
-    "stock.reality_check": "write",
-    "stock.bull": "write",
-    "stock.bear": "write",
-    "stock.manager": "write",
-    "stock.premortem": "write",
-    "stock.risk": "write",
-    "stock.pm": "assemble",
-    "company.intel": "intel",
-    "us.intel": "intel",
-    "macro.brief": "write",
-    "macro.research": "write",
-    "sector.brief": "write",
-    "sector.research": "write",
-    "sector.intel": "intel",
-    "dossier.init": "research",
-    "scan.l3": "l3",
-    "scan.l3.repair": "l3",
-    "scan.l4.intel": "l4",
-    "scan.l4.card": "l4",
-    "scan.l4.review": "l4",
-    "scan.l5": "l5",
-}
-
-if set(_ROLE_STAGES) != set(_ROLES):
-    raise RuntimeError("logical role stage registry is incomplete")
+def codex_agent_names() -> dict[str, str]:
+    return {role["config_role"]: _PHYSICAL[role["config_role"]][1]
+            for role in _ROLES.values() if role["config_role"] is not None}
 
 
 def _validate_role(value: dict) -> dict:
@@ -136,13 +68,18 @@ def roles_hash() -> str:
                 for ref in role["instruction_refs"]
             },
         }
+    payload["physical_agents"] = {
+        key: {**spec, "codex_definition_sha256": hashlib.sha256(
+            Path(f".codex/agents/{key}.toml").read_bytes()).hexdigest()}
+        for key, spec in configured_agents().items()
+    }
+    payload["executor_capabilities"] = dict(EXECUTOR_CAPABILITIES)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def role_stage(role_id: str) -> str:
-    get_role(role_id)
-    return _ROLE_STAGES[role_id]
+    return get_role(role_id)["stage"]
 
 
 def role_manifest(role_ids: list[str] | tuple[str, ...]) -> dict:
@@ -165,5 +102,5 @@ def all_roles() -> tuple[str, ...]:
 
 
 __all__ = [
-    "all_roles", "get_role", "role_manifest", "role_stage", "roles_hash",
+    "all_roles", "dispatch_mapping", "get_role", "role_manifest", "role_stage", "roles_hash",
 ]

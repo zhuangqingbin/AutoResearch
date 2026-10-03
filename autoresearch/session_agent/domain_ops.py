@@ -16,6 +16,7 @@ from autoresearch.common import workspace as ws
 from autoresearch.common.atomic import (
     atomic_write_bytes,
     atomic_write_json,
+    canonical_json,
     sha256_bytes,
 )
 from autoresearch.contracts.agent_output import L4_CARD
@@ -54,6 +55,22 @@ def _request(handle) -> dict:
 def _text(handle, artifact_id: str) -> str:
     with artifacts.open_artifact(handle, artifact_id) as stream:
         return stream.read().decode("utf-8")
+
+
+def stock_evidence_bundle(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.session_agent.evidence_bundle import build_bundle
+    from autoresearch.session_agent.service import _task
+
+    task = _task(current, "stock.evidence_bundle")
+    bundle = build_bundle(current, task["input_artifact_ids"])
+    target = artifacts.declared_path(current, "stock.evidence_bundle")
+    if target.exists():
+        if json.loads(target.read_text(encoding="utf-8")) != bundle:
+            raise artifacts.ArtifactConflict("stock evidence bundle changed")
+    else:
+        atomic_write_json(target, bundle)
+    return bundle
 
 
 def research_calculate(
@@ -126,7 +143,39 @@ def stock_validate(handle=None) -> dict:
     }
     target = Path(current.staging) / "session_outputs/card.validation.json"
     atomic_write_json(target, value)
+    _record_card_stage(current, artifacts.artifact_path(current, "stock.card.output"), value)
     return value
+
+
+def _record_card_stage(handle, card: Path, value: dict) -> None:
+    """Checkpoint the accepted card as stage `card`, like the legacy runctl step.
+
+    The LITE evidence profile owes `stages/card/*/result.json`; in session_v1 the
+    card is an inference task, so its validating operation records the stage. Live
+    runs only: offline replay never writes the run's capsule.
+    """
+    import os
+
+    from autoresearch.trace.replay import REPLAY_ENV
+    from autoresearch.trace.write_guard import RunWriteViolation
+
+    run_id = str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip()
+    if run_id != handle.run_id or os.environ.get(REPLAY_ENV):
+        return
+    try:
+        from autoresearch.common import workspace as ws
+        from autoresearch.trace.capsule import checkpoint
+        from autoresearch.trace.write_guard import assert_write_allowed, run_write_lock
+
+        with run_write_lock(run_id):
+            assert_write_allowed(run_id, "stock.validate", ws.ENGINE)
+            checkpoint(run_id, "card", "SUCCEEDED", [Path(card)],
+                       {"rating": value["rating"], "proposal": value["proposal"],
+                        "card_sha256": value["card_sha256"], "origin": "stock.validate"})
+    except RunWriteViolation:
+        raise
+    except Exception as exc:  # noqa: BLE001 - evidence failure stays visible, not a business result
+        print(f"[stock.validate·capsule] card checkpoint failed: {exc}", file=sys.stderr)
 
 
 def _safe_output_name(request: dict) -> str:
@@ -161,6 +210,19 @@ def stock_prepare_publication(handle=None) -> dict:
         "proposal": validation["proposal"],
         "card_sha256": card["sha256"],
     }
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+    from autoresearch.scan.l4.card_io import card_rules_version
+    if card_rules_version(handle=current) == CURRENT_CARD_RULES:
+        from autoresearch.news.card_claims import registered_card_semantics
+        from autoresearch.session_agent.card_semantics_context import claim_handle, freeze
+        from autoresearch.trace.completeness import card_rating_bands_from_capsule
+        freeze(current)  # replay restores exactly this owner/profile/claim context
+        semantics = registered_card_semantics(claim_handle(current), _text(current, "stock.card.output"), subject=request["subject"],
+                                          artifact_id="stock.card.output",
+                                          frame_hash=artifacts.snapshot_artifact(current, "research.frame")["sha256"],
+                                          frame=json.loads(_text(current, "research.frame")),
+                                          bands=card_rating_bands_from_capsule(current.capsule))
+        value.update({key: semantics[key] for key in ("machine_suggestion", "machine_reason", "execution", "claim_usage")})
     target = Path(current.staging) / "session_outputs/publication.json"
     atomic_write_json(target, value)
     return value
@@ -182,8 +244,19 @@ def stock_full_validate(handle=None) -> dict:
             raise RuntimeError(f"required full product empty: {relative}")
         hashes[relative] = descriptor["sha256"]
     decision = _text(current, mapping[stock_assemble.DECISION_REL])
-    if parse_rating(decision, strict=True) is None or _PROPOSAL_RE.search(decision) is None:
-        raise RuntimeError("full decision lacks strict Rating or proposal")
+    from autoresearch.agents.utils.rating import validate_rating_and_proposal
+
+    try:
+        validate_rating_and_proposal(decision)
+    except ValueError as exc:
+        raise RuntimeError(f"full decision: {exc}") from exc
+    from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+    from autoresearch.scan.l4.card_io import card_rules_version
+    from autoresearch.session_agent.validation import _research_card_semantics
+
+    if card_rules_version(handle=current) == CURRENT_CARD_RULES:
+        _research_card_semantics(current, decision, {"subject": _request(current)["subject"],
+            "task_id": "stock.pm", "output_artifact_ids": [mapping[stock_assemble.DECISION_REL]]})
     value = {
         "schema_version": 1,
         "contract": "stock.full.products.v1",
@@ -192,6 +265,11 @@ def stock_full_validate(handle=None) -> dict:
     }
     atomic_write_json(Path(current.staging) / "session_outputs/full.validation.json", value)
     return value
+
+
+#: The operation the FULL plan registers for its assemble task (`workflows/stock.py`); the
+#: legacy assembler must guard and checkpoint under this identity inside a session run.
+FULL_ASSEMBLE_OPERATION = "stock.full.assemble"
 
 
 def stock_full_assemble(handle=None) -> dict:
@@ -215,10 +293,26 @@ def stock_full_assemble(handle=None) -> dict:
         sys.argv = ["assemble.py", str(draft_root)]
         if request.get("name"):
             sys.argv.extend(["--name", request["name"]])
+        from autoresearch.contracts.profiles import CURRENT_CARD_RULES
+        from autoresearch.scan.l4.card_io import card_rules_version
+        from autoresearch.trace.completeness import card_rating_bands_from_capsule
+        version = card_rules_version(handle=current)
+        from autoresearch.news.card_claims import bound_claim_context
+        from autoresearch.session_agent.card_semantics_context import claim_handle, freeze
+        if version == CURRENT_CARD_RULES:
+            freeze(current)  # replay restores exactly this owner/profile/claim context
+        decision_context = ({"rules_version": version, "subject": request["subject"],
+                             "frame": json.loads(_text(current, "research.frame")),
+                             "rating_bands": card_rating_bands_from_capsule(current.capsule),
+                             "frame_hash": artifacts.snapshot_artifact(current, "research.frame")["sha256"],
+                             "claim_context": bound_claim_context(claim_handle(current), artifact_id="stock.full.4_decision.decision")}
+                            if version == CURRENT_CARD_RULES else None)
         if stock_assemble.main(
             clock=operation_clock(current),
             reports_root=scratch,
             context_root=Path(current.staging),
+            decision_context=decision_context,
+            write_operation=FULL_ASSEMBLE_OPERATION,
         ) != 0:
             raise RuntimeError("existing stock assembler rejected full products")
     finally:
@@ -254,6 +348,36 @@ def stock_full_assemble(handle=None) -> dict:
         "report_sha256": sha256_bytes(report_bytes),
     }
     atomic_write_json(output / "publication.json", value)
+    return value
+
+
+
+def macro_intel_prepare(handle=None) -> dict:
+    """Freeze neutral entities/cutoff/calendar from registered immutable inputs."""
+    from autoresearch.contracts.execution import validate_decision_frame
+
+    current = handle or _active_handle()
+    frame = validate_decision_frame(json.loads(_text(current, "research.frame")))
+    tape = json.loads(_text(current, "macro.global_tape"))
+    policy = json.loads(_text(current, "macro.intel.policy"))
+    cap = policy["source_budget"]["max_queries"]
+    if type(cap) is not int or cap < 1 or policy["source_budget"]["unit"] != "SEARCH_AND_FETCH":
+        raise ValueError("invalid frozen global intel source budget")
+    events = tape.get("known_events") if isinstance(tape, dict) else None
+    # Missing structured calendar remains explicit; do not infer dates from opinions.
+    events = [{key: event[key] for key in (
+        "entity", "event", "scheduled_at", "published_at", "source_url", "time_quality") if key in event}
+        for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    value = {
+        "schema_version": 1, "analysis_date": current.analysis_date,
+        "knowledge_cutoff": frame["knowledge_cutoff"],
+        "entities": {"central_banks": ["Fed", "PBoC", "ECB", "BOJ"],
+                     "economies": ["US", "China", "Eurozone", "Japan"]},
+        "known_events": events,
+        "calendar_status": "BOUND" if events else "UNAVAILABLE",
+        "source_budget": {"max_queries": cap, "unit": "SEARCH_AND_FETCH"},
+    }
+    atomic_write_json(artifacts.declared_path(current, "macro.intel.request"), value)
     return value
 
 
@@ -384,15 +508,16 @@ def macro_lite_prepare(handle=None, *, macro_state_path: Path | str | None = Non
     }
 
 
-_MARKET_VIEW_SECTION_RE = re.compile(r"(?m)^\s*([1-6])[.、]\s*\*\*")
-
-
 def macro_lite_validate(handle=None) -> dict:
     current = handle or _active_handle()
     text = _text(current, "macro.market_view")
-    sections = {match.group(1) for match in _MARKET_VIEW_SECTION_RE.finditer(text)}
-    if sections != {"1", "2", "3", "4", "5", "6"}:
+    from autoresearch.session_agent.validation import market_view_complete
+
+    # One shape rule, shared with the scan market view: sections 1–5 carry a bold title and
+    # section 6 is the plain disclaimer line the macro-brief template writes.
+    if not market_view_complete(text):
         raise RuntimeError("macro market view requires all six sections")
+    sections = {"1", "2", "3", "4", "5", "6"}
     descriptor = artifacts.bind_artifact_hash(current, "macro.market_view")
     value = {
         "schema_version": 1,
@@ -434,7 +559,9 @@ def macro_full_validate(handle=None) -> dict:
 
     mapping = macro_product_artifacts()
     hashes = {}
-    for relative in sorted(required_macro_products()):
+    request = _request(current)
+    selected = set(request.get('macro_optional_products', [])) if request.get('schema_version', 1) >= 4 else set()
+    for relative in sorted(required_macro_products() | selected):
         artifact_id = mapping[relative]
         try:
             descriptor = artifacts.bind_artifact_hash(current, artifact_id)
@@ -444,15 +571,25 @@ def macro_full_validate(handle=None) -> dict:
         if not text:
             raise RuntimeError(f"required macro product empty: {relative}")
         hashes[relative] = descriptor["sha256"]
+    try:
+        scope = macro_assemble.allocation_scope(_text(current, "macro.data"))
+    except (KeyError, ValueError, RuntimeError) as exc:
+        raise RuntimeError(f"macro allocation scope: {exc}") from exc
     for relative in (macro_assemble.DECISION_REL, macro_assemble.SECTOR_MAP_REL):
-        allocation = macro_assemble.parse_allocation(_text(current, mapping[relative]))
-        if not allocation or any(value is None for value in allocation.values()):
+        try:
+            allocation = macro_assemble.parse_allocation(
+                _text(current, mapping[relative]), expected_keys=scope[relative],
+            )
+        except ValueError as exc:
+            raise RuntimeError(f"macro allocation {relative}: {exc}") from exc
+        if not allocation:
             raise RuntimeError(f"macro allocation is not parseable: {relative}")
     value = {
         "schema_version": 1,
         "contract": "macro.full.products.v1",
         "required_products": sorted(required_macro_products()),
         "hashes": hashes,
+        "allocation_keys": {relative: list(keys) for relative, keys in scope.items()},
     }
     atomic_write_json(Path(current.staging) / "session_outputs/macro.full.validation.json", value)
     return value
@@ -466,6 +603,9 @@ def macro_full_assemble(handle=None) -> dict:
 
     if set(validation.get("required_products") or []) != required_macro_products():
         raise RuntimeError("macro validation does not match assembler requirements")
+    scope = macro_assemble.allocation_scope(_text(current, "macro.data"))
+    if validation.get("allocation_keys") != {relative: list(keys) for relative, keys in scope.items()}:
+        raise RuntimeError("macro allocation scope changed after validation")
     root = Path(current.staging) / "macro" / request["analysis_date"]
     output = Path(current.staging) / "session_outputs"
     scratch = output / "macro_assembled"
@@ -487,6 +627,7 @@ def macro_full_assemble(handle=None) -> dict:
             ],
             clock=operation_clock(current),
             scan_root=scan_root,
+            expected_keys=scope,
         )
         != 0
     ):
@@ -516,7 +657,7 @@ def macro_full_assemble(handle=None) -> dict:
 
 
 _SECTOR_INPUT_NAMES = frozenset(
-    {"L1_scored_full.csv", "L2_gbdt_top200.csv", "sectors.csv", "calendar.csv", "meta.json"}
+    {"L1_scored_full.csv", "L2_gbdt_top200.csv", "sectors.csv", "calendar.csv", "meta.json", "sector_evidence.json"}
 )
 
 
@@ -569,10 +710,13 @@ def collect_sector_snapshot(handle=None, *, scan_root: Path | str | None = None)
         "shift_pp": None,
         "source_body": None,
     }
-    if request["requested_mode"] == "LITE" and source_kind == "existing_scan":
+    candidate = request.get("sector_brief_profile", "legacy") == "deterministic-v1"
+    if request["requested_mode"] == "LITE" and source_kind == "existing_scan" and not candidate:
+        from autoresearch.scan.user_config import knob
         from autoresearch.sector.reuse import find_reusable
 
-        found = find_reusable(analysis_date, [industry], root=source_root)
+        found = find_reusable(analysis_date, [industry], root=source_root,
+                              ttl_days=int(knob("sector", "reuse_ttl_days", None, 5)))
         if industry in found:
             item = found[industry]
             reuse = {
@@ -582,7 +726,7 @@ def collect_sector_snapshot(handle=None, *, scan_root: Path | str | None = None)
                 "shift_pp": item["shift_pp"],
                 "source_body": Path(item["src"]).read_text(encoding="utf-8"),
             }
-    return {
+    value = {
         "schema_version": 1,
         "engine": current.engine,
         "analysis_date": analysis_date,
@@ -593,6 +737,18 @@ def collect_sector_snapshot(handle=None, *, scan_root: Path | str | None = None)
         "readthrough": readthrough,
         "reuse": reuse,
     }
+    if candidate:
+        from autoresearch.sector.reuse import find_stable_snapshot
+        from autoresearch.session_agent.dispatch import sector_brief_web_searches
+        frame = json.loads(_text(current, "research.frame"))
+        config = getattr(current.contract, "user_config", {}) or {}
+        ttl = int(config.get("sector", {}).get("reuse_ttl_days", 5))
+        value["reuse"] = {"reused": False, "previous": find_stable_snapshot(
+            analysis_date, industry, root=source_root, ttl_days=ttl), "ttl_days": ttl}
+        value.update(schema_version=2, sector_brief_profile="deterministic-v1",
+                     event_max_queries=sector_brief_web_searches(getattr(current.contract, "user_config", {})),
+                     knowledge_cutoff=frame["knowledge_cutoff"])
+    return value
 
 
 def render_sector_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict[str, Path]:
@@ -608,8 +764,13 @@ def render_sector_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict[
         "readthrough",
         "reuse",
     }
-    if set(snapshot) != required or snapshot["schema_version"] != 1:
+    candidate = snapshot.get("schema_version") == 2
+    if candidate:
+        required |= {"sector_brief_profile", "event_max_queries", "knowledge_cutoff"}
+    if set(snapshot) != required or snapshot["schema_version"] not in {1, 2}:
         raise ValueError("invalid sector snapshot contract")
+    if candidate and snapshot["sector_brief_profile"] != "deterministic-v1":
+        raise ValueError("invalid sector snapshot profile")
     if snapshot["mode"] not in {"FULL", "LITE"}:
         raise ValueError("invalid sector snapshot mode")
     if snapshot["source"] not in {"existing_scan", "generated_frame"}:
@@ -646,7 +807,8 @@ def render_sector_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict[
     }
     from autoresearch.sector import pack as sector_pack_module
 
-    pack = sector_pack_module._sector_pack_staging(snapshot["industry"], input_dir)
+    pack = sector_pack_module._sector_pack_staging(snapshot["industry"], input_dir,
+        profile="deterministic-v1" if candidate else "legacy")
     if snapshot["mode"] == "FULL" and snapshot["readthrough"]:
         pack["readthrough"] = snapshot["readthrough"]
     if int(pack.get("n_market") or 0) < 1:
@@ -672,7 +834,9 @@ def render_sector_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict[
         "body": None,
     }
     reuse = snapshot["reuse"]
-    if reuse.get("reused"):
+    if candidate:
+        reuse_value = {"schema_version": 2, "profile": "deterministic-v1", **reuse}
+    if reuse.get("reused") and not candidate:
         from autoresearch.sector.reuse import render_reused_brief
 
         body = render_reused_brief(
@@ -686,11 +850,18 @@ def render_sector_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict[
             "body": body,
         }
     atomic_write_json(output / "sector.reuse.json", reuse_value)
-    return {
+    rendered = {
         "manifest": output / "sector.inputs.json",
         "pack": output / "sector.pack.json",
         "reuse": output / "sector.reuse.json",
     }
+    if candidate:
+        from autoresearch.sector.terrain import event_request
+        events = event_request(pack, max_queries=snapshot["event_max_queries"],
+                               knowledge_cutoff=snapshot["knowledge_cutoff"])
+        atomic_write_json(output / "sector.events.request.json", events)
+        rendered["events_request"] = output / "sector.events.request.json"
+    return rendered
 
 
 def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
@@ -707,7 +878,8 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
             "mode": snapshot["mode"],
         },
         outcome=snapshot,
-        consumer_artifact_ids=["sector.input.manifest", "sector.pack", "sector.reuse"],
+        consumer_artifact_ids=["sector.input.manifest", "sector.pack", "sector.reuse"]
+        + (["sector.events.request"] if snapshot["schema_version"] == 2 else []),
     )
     rendered = render_sector_snapshot(snapshot, staging_root=current.staging)
     return {
@@ -717,7 +889,56 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
     }
 
 
-_SECTOR_DIRECTIONS = re.compile(r"超配|低配|回避|买入|卖出|买卖|看多|看空")
+def sector_terrain_render(handle=None, *, task: dict | None = None) -> dict:
+    """One frozen task owns one deterministic terrain product in either workflow."""
+    current = handle or _active_handle()
+    if task is None:
+        import os
+
+        from autoresearch.session_agent.service import _task
+        task = _task(current, os.environ["AUTORESEARCH_TASK_ID"])
+    pack_id = next(key for key in task["input_artifact_ids"] if key.endswith(".pack"))
+    request_id = next(key for key in task["input_artifact_ids"] if key.endswith(".events.request"))
+    event_id = next((key for key in task["input_artifact_ids"] if key.endswith(".events")), None)
+    pack = json.loads(_text(current, pack_id))
+    request = json.loads(_text(current, request_id))
+    supplement = json.loads(_text(current, event_id)) if event_id else None
+    from autoresearch.sector.terrain import render_terrain
+    from autoresearch.session_agent.sector_terrain import source_binding
+    reuse_id = next((key for key in task["input_artifact_ids"] if key.endswith(".reuse")), None)
+    reuse = json.loads(_text(current, reuse_id)) if reuse_id else {}
+    previous = reuse.get("previous")
+    binding = source_binding(current) if (supplement and supplement.get("events")) or (previous and previous['snapshot'].get('stable_facts')) or pack['terrain']['stable_facts'] else None
+    from autoresearch.sector.reuse import reuse_stable_facts, stable_fact_snapshot
+    if previous is not None:
+        from autoresearch.sector.terrain import digest
+        if digest(previous["snapshot"]) != previous.get("snapshot_sha256"):
+            raise ValueError("stable fact snapshot identity changed")
+    stable = reuse_stable_facts(pack, previous["snapshot"] if previous else None,
+        ttl_days=int(reuse.get("ttl_days", 5)), knowledge_cutoff=request["knowledge_cutoff"], bind_claim=binding)
+    fresh = reuse_stable_facts(pack, stable_fact_snapshot(pack, pack['terrain']['stable_facts']),
+        ttl_days=0, knowledge_cutoff=request["knowledge_cutoff"], bind_claim=binding)
+    facts = {sha256_bytes(canonical_json(fact).encode()): fact for fact in [*stable['stable_facts'], *fresh['stable_facts']]}
+    text = render_terrain(pack, request=request, supplement=supplement, bind_claim=binding, stable_facts=list(facts.values()))
+    artifact_id = next(key for key in task["output_artifact_ids"] if key.endswith((".report", ".brief")))
+    stable_id = next(key for key in task["output_artifact_ids"] if key.endswith(".stable.snapshot"))
+    atomic_write_json(artifacts.declared_path(current, stable_id), stable_fact_snapshot(pack, list(facts.values())))
+    atomic_write_bytes(artifacts.declared_path(current, artifact_id), text.encode("utf-8"))
+    from autoresearch.trace.source_receipts import record_active_response
+    record_active_response(provider="sector.terrain", endpoint="sector.terrain.snapshot.v1",
+        params={"analysis_date": current.analysis_date, "industry": pack["industry"]},
+        outcome={"schema_version": 2, "pack": pack, "request": request, "supplement": supplement,
+                 "stable_facts": list(facts.values()), "bound_event_hashes": [
+                     sha256_bytes(canonical_json(event).encode()) for event in (supplement or {}).get("events", [])],
+                 "bound_event_timings": {sha256_bytes(canonical_json(event).encode()): binding(event, request)["source_timing"]
+                                         for event in (supplement or {}).get("events", [])}},
+        consumer_artifact_ids=task["output_artifact_ids"])
+    return {"profile": "deterministic-v1", "artifact_id": artifact_id, "sha256": sha256_bytes(text.encode("utf-8"))}
+
+
+# 「买卖单」是 sector-brief 模板强制的资金流事实标签(「主动买卖单净流入合计」),不是方向措辞;
+# 与 validation 同名正则保持一致。
+_SECTOR_DIRECTIONS = re.compile(r"超配|低配|回避|买入|卖出|买卖(?!单)|看多|看空")
 _SECTOR_SECTIONS = re.compile(r"(?m)^\s*#{1,6}\s*([1-6])[.、]\s*")
 
 
@@ -854,6 +1075,8 @@ def _summary_values(text: str) -> dict[str, str]:
 
 
 def _dossier_permissions(skeleton: str, *, target: Path, opening_hash: str | None) -> dict:
+    from autoresearch.dossier.facts import parse_ledger
+    ledger = parse_ledger(skeleton)
     deterministic = {}
     for index in (2, 3, 5, 6, 7):
         block = dossier_schema._section_block(skeleton, dossier_schema.SECTIONS[index])
@@ -876,6 +1099,7 @@ def _dossier_permissions(skeleton: str, *, target: Path, opening_hash: str | Non
         "deterministic_sections": deterministic,
         "protected_prefixes": prefixes,
         "summary_fixed": {anchor: summary[anchor] for anchor in ("带位:", "判例:")},
+        "fact_ledger": ledger,
     }
 
 
@@ -934,22 +1158,19 @@ def collect_dossier_skeleton_snapshot(
         if target_path is not None
         else dossier_schema.dossier_path(request["subject"])
     )
-    opening_bytes = (
-        target.read_bytes()
-        if target_path is not None and target.is_file()
-        else (
-            None
-            if target_path is not None
-            else dossier_schema.read_dossier_bytes(request["subject"])
-        )
-    )
+    if target_path is not None:
+        opening_bytes = target.read_bytes() if target.is_file() else None
+        publication_base = sha256_bytes(opening_bytes) if opening_bytes is not None else None
+    else:
+        opening_bytes, publication_base = dossier_schema.read_dossier_snapshot(request["subject"])
     source_root = Path(scan_root) if scan_root is not None else ws.scan_root()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "analysis_date": request["analysis_date"],
         "code": request["subject"],
         "name": request.get("name") or "",
         "target": str(target),
+        "publication_base_sha256": publication_base,
         "opening_target": (
             _encode_payload(opening_bytes) if opening_bytes is not None else None
         ),
@@ -1000,7 +1221,10 @@ def render_dossier_skeleton_snapshot(
         "opening_target",
         "scan_files",
     }
-    if set(snapshot) != required or snapshot["schema_version"] != 1:
+    version = snapshot.get("schema_version")
+    if version == 2:
+        required.add("publication_base_sha256")
+    if set(snapshot) != required or type(version) is not int or version not in {1, 2}:
         raise ValueError("invalid dossier skeleton snapshot contract")
     output = Path(output_dir)
     skeleton_path = output / "dossier.skeleton.md"
@@ -1030,6 +1254,12 @@ def render_dossier_skeleton_snapshot(
     permissions = _dossier_permissions(
         skeleton, target=Path(snapshot["target"]), opening_hash=opening_hash
     )
+    if version == 2:
+        base_hash = snapshot["publication_base_sha256"]
+        if base_hash is not None and (not isinstance(base_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", base_hash)):
+            raise ValueError("invalid dossier publication base hash")
+        permissions["schema_version"] = 2
+        permissions["publication_base_sha256"] = base_hash
     permissions_path = atomic_write_json(output / "dossier.permissions.json", permissions)
     return {"skeleton": skeleton_path, "permissions": permissions_path}
 
@@ -1074,6 +1304,17 @@ def _validate_dossier_candidate(current) -> dict:
     issues = dossier_schema.lint_dossier(candidate)
     if issues:
         raise RuntimeError(";".join(issues))
+    from autoresearch.dossier.facts import parse_ledger
+    ledger = parse_ledger(candidate)
+    opening = permissions.get('fact_ledger')
+    if opening is not None:
+        if ledger is None:
+            raise RuntimeError('dossier fact ledger removed')
+        if ledger['history'][:len(opening['history'])] != opening['history']:
+            raise RuntimeError('dossier fact history changed')
+        current_facts = {row['fact_id']: row for row in ledger['facts']}
+        if any(current_facts.get(row['fact_id']) != row for row in opening['facts']):
+            raise RuntimeError('existing dossier facts require sourced delta reconciliation')
     meta = dossier_schema.parse_frontmatter(candidate)
     if meta.get("initiated") != request["analysis_date"]:
         raise RuntimeError("dossier initiated date is missing or incorrect")
@@ -1111,6 +1352,9 @@ def _validate_dossier_candidate(current) -> dict:
         "code": request["subject"],
         "candidate_sha256": descriptor["sha256"],
         "summary_tokens": dossier_schema.est_tokens(dossier_schema._summary_block(candidate)),
+        "fact_coverage": {'declared': len(ledger['facts']) if ledger else 0,
+                          'semantic_coverage': 'UNKNOWN',
+                          'reuse_requires_current_source_verification': True},
     }
 
 
@@ -1193,7 +1437,7 @@ def render_dossier_publication_snapshot(current, snapshot: dict) -> list[dict]:
     return [
         {
             "target_key": f"dossier.stock.{request['subject']}",
-            "expected_before_hash": permissions.get("opening_target_sha256"),
+            "expected_before_hash": permissions.get("publication_base_sha256", permissions.get("opening_target_sha256")),
             "after_artifact_id": "dossier.candidate",
             "after_hash": candidate["sha256"],
             "apply_policy": "CAS_REPLACE",
@@ -1479,10 +1723,15 @@ def scan_sector_prepare(handle=None) -> dict:
     from autoresearch.session_agent.workflows.scan import _sector_key
 
     scan_dir = Path(current.staging)
+    candidate = _request(current).get("sector_brief_profile", "legacy") == "deterministic-v1"
+    cap = int(knob("sector", "max_briefs", None, 6))
+    if candidate and not 1 <= cap <= 6:
+        raise ValueError("deterministic sector coverage requires 1 <= K <= 6")
     sectors, provenance = sector_pack.select_briefing_sectors(
-        scan_dir, k=int(knob("sector", "max_briefs", None, 6))
+        scan_dir, k=cap, healthy_top3_extra=False if candidate else None,
     )
-    found = sector_reuse.find_reusable(current.analysis_date, sectors)
+    found = {} if candidate else sector_reuse.find_reusable(current.analysis_date, sectors,
+                                       ttl_days=int(knob("sector", "reuse_ttl_days", None, 5)))
     if found:
         sector_reuse.apply_reuse(
             current.analysis_date,
@@ -1493,14 +1742,30 @@ def scan_sector_prepare(handle=None) -> dict:
     rows = []
     for industry in sectors:
         key = _sector_key(str(industry))
-        payload = sector_pack.sector_pack(industry, scan_dir)
+        payload = (sector_pack._sector_pack_staging(industry, scan_dir, profile="deterministic-v1")
+                   if candidate else sector_pack.sector_pack(industry, scan_dir))
         atomic_write_json(pack_dir / f"{key}.json", payload)
+        extra = {}
+        if candidate:
+            from autoresearch.sector.terrain import event_request
+            from autoresearch.session_agent.dispatch import sector_brief_web_searches
+            frame = json.loads(_text(current, "research.frame"))
+            request = event_request(payload,
+                max_queries=sector_brief_web_searches(getattr(current.contract, "user_config", {})),
+                knowledge_cutoff=frame["knowledge_cutoff"])
+            atomic_write_json(pack_dir / f"{key}.events.request.json", request)
+            ttl = int(knob("sector", "reuse_ttl_days", None, 5))
+            previous = sector_reuse.find_stable_snapshot(current.analysis_date, industry, ttl_days=ttl)
+            atomic_write_json(pack_dir / f"{key}.reuse.json", {"schema_version": 2,
+                "profile": "deterministic-v1", "reused": False, "previous": previous, "ttl_days": ttl})
+            extra = {"profile": "deterministic-v1", "needs_events": request["dispatch"]}
         rows.append(
             {
                 "industry": str(industry),
                 "key": key,
                 "reused": industry in found,
                 "provenance": provenance.get(industry),
+                **extra,
             }
         )
     value = {"schema_version": 1, "mode": "FULL", "sectors": rows}
@@ -1579,7 +1844,10 @@ def scan_l3_repair_skip(handle=None) -> dict:
     }
     atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
     judged_path = Path(current.staging) / "_l3_judged.json"
-    if judged_path.is_file():
+    if artifacts.layout_version(current) >= 2:
+        data = artifacts.read_bytes(current, 'scan.l3.judged')
+        atomic_write_bytes(Path(current.staging) / '_l3_effective_judged.json', data)
+    elif judged_path.is_file():
         atomic_write_bytes(
             Path(current.staging) / "_l3_effective_judged.json",
             judged_path.read_bytes(),
@@ -1624,7 +1892,10 @@ def scan_l3_repair_degraded(error: dict, handle=None) -> dict:
     }
     atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
     judged_path = Path(current.staging) / "_l3_judged.json"
-    if judged_path.is_file():
+    if artifacts.layout_version(current) >= 2:
+        atomic_write_bytes(Path(current.staging) / '_l3_effective_judged.json',
+                           artifacts.read_bytes(current, 'scan.l3.judged'))
+    elif judged_path.is_file():
         atomic_write_bytes(
             Path(current.staging) / "_l3_effective_judged.json",
             judged_path.read_bytes(),
@@ -1731,8 +2002,10 @@ def scan_l4_prepare(handle=None) -> dict:
     if codes != expected or prompt_result.get("n_prompts") != len(expected):
         raise RuntimeError("L4 dispatch/prompts differ from frozen finalists")
     meta = dispatch.get("meta") or {}
-    initialized = legacy_scan.initialize_tickets(current, codes, meta=meta)
     config = getattr(current.contract, "user_config", {}) or {}
+    initialized = legacy_scan.initialize_tickets(
+        current, codes, meta=meta,
+        caps=((config.get("budgets") or {}).get("concurrency") or None))
     value = {
         "schema_version": 1,
         "codes": codes,
@@ -1829,10 +2102,11 @@ def scan_l4_slim(handle=None, *, code: str | None = None) -> dict:
     scan_dir = Path(current.staging)
     attempt = _l4_attempt(scan_dir, code6)
     source = Path(legacy_scan._payload(current)["tasks"][code6]["artifacts"]["slim"]["path"])
-    if attempt > 1:
-        target = _retry_dir(scan_dir, code6, attempt) / "slim.md"
+    deep_source = source.with_name(source.stem + "_deep.md")
+    target = artifacts.declared_path(current, f"scan.l4.{code6}.a{attempt}.slim")
+    if target != source:
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        _write_if_changed(target, source.read_bytes())
         source = target
     snapshot = {
         "schema_version": 1,
@@ -1841,22 +2115,44 @@ def scan_l4_slim(handle=None, *, code: str | None = None) -> dict:
         "result": result,
         "slim": _encode_payload(source.read_bytes()),
     }
+    consumers = [f"scan.l4.{code6}.a{attempt}.slim"]
+    deep_id = f"scan.l4.{code6}.a{attempt}.deep"
+    try:
+        deep_target = artifacts.declared_path(current, deep_id)
+    except KeyError:
+        deep_target = None  # Historical frozen tasks declared only the slim file.
+    if deep_target is not None:
+        if deep_source.is_symlink():
+            raise ValueError("deep evidence must not be a symlink")
+        deep_payload = (deep_source.read_bytes() if deep_source.is_file()
+                        else b"DEEP_EVIDENCE_UNAVAILABLE: deep source missing; unverified\n")
+        _write_if_changed(deep_target, deep_payload)
+        snapshot.update({"schema_version": 2, "deep": _encode_payload(deep_payload)})
+        consumers.append(deep_id)
     _record_scan_source(
         provider="scan.l4.slim",
-        endpoint="scan.l4.slim.snapshot.v1",
+        endpoint=f"scan.l4.slim.snapshot.v{snapshot['schema_version']}",
         current=current,
         outcome=snapshot,
-        consumers=[f"scan.l4.{code6}.a{attempt}.slim"],
+        consumers=consumers,
     )
     return result
 
 
-def render_scan_l4_slim_snapshot(snapshot: dict, *, output_path: Path | str) -> dict:
-    if set(snapshot) != {"schema_version", "code", "attempt", "result", "slim"}:
+def render_scan_l4_slim_snapshot(
+    snapshot: dict, *, output_path: Path | str, deep_output_path: Path | str | None = None,
+) -> dict:
+    version = snapshot.get("schema_version")
+    fields = {"schema_version", "code", "attempt", "result", "slim"}
+    if version == 2:
+        fields.add("deep")
+    if version not in {1, 2} or set(snapshot) != fields:
         raise ValueError("invalid scan L4 slim snapshot contract")
-    if snapshot["schema_version"] != 1:
-        raise ValueError("invalid scan L4 slim snapshot")
+    if version == 2 and deep_output_path is None:
+        raise ValueError("v2 slim snapshot requires declared deep output")
     atomic_write_bytes(Path(output_path), _decode_payload(snapshot["slim"]))
+    if version == 2:
+        atomic_write_bytes(Path(deep_output_path), _decode_payload(snapshot["deep"]))
     return dict(snapshot["result"])
 
 
@@ -1874,7 +2170,7 @@ def _normalize_intel(scan_dir: Path, code: str) -> None:
     write_normalization(scan_dir, normalization)
 
 
-def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
+def scan_l4_intel_status(handle=None, *, code: str | None = None, claim_sources=None) -> dict:
     current = handle or _active_handle()
     code6 = _require_code(code)
     from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
@@ -1888,7 +2184,10 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
     bound_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
     if bound_intel.is_file():
         _write_if_changed(scan_dir / f"_l4_intel_{code6}.md", bound_intel.read_bytes())
-    result = guard_intel(scan_dir, code6, soft_cap=configured_soft_cap())
+    if claim_sources is None:
+        from autoresearch.session_agent.source_fields import intel_source_context
+        claim_sources = intel_source_context(scan_dir)
+    result = guard_intel(scan_dir, code6, soft_cap=configured_soft_cap(), source_context=claim_sources)
     if result.get("action") in {"KEPT", "TRIMMED"}:
         _normalize_intel(scan_dir, code6)
     status = from_guard(result, code=code6, scan_dir=scan_dir, enabled=True, attempts=1)
@@ -1948,12 +2247,29 @@ def _card_rating(path: Path) -> str:
     return rating
 
 
-def scan_review_plan(handle=None) -> dict:
+def _review_path(scan_dir: Path, kind: str, code: str | None = None) -> Path:
+    return (scan_dir / "session_outputs/reviews" / f"{code}.{kind}.json" if code
+            else scan_dir / "session_outputs" / f"review.{kind}.json")
+
+
+def _has_scoped_review(handle, code: str) -> bool:
+    try:
+        return artifacts.binding_sha256(handle, f"scan.review.decision.{code}") is not None
+    except (KeyError, OSError, ValueError, RuntimeError):
+        return False
+
+
+def scan_review_plan(handle=None, *, code: str | None = None) -> dict:
     current = handle or _active_handle()
     import pandas as pd
 
     scan_dir = Path(current.staging)
     finalists = pd.read_csv(scan_dir / "finalists.csv", dtype={"code": str})
+    scope = _require_code(code) if code is not None else None
+    if scope is not None:
+        finalists = finalists[finalists["code"] == scope]
+        if len(finalists) != 1:
+            raise ValueError("review plan requires one frozen finalist for its scope")
     rows = []
     for _, item in finalists.iterrows():
         code = _require_code(str(item["code"]))
@@ -1964,11 +2280,8 @@ def scan_review_plan(handle=None) -> dict:
         if rating is None or proposal is None:
             raise RuntimeError(f"L4 card contract incomplete: {code}")
         pinned = str(item.get("lane") or "").strip() == "pinned"
-        trigger = (
-            "ow_review"
-            if rating in {"Buy", "Overweight"}
-            else ("sell_review" if pinned and proposal.group(1).upper() == "SELL" else None)
-        )
+        from autoresearch.scan.decision_finalize import review_trigger  # l4.review:与 JS 同一份规则
+        trigger = review_trigger(rating, proposal.group(1), pinned=pinned)
         rows.append(
             {
                 "code": code,
@@ -1979,7 +2292,7 @@ def scan_review_plan(handle=None) -> dict:
             }
         )
     value = {"schema_version": 1, "reviews": rows}
-    atomic_write_json(scan_dir / "session_outputs/review.plan.json", value)
+    atomic_write_json(_review_path(scan_dir, "plan", scope), value)
     return value
 
 
@@ -1998,10 +2311,13 @@ def scan_review_none(handle=None, *, code: str | None = None) -> dict:
     return value
 
 
-def scan_review_decide(handle=None) -> dict:
+def scan_review_decide(handle=None, *, code: str | None = None) -> dict:
     current = handle or _active_handle()
     scan_dir = Path(current.staging)
-    plan = json.loads((scan_dir / "session_outputs/review.plan.json").read_text(encoding="utf-8"))
+    scope = _require_code(code) if code is not None else None
+    plan = json.loads(_review_path(scan_dir, "plan", scope).read_text(encoding="utf-8"))
+    if scope and [row["code"] for row in plan.get("reviews", [])] != [scope]:
+        raise ValueError("review decision scope differs from frozen plan")
     decisions = []
     for row in plan.get("reviews") or []:
         code = _require_code(row.get("code"))
@@ -2026,7 +2342,7 @@ def scan_review_decide(handle=None) -> dict:
             }
         )
     value = {"schema_version": 1, "decisions": decisions}
-    atomic_write_json(scan_dir / "session_outputs/review.decision.json", value)
+    atomic_write_json(_review_path(scan_dir, "decision", scope), value)
     return value
 
 
@@ -2054,7 +2370,7 @@ def scan_l4_finalize(handle=None, *, code: str | None = None) -> dict:
     from autoresearch.session_agent.workflows.scan import ensemble_record
 
     decision = json.loads(
-        (scan_dir / "session_outputs/review.decision.json").read_text(encoding="utf-8")
+        _review_path(scan_dir, "decision", code6 if _has_scoped_review(current, code6) else None).read_text(encoding="utf-8")
     )
     matches = [row for row in decision.get("decisions") or [] if row.get("code") == code6]
     if len(matches) != 1:
@@ -2145,6 +2461,21 @@ def scan_l4_complete(handle=None) -> dict:
     bad = {code: state for code, state in states.items() if state != "SUCCEEDED"}
     if bad:
         raise RuntimeError(f"L4 taskbook not all SUCCEEDED: {bad}")
+    if states and _has_scoped_review(current, next(iter(states))):
+        import csv
+        with (Path(current.staging) / "finalists.csv").open() as stream:
+            codes = [row["code"] for row in csv.DictReader(stream)]
+        if set(codes) != set(states):
+            raise RuntimeError("review join population differs from frozen finalists")
+        for kind, key in (("plan", "reviews"), ("decision", "decisions")):
+            rows = []
+            for code in codes:
+                with artifacts.open_artifact(current, f"scan.review.{kind}.{code}") as stream:
+                    value = json.load(stream)
+                if [row["code"] for row in value.get(key, [])] != [code]:
+                    raise RuntimeError("review join scope identity mismatch")
+                rows.extend(value[key])
+            atomic_write_json(_review_path(Path(current.staging), kind), {"schema_version": 1, key: rows})
     value = {"schema_version": 1, "status": "SUCCEEDED", "states": states}
     atomic_write_json(Path(current.staging) / "session_outputs/l4.complete.json", value)
     _write_scan_bundle(current, "l4_final", "l4.final.bundle.json")
@@ -2166,6 +2497,18 @@ def scan_assemble(handle=None) -> dict:
         )
     )
     report_dir = summary.parent
+    from autoresearch.session_agent.research_provenance import collect_and_freeze
+
+    collect_and_freeze(current)
+    # The research exporter only reads immutable published bytes.
+    mirror = report_dir / "trace/staging"
+    for name in ("_research_provenance.json", "research_inputs", "research_reads", "_l4_force_full"):
+        source = scan_dir / name
+        target = mirror / name
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        elif source.is_file():
+            atomic_write_bytes(target, source.read_bytes())
     required = ["brief.md", "summary.md", "appendix.md", "manifest.json"]
     missing = [name for name in required if not (report_dir / name).is_file()]
     if missing:
@@ -2428,16 +2771,20 @@ def main(argv: list[str] | None = None) -> int:
         choices=(
             "stock-validate",
             "research-calculate",
+            "research-card-facts",
             "stock-publish",
+            "stock-evidence-bundle",
             "stock-full-validate",
             "stock-full-assemble",
             "macro-harvest",
+            "macro-intel-prepare",
             "macro-lite-frame",
             "macro-lite-validate",
             "macro-publish",
             "macro-full-validate",
             "macro-full-assemble",
             "sector-prepare",
+            "sector-terrain-render",
             "sector-validate",
             "sector-publish",
             "dossier-prefetch",
@@ -2479,7 +2826,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input-artifact-ids-json")
     parser.add_argument("--parameters-json")
     args = parser.parse_args(argv)
-    if args.command == "research-calculate":
+    if args.command == "research-card-facts":
+        from autoresearch.session_agent.card_facts import execute_active
+        value = execute_active()
+    elif args.command == "research-calculate":
         input_artifact_ids = json.loads(args.input_artifact_ids_json)
         parameters = json.loads(args.parameters_json)
         if not isinstance(input_artifact_ids, list) or not isinstance(parameters, dict):
@@ -2493,10 +2843,14 @@ def main(argv: list[str] | None = None) -> int:
         value = stock_validate()
     elif args.command == "stock-publish":
         value = stock_prepare_publication()
+    elif args.command == "stock-evidence-bundle":
+        value = stock_evidence_bundle()
     elif args.command == "stock-full-validate":
         value = stock_full_validate()
     elif args.command == "stock-full-assemble":
         value = stock_full_assemble()
+    elif args.command == "macro-intel-prepare":
+        value = macro_intel_prepare()
     elif args.command == "macro-harvest":
         value = macro_harvest_run()
     elif args.command == "macro-lite-frame":
@@ -2511,6 +2865,8 @@ def main(argv: list[str] | None = None) -> int:
         value = macro_full_assemble()
     elif args.command == "sector-prepare":
         value = sector_prepare()
+    elif args.command == "sector-terrain-render":
+        value = sector_terrain_render()
     elif args.command == "sector-validate":
         value = sector_validate()
     elif args.command == "sector-publish":
@@ -2558,11 +2914,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "scan-l4-intel-disabled":
         value = scan_l4_intel_disabled(code=args.subject)
     elif args.command == "scan-review-plan":
-        value = scan_review_plan()
+        value = scan_review_plan(code=args.subject)
     elif args.command == "scan-review-none":
         value = scan_review_none(code=args.subject)
     elif args.command == "scan-review-decide":
-        value = scan_review_decide()
+        value = scan_review_decide(code=args.subject)
     elif args.command == "scan-review-skip":
         value = scan_review_skip()
     elif args.command == "scan-review3-skip":

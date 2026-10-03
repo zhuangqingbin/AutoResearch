@@ -43,6 +43,13 @@ SCAN_ROOT = ws.scan_root()
 _TERMINAL = {"SUCCEEDED", "FAILED", "BLOCKED"}
 _STALE_MIN_DEFAULT = 30
 
+
+def watch_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l4_watch.{stale_min, interval_s}`(缺键 = 30 分钟 / 5 秒)。"""
+    from autoresearch.scan.user_config import knob
+    return {"stale_min": int(knob("l4_watch", "stale_min", None, _STALE_MIN_DEFAULT, cfg)),
+            "interval_s": float(knob("l4_watch", "interval_s", None, 5.0, cfg))}
+
 CURSOR_SCHEMA_VERSION = 1
 DEFAULT_CONSUMER = "l4_watch"
 
@@ -310,9 +317,9 @@ def main(argv: list[str] | None = None) -> int:
         description="L4 逐股出卡播报(读 _l4_tasks.json;卡片仅在账本确认完稿后才读)")
     ap.add_argument("date", help="分析日 YYYY-MM-DD")
     ap.add_argument("--watch", action="store_true", help="轮询;全部票进终态即退出")
-    ap.add_argument("--interval", type=float, default=5.0, help="轮询间隔秒,默认 5")
-    ap.add_argument("--stale-min", type=int, default=_STALE_MIN_DEFAULT,
-                    help=f"在飞超过该分钟数提示一次,默认 {_STALE_MIN_DEFAULT}")
+    ap.add_argument("--interval", type=float, default=watch_cfg()["interval_s"], help="轮询间隔秒(缺省 = scan_config l4_watch.interval_s)")
+    ap.add_argument("--stale-min", type=int, default=watch_cfg()["stale_min"],
+                    help="在飞超过该分钟数提示一次(缺省 = scan_config l4_watch.stale_min)")
     ap.add_argument("--scan-root", default=str(SCAN_ROOT))
     ap.add_argument("--consumer-id", default=DEFAULT_CONSUMER,
                     help=f"消费者标识(多个 watcher 各记各的进度),默认 {DEFAULT_CONSUMER}")

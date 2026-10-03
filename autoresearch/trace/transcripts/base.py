@@ -441,6 +441,30 @@ def hash_tool_response(value: object) -> ToolResponseDigest:
     )
 
 
+def complete_host_read(
+    host_read: object, *, path: str, sha256: str, byte_count: int | None = None
+) -> bool:
+    """True only for a host-recorded whole-file read of exactly these bytes.
+
+    ``host_read`` is the digest an adapter copies from the harness's own
+    structured result record (Claude ``toolUseResult.file``), never from
+    model-visible text. Paged (start line not 1) or line-capped
+    (``num_lines != total_lines``) reads are not complete.
+    """
+    if not isinstance(host_read, Mapping):
+        return False
+    lines = [host_read.get(key) for key in ("start_line", "num_lines", "total_lines")]
+    if any(type(value) is not int for value in lines):
+        return False
+    return (
+        host_read.get("file_path") == path
+        and host_read.get("content_sha256") == sha256
+        and (byte_count is None or host_read.get("byte_count") == byte_count)
+        and lines[0] == 1
+        and lines[1] == lines[2]
+    )
+
+
 def hash_artifact_bytes(data: bytes) -> ArtifactDigest:
     """Digest exact file bytes explicitly attributed to one artifact.
 

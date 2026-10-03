@@ -107,3 +107,20 @@ def test_review_decision_only_requests_a_third_run_on_tier_disagreement(tmp_path
     value = domain_ops.scan_review_decide(handle)
     assert [row["same_tier"] for row in value["decisions"]] == [False, True]
     assert [row["review3_required"] for row in value["decisions"]] == [True, False]
+
+
+def test_scoped_review_plan_and_decision_do_not_read_other_stock_cards(tmp_path):
+    handle = _handle(tmp_path)
+    (handle.staging / "details").mkdir()
+    (handle.staging / "details/000001.md").write_text(
+        "# 000001\n**Rating**: Sell\nFINAL TRANSACTION PROPOSAL: **SELL**\n")
+    pd.DataFrame([{"code": "000001", "lane": "pinned"}, {"code": "000002", "lane": "pinned"}]).to_csv(
+        handle.staging / "finalists.csv", index=False)
+    value = domain_ops.scan_review_plan(handle, code="000001")
+    assert [row["code"] for row in value["reviews"]] == ["000001"]
+    assert not (handle.staging / "session_outputs/review.plan.json").exists()
+    (handle.staging / "ensemble").mkdir()
+    (handle.staging / "ensemble/000001.run2.md").write_text("**Rating**: Hold")
+    value = domain_ops.scan_review_decide(handle, code="000001")
+    assert value["decisions"][0]["review3_required"] is True
+    assert not (handle.staging / "session_outputs/review.decision.json").exists()

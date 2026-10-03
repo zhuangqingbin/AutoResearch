@@ -27,6 +27,30 @@ L3_SECTOR_CAP = 3
 # 而守卫④ 曾强制把它凑到 finalist 的 1/3。回滚杆 = 改回 1/3(一行恢复 ④⑤⑥⑧ 四处旧行为)。
 HEALTHY_QUOTA_FRAC = 0.0
 
+CONV_FORCE_IN = 75.0          # 守卫① ins75:确信 ≥ 此值强制补入
+CONV_MIN = 55.0               # 守卫② lt55:确信 < 此值禁止 finalist
+
+
+def guard_defaults() -> dict:
+    """守卫阈的内建缺省 = 上面的模块常量(调用时现读,改常量仍是回滚杆)。"""
+    return {"chase_1d_pct": CHASE_1D_PCT, "sector_cap": L3_SECTOR_CAP,
+            "healthy_quota_frac": HEALTHY_QUOTA_FRAC, "conv_force_in": CONV_FORCE_IN, "conv_min": CONV_MIN,
+            "qualify_conv": {"backfill": 55.0, "lane": 65.0, "lowturn": 55.0},
+            "lane_floors": {"trend": 2, "lowturn": 1}}
+
+
+def guards_cfg(cfg: dict | None = None) -> dict:
+    """`scan_config.l3.guards` → 守卫阈(缺键 = guard_defaults(),逐字 parity;两个子字典各深合并一层)。"""
+    from autoresearch.scan.user_config import knob
+    user = knob("l3", "guards", None, {}, cfg) or {}
+    if not isinstance(user, dict):
+        user = {}
+    base = guard_defaults()
+    out = {**base, **{k: v for k, v in user.items() if not isinstance(v, dict)}}
+    for k in ("qualify_conv", "lane_floors"):
+        out[k] = {**base[k], **(user.get(k) or {})}
+    return out
+
 # ── composite 席位(2026-08-26 §3 路A · 守卫⑨)────────────────────────────────
 # **BUY 的所有权从判断层搬到证据层**。E6 此前只在 L3 finalist 里挑,而 finalist 这一族在
 # 隔夜主尺上 40 日相对超额 **−0.27pp(t=−3.94)= 显著为负**;全表唯一的正证据是确定性
@@ -62,6 +86,13 @@ def composite_seat_cfg(cfg: dict | None = None) -> tuple[bool, int]:
     return bool(enabled), m
 
 
+def composite_seat_exclude_knife(cfg: dict | None = None) -> bool:
+    """`l3.composite_seat.exclude_knife`:席位是否剔落刀(缺省 True = 现行为)。"""
+    from autoresearch.scan.user_config import knob
+    block = knob("l3", "composite_seat", None, {}, cfg) or {}
+    return bool(block.get("exclude_knife", True)) if isinstance(block, dict) else True
+
+
 def _is_st(name: object) -> bool:
     s = str(name or "").upper().replace(" ", "")
     return "ST" in s or "退" in s
@@ -92,11 +123,12 @@ def pick_composite_seats(l2: pd.DataFrame | None, m: int,
     if "name" in d.columns:
         keep &= ~d["name"].map(_is_st)
     if "pct_1d" in d.columns:
-        keep &= ~(pd.to_numeric(d["pct_1d"], errors="coerce") >= CHASE_1D_PCT)
-    from autoresearch.common.scoring import falling_knife_mask
-    knife = falling_knife_mask(d)                        # 席位不接刀(2026-09-24 §2.4):19 席位 18 张 UW/Sell 的病根
-    if knife is not None:
-        keep &= ~knife.fillna(False)
+        keep &= ~(pd.to_numeric(d["pct_1d"], errors="coerce") >= guards_cfg()["chase_1d_pct"])
+    if composite_seat_exclude_knife():                   # 席位不接刀(l3.composite_seat.exclude_knife)
+        from autoresearch.common.scoring import falling_knife_mask
+        knife = falling_knife_mask(d)
+        if knife is not None:
+            keep &= ~knife.fillna(False)
     if exclude:
         keep &= ~d["code"].isin({str(c).zfill(6) for c in exclude})
     d = d.loc[keep].assign(_score=score.loc[keep])
@@ -109,23 +141,82 @@ def pick_composite_seats(l2: pd.DataFrame | None, m: int,
     return out
 
 
-def _healthy_quota(n: int) -> int:
+def _healthy_quota(n: int, frac: float | None = None) -> int:
     """守卫④ 的 healthy 席位目标(ceil(n × frac));frac=0 → 0 = 不动作。"""
-    return math.ceil(n * HEALTHY_QUOTA_FRAC) if (n and HEALTHY_QUOTA_FRAC > 0) else 0
+    frac = guards_cfg()["healthy_quota_frac"] if frac is None else frac
+    return math.ceil(n * frac) if (n and frac > 0) else 0
 
 
-def _guarded_lanes_before(step: str) -> set[str]:
+def _guarded_lanes_before(step: str, frac: float | None = None) -> set[str]:
     """在 `step`(⑤ trend / ⑥ lowturn)之前已配置好配额、须受保护的 lane 集。
-    healthy 只在 HEALTHY_QUOTA_FRAC>0 时算(否则没有「④ 刚满足的硬约束」可保护)。"""
-    lanes: set[str] = {"healthy"} if HEALTHY_QUOTA_FRAC > 0 else set()
+    healthy 只在 healthy_quota_frac>0 时算(否则没有「④ 刚满足的硬约束」可保护)。"""
+    frac = guards_cfg()["healthy_quota_frac"] if frac is None else frac
+    lanes: set[str] = {"healthy"} if frac > 0 else set()
     if step == "lowturn":
         lanes.add("trend")
     return lanes
 
 
+_DISQUALIFIED_GUARDS = frozenset({
+    "chase_1d", "lt55", "dup", "structural_veto", "pinned_research", "untradable", "invalid_identity",
+})
+
+
+def _present(value) -> bool:
+    return isinstance(value, (list, dict)) or bool(pd.notna(value))
+
+
+def _is_pinned(row) -> bool:
+    value = row.get("pinned")
+    return str(row.get("lane", "")) == "pinned" or (
+        _present(value) and (value is True or str(value).lower() in {"true", "1"})
+    )
+
+
+def _exclusion_reason(row, g: dict) -> str:
+    """Hard exclusions before seats; missing market fields retain existing quality gates."""
+    from autoresearch.scan.l3.validation import l3_veto_status
+
+    code = str(row.get("code", "")).strip()
+    if not code or code.lower() in {"none", "nan", "<na>"}:
+        return "invalid_identity"
+    # New producer identities are strict; legacy helper fixtures/old rows keep their contract.
+    if row.get("schema_version") == 2 and (len(code) != 6 or not code.isdigit()):
+        return "invalid_identity"
+    name = row.get("name")
+    if _present(name) and _is_st(name):
+        return "untradable"
+    guard = row.get("guard", "")
+    if _present(guard) and str(guard) in _DISQUALIFIED_GUARDS:
+        return str(guard)
+    pct = pd.to_numeric(row.get("pct_1d"), errors="coerce")
+    if pd.notna(pct) and pct >= g["chase_1d_pct"]:
+        return "chase_1d"
+    if l3_veto_status(row) == "VETO":
+        return "structural_veto"
+    if _is_pinned(row):
+        return "pinned_research"
+    return ""
+
+
+def candidate_eligible(row, *, qualify_conv: float | None = None, g: dict | None = None) -> bool:
+    """One admission predicate for force-in, all replacements, and seat hard exclusions.
+
+    Composite research seats retain their existing conviction exemption (`None`); they
+    never bypass identity, tradability, chasing, B/E vetoes or the holding boundary.
+    """
+    g = guards_cfg() if g is None else g
+    if _exclusion_reason(row, g):
+        return False
+    if qualify_conv is None:
+        return True
+    conviction = pd.to_numeric(row.get("conviction"), errors="coerce")
+    return bool(pd.notna(conviction) and conviction >= qualify_conv)
+
+
 def _drop_and_backfill(m: pd.DataFrame, conv: pd.Series, fin_idx: set, victims: list,
                        guard_name: str, backfill_guard: str, *,
-                       qualify_conv: float = 55.0, sector_cap: int | None = None) -> set:
+                       qualify_conv: float | None = None, sector_cap: int | None = None) -> set:
     """守卫⑦/⑧共用:剔掉 `victims` → 从 bench 按 conviction 降序**回填到原席位数**。
 
     与 `_swap_lane_quota`(按 lane 凑配额)的区别:那个是「缺某类就换进来」,这个是
@@ -135,6 +226,8 @@ def _drop_and_backfill(m: pd.DataFrame, conv: pd.Series, fin_idx: set, victims: 
     `sector_cap` 给定时,回填还须保证补进来的票不把它自己所在 sector 顶破帽(守卫⑧用)。
     bench 池排除 `guard` 已被本轮标记的行(不把刚踢出去的再捡回来)。
     """
+    if qualify_conv is None:
+        qualify_conv = guards_cfg()["qualify_conv"]["backfill"]
     if not victims:
         return fin_idx
     fin_idx = set(fin_idx)
@@ -146,11 +239,10 @@ def _drop_and_backfill(m: pd.DataFrame, conv: pd.Series, fin_idx: set, victims: 
     # 回填池:bench 里够格的行。**排除失格 guard**(chase_1d 追高 / lt55 低确信 / dup 重复)——
     # 被 `cap` 截尾的行**不排除**:它正是「conviction 次高、只因名额满才没进」的那批,是最该
     # 补位的人;补进来时 guard 会被改写成 `backfill_guard`(真实原因)。
-    _DISQUALIFIED = {"chase_1d", "lt55", "dup"}
+    g = guards_cfg()
     pool = [i for i in m.index
             if i not in fin_idx and i not in victims
-            and str(m.loc[i, "guard"] or "") not in _DISQUALIFIED
-            and conv.loc[i] >= qualify_conv]
+            and candidate_eligible(m.loc[i], qualify_conv=qualify_conv, g=g)]
     pool.sort(key=lambda i: conv.loc[i], reverse=True)
     for cand in pool:
         if need <= 0:
@@ -172,9 +264,10 @@ def _lane_quota_floor(m: pd.DataFrame, fin_idx: set) -> dict:
     4 席里 3 席 lane=healthy,若整个 healthy lane 免剔,行业帽永远咬不动。
     """
     n = len(fin_idx)
-    floors = {"trend": 2, "lowturn": 1}
-    if HEALTHY_QUOTA_FRAC > 0:                       # healthy 配额关了就没有「配额」可保护
-        floors["healthy"] = _healthy_quota(n)
+    g = guards_cfg()
+    floors = dict(g["lane_floors"])
+    if g["healthy_quota_frac"] > 0:                  # healthy 配额关了就没有「配额」可保护
+        floors["healthy"] = _healthy_quota(n, g["healthy_quota_frac"])
     return floors
 
 
@@ -195,7 +288,7 @@ def _apply_sector_cap(m: pd.DataFrame, conv: pd.Series, fin_idx: set, cap: int) 
         over = len(group) - cap
         if over <= 0:
             continue
-        removable = [i for i in group if conv.loc[i] < 75]     # ins75 行不可剔
+        removable = [i for i in group if conv.loc[i] < guards_cfg()["conv_force_in"]]
         removable.sort(key=lambda i: conv.loc[i])       # 最弱先剔
         for i in removable:
             if over <= 0:
@@ -207,13 +300,30 @@ def _apply_sector_cap(m: pd.DataFrame, conv: pd.Series, fin_idx: set, cap: int) 
                     continue
             victims.append(i)
             over -= 1
-    return _drop_and_backfill(m, conv, fin_idx, victims, "sector_cap", "sector_backfill",
-                              sector_cap=cap)
+    fin_idx = _drop_and_backfill(m, conv, fin_idx, victims, "sector_cap", "sector_backfill",
+                                sector_cap=cap)
+    # This is a soft diversity constraint: explain every surviving over-cap sector.
+    for sec in by_sector:
+        remaining = [i for i in fin_idx if sector.loc[i] == sec]
+        if len(remaining) <= cap:
+            continue
+        for i in remaining:
+            reasons = []
+            if conv.loc[i] >= guards_cfg()["conv_force_in"]:
+                reasons.append("conviction 保险保护")
+            if lane.loc[i] in floors:
+                have = sum(lane.loc[j] == lane.loc[i] for j in fin_idx)
+                if have <= floors[lane.loc[i]]:
+                    reasons.append(f"lane={lane.loc[i]} 软配额保护")
+            m.loc[i, "sector_cap_exception"] = (
+                f"{sec} {len(remaining)}>{cap}: " + "；".join(reasons)
+            )
+    return fin_idx
 
 
 def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: str,
-                     target: int, guard_name: str, qualify_conv: float = 65.0,
-                     protect_lanes: set[str] | None = None) -> set:
+                     target: int, guard_name: str, qualify_conv: float | None = None,
+                     protect_lanes: set[str] | None = None, force_in: float | None = None) -> set:
     """守卫④/⑤共用的尾部票置换:`fin_idx`(候选集索引)里 `lane==lane_val` 计数不足
     `target` → 从 bench(`m.index` 里不在 `fin_idx` 的行)找够格候选(`lane==lane_val`
     且 `conviction>=qualify_conv`,按 conviction 降序),换掉候选集里"非 `lane_val`、
@@ -230,20 +340,24 @@ def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: s
     """
     if "lane" not in m.columns:
         return fin_idx
+    g = guards_cfg()
+    qualify_conv = g["qualify_conv"]["lane"] if qualify_conv is None else qualify_conv
+    force_in = g["conv_force_in"] if force_in is None else force_in
     lane = m["lane"].astype(str)
     have = sum(1 for i in fin_idx if lane.loc[i] == lane_val)
     deficit = target - have
     if deficit <= 0:
         return fin_idx
     bench_pool = [i for i in m.index if i not in fin_idx
-                 and lane.loc[i] == lane_val and conv.loc[i] >= qualify_conv]
+                 and lane.loc[i] == lane_val
+                 and candidate_eligible(m.loc[i], qualify_conv=qualify_conv, g=g)]
     bench_pool.sort(key=lambda i: conv.loc[i], reverse=True)
     protect = {lane_val} | (protect_lanes or set())
     fin_idx = set(fin_idx)
     for cand in bench_pool:
         if deficit <= 0:
             break
-        removable = [i for i in fin_idx if lane.loc[i] not in protect and conv.loc[i] < 75]
+        removable = [i for i in fin_idx if lane.loc[i] not in protect and conv.loc[i] < force_in]
         if not removable:
             break                                   # 无可换尾部票 → 不硬凑
         removable.sort(key=lambda i: conv.loc[i])    # 换掉候选集里最弱的
@@ -258,71 +372,22 @@ def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: s
 
 def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
                           finalist_max: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """L3 finalist tier 合并(design: plan 2026-07-12-l3-merge-plan.md Task 2;L3.5 的收窄职能
-    并入本函数,取代 `merge_l3_finalists_v2` 的 target/trend_quota 硬配额)。
+    """Merge nominated L3 rows after hard eligibility, then apply soft diversity.
 
-    l3-rank(`.claude/agents/l3-rank.md` v2)判断每票时写 `finalist` 布尔字段(True=finalist
-    tier,7–10 只,数量看当天质量;False=**bench**,仍全字段判断、不是弃权)。本函数消费该
-    标记 + 施加确定性守卫,产出 `(finalists, bench)` 两张表——**互斥、并集=`judged` 全量**
-    (`bench` = `judged` − `finalists`)。
+    Order: identity/tradability -> current guard/chasing/structured B/E veto ->
+    nonholding eligibility and conviction -> ins75 and cap -> eligible replacement,
+    lane quotas and soft sector cap -> explicit explanation columns. The thresholds
+    retain their configured values; high conviction/lane protections are soft sector
+    exceptions and never hard-veto exemptions.
 
-    `cap = min(finalist_max, budget)`(`budget` 通常是 workflow `--budget`,即当日 `l4_budget`;
-    `finalist_max` 是本波新增上限,默认 10——两者取更严格的一个)。
+    Every admission path uses candidate_eligible. Nominated chasing slots may be
+    filled from qualified bench rows; inadequate bench leaves slots empty. Historical
+    rows without finalist retain the original all-nominated fallback, and missing
+    v2 veto fields remain UNKNOWN without prose inference. Duplicate normalized codes
+    keep the first row; later rows remain in bench with guard=dup.
 
-    守卫序(按序应用,后一守卫在前一守卫处理后的候选集上运行):
-
-    ① **ins75 保险**:候选集外(未标 `finalist=True`)但 `conviction>=75` 的行强制补入,
-       `guard="ins75"`——用户裁定"conviction≥75 必须 finalist"是确定性硬约束,不能只靠
-       l3-rank 人设自觉遵守(人设里也写了这条,这里是不依赖 agent 遵守的兜底)。已经在
-       候选集里的 conviction≥75 行不需要这个标记(它本来就在,不算"被保险救回")。
-    ② **lt55 拒绝**:候选集里 `conviction<55` 的行剔除(挪进 bench),`guard="lt55"`——
-       即便 l3-rank 误标 `finalist=True` 也不该出现,同样是确定性硬约束,不靠自觉。
-    ③ **cap 截尾**:候选集超过 `cap` → 按 `conviction` 降序保留前 `cap`,其余挪进 bench
-       (`guard="cap"`,**无条件覆写**——即便该行先前已被①标过 `"ins75"`,只要它最终仍被
-       cap 挤出候选集,guard 就该反映"真正原因是 cap 截尾",不留半真半假的旧标签;
-       final-review-l3-merge.md Minor-3①)。
-    ④ **健康比例守卫**(比例制,`ceil(n × HEALTHY_QUOTA_FRAC)`;**2026-08-22 起 frac=0 = 不动作**,
-       用户裁定「healthy 三处强制降为不强制」,证据见 edge 普查):候选集里 `lane=="healthy"`
-       (v1 从简判定——只认 l3-rank 已写下的 `lane` 字段是否恰为 `"healthy"` 这一个字符串,
-       不重算 pct_60d/main_net/cmf/obv 的组合读数;那套定性判断是 l3-rank rubric 硬约束 A
-       的职责,确定性层这里只做"数够不够"的兜底,故意从简,更精细的健康画像判定留给
-       将来版本)计数不足 → 见 `_swap_lane_quota`(target=`ceil(n/3)`、`guard="healthy_quota"`)。
-    ⑤ **trend soft 2 席**:同④机制(`_swap_lane_quota`),`target=2`(固定,非比例)、
-       `lane=="trend"`、`guard="trend_quota"`——L3.5 时代硬配额(`trend_quota=10`)降级为
-       soft 下限,"有够格候选才凑,无则不硬凑"同样适用(不达标不强求)。**`protect_lanes=
-       {"healthy"}`**:trend 换出尾部票时不得选中 healthy 行——健康比例是④刚满足的硬约束
-       (Global Constraints A),trend 只是 soft 下限,soft 不能吃掉 hard(final-review-l3-merge.md
-       Important-2;修复前:healthy 恰达标日,trend 缺口会把候选集里 conviction 最低的
-       healthy 行当"最弱尾部票"换出,④白跑)。
-
-    ⑥ **lowturn soft 1 席**(2026-08-21 低位转强波 §6.4):同④⑤机制(`_swap_lane_quota`),
-       `lane=="lowturn"`、`target=1`(固定)、`guard="lowturn_quota"`、**`qualify_conv=55`**
-       (与守卫②同阈,不用④⑤的默认 65 —— 低位转强票 conviction 天然偏低,65 会让本守卫恒
-       空转,那是"探针死了也像活着"的同族)、`protect_lanes={"healthy","trend"}`(soft 不得
-       吃掉④刚满足的健康硬约束,也不该击穿⑤)。prompt(l3-rank 硬约束 G)允许至多 2 席,
-       确定性层只兜底 1 席;有够格候选才凑,无则 0。
-
-    **缺 `finalist` 列**(向后兼容:T3 之前落的旧 `_l3_judged.json` 没有这个字段)→ 全体行
-    视为初始候选(等价"先假设全选"),同样跑①–⑤(①在此情形恒无操作对象——全体已是候选;
-    ②③④⑤照常运行),等效于"全体按 conviction 排序取 cap,同守卫"。
-
-    返回 `(finalists, bench)`:
-      - `finalists` 沿用 `merge_l3_finalists_v2` 的展示 schema(`ticker`/`code`/`name`/
-        `sector`/`lenses`/`conviction`/`triage_lean`/`triage_reason`/`thesis`/`mechanism`/
-        `risk`/`catalyst`/`lane`/`sentiment`)+ 本函数新增的 `guard` 列(`write_finalists`
-        据此写 finalists.csv,格式"照旧"只加这一列)。
-      - `bench` 保留 `judged` **全部原始列**(`code` 已 6 位零填、`conviction`/`fragility`/
-        `pct_60d` 已转数值,与 `finalists` 同口径)+ `guard`(`write_finalists` 据此落
-        `_l3_bench.csv`——账本要看到完整判断,不是展示裁剪后的字段)。
-
-    两表按 `code` 互斥、按行索引并集覆盖 `judged` 全量(无遗漏无重复)。`judged` 为空 →
-    两个都空(仍带 `guard` 列)。
-
-    **去重(zfill 后,final-review-l3-merge.md Important-1)**:`_l3_judged.json` 是 LLM
-    (l3-rank)写的,同码写两行是真实风险(v2 当年 `.drop_duplicates(subset="code")` 就是
-    为此设防,v3 重写时漏掉)。同码(6 位零填后)只留第一次出现的一行走完整套守卫,其余
-    整行直接归 `bench` 记 `guard="dup"`——账本留痕、不静默消失(不同于 v2 的"并集去重后
-    直接从两表都消失",这里明确记为一种"被丢弃"原因)。
+    Returns finalists/bench preserving the row partition. Pinned mandatory research
+    is injected separately by write_finalists and never consumes nonholding seats.
     """
     if judged.empty:
         empty = judged.copy()
@@ -337,7 +402,13 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
     for c in ("conviction", "fragility", "pct_60d", "pct_1d"):
         if c in m.columns:
             m[c] = pd.to_numeric(m[c], errors="coerce")
-    m["guard"] = ""
+    if "guard" not in m.columns:
+        m["guard"] = ""
+    else:
+        m["guard"] = m["guard"].fillna("")
+    from autoresearch.scan.l3.validation import l3_veto_status
+    m["veto_status"] = [l3_veto_status(row) for row in m.to_dict("records")]
+    m["sector_cap_exception"] = ""
 
     # I-1 去重:同码(zfill 后)只留第一次出现,其余整行摘出 → 落 bench 记 guard="dup"。
     # 摘出发生在 conviction/fragility/pct_60d 数值化**之后**,保证 dup_rows 与其余账本行
@@ -347,6 +418,7 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
     dup_rows["guard"] = "dup"
     m = m.loc[~dup_mask].reset_index(drop=True)
 
+    g = guards_cfg()
     conv = m["conviction"].fillna(0.0)
 
     if "finalist" in m.columns:
@@ -354,47 +426,38 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
     else:                                       # 缺列向后兼容:全体皆候选
         sel = pd.Series(True, index=m.index)
 
-    ins75 = (conv >= 75) & (~sel)                # 守卫①:误杀保险强制补入
+    exclusions = pd.Series([_exclusion_reason(m.loc[i], g) for i in m.index], index=m.index)
+    m.loc[exclusions.ne(""), "guard"] = exclusions[exclusions.ne("")]
+    eligible = pd.Series([
+        candidate_eligible(m.loc[i], qualify_conv=g["conv_min"], g=g) for i in m.index
+    ], index=m.index, dtype=bool)
+    ins75 = (conv >= g["conv_force_in"]) & ~sel & eligible
     m.loc[ins75, "guard"] = "ins75"
-    sel = sel | ins75
-
-    lt55 = sel & (conv < 55)                     # 守卫②:低于 55 禁止 finalist
+    sel |= ins75
+    lt55 = sel & (conv < g["conv_min"]) & exclusions.eq("")
     m.loc[lt55, "guard"] = "lt55"
-    sel = sel & ~lt55
 
-    order = list(m.index[sel])
-    order.sort(key=lambda i: conv.loc[i], reverse=True)
-    if len(order) > cap:                         # 守卫③:超 cap 按 conviction 截尾
-        for i in order[cap:]:
-            m.loc[i, "guard"] = "cap"             # 无条件覆写(M-3①:哪怕先前是 "ins75")
-        order = order[:cap]
-
-    fin_idx: set = set(order)
-
-    # 守卫⑦ chase_1d(2026-08-22 批 B):当日涨幅 ≥CHASE_1D_PCT 的票不得 finalist,**剔 + 回填**。
-    # 2026-08-21 实测:002716 湖南白银当日 +10.0%、603209 双双入围 → 两张卡都在 L4 早停
-    # 「涨停追高」,2/9 席位(22% 的 L4 Opus 预算)花在 L4 按规则必否的票上。
-    # **ins75 行也剔**——「高确信误杀保险」保的是「L3 判高分却没标 finalist」,不是「追高豁免」。
-    # 放在 cap 之后:剔掉的席位由 bench 回填(用户 2026-08-22 裁定「剔除并回填」,E6 候选池
-    # 宽度不因剔除缩水),故必须在「已经截到 cap」的集合上做,否则没有「席位数」可言。
-    # 列缺 → victims 空 → 整段 no-op(逐字 parity)。
-    if "pct_1d" in m.columns:
-        _p1 = pd.to_numeric(m["pct_1d"], errors="coerce")
-        # 回填也认行业帽:否则⑦ 补进来的票可能正好把某行业顶到 4 席,⑧ 随即再把它剔掉 ——
-        # 净效果是白丢一席。2026-08-21 真数据实测到这个来回:⑦ 剔 002716(贵金属)后补入
-        # 001337 四川黄金(**也是贵金属**),⑧ 再剔,席位 9→8。帽是全局不变量,越早认越省事。
-        fin_idx = _drop_and_backfill(
-            m, conv, fin_idx, [i for i in sorted(fin_idx) if _p1.loc[i] >= CHASE_1D_PCT],
-            "chase_1d", "chase_backfill", sector_cap=L3_SECTOR_CAP)
+    # Remember nominated chasing slots before excluding them, preserving the existing
+    # drop-and-backfill behavior without allowing a hard reject through the seat cap.
+    chase_victims = list(m.index[sel & exclusions.eq("chase_1d") & (conv >= g["conv_min"])])
+    sel &= eligible
+    order = sorted(m.index[sel], key=lambda i: conv.loc[i], reverse=True)
+    for i in order[cap:]:
+        m.loc[i, "guard"] = "cap"
+    fin_idx = set(order[:cap])
+    chase_victims = chase_victims[:max(0, cap - len(fin_idx))]
+    fin_idx = _drop_and_backfill(m, conv, fin_idx, chase_victims,
+                                "chase_1d", "chase_backfill", sector_cap=g["sector_cap"])
 
     n = len(fin_idx)
     # 守卫④ healthy 配额:2026-08-22 起 HEALTHY_QUOTA_FRAC=0 → target 0 → 不动作(回滚改常量)。
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "healthy",             # 守卫④
-                               _healthy_quota(n), "healthy_quota")
-    fin_idx = _swap_lane_quota(m, conv, fin_idx, "trend", 2, "trend_quota",   # 守卫⑤
-                               protect_lanes=_guarded_lanes_before("trend"))   # I-2:不可换出已配置的配额行
-    fin_idx = _swap_lane_quota(m, conv, fin_idx, "lowturn", 1, "lowturn_quota",   # 守卫⑥
-                               qualify_conv=55.0, protect_lanes=_guarded_lanes_before("lowturn"))
+                               _healthy_quota(n, g["healthy_quota_frac"]), "healthy_quota")
+    fin_idx = _swap_lane_quota(m, conv, fin_idx, "trend", g["lane_floors"]["trend"], "trend_quota",   # 守卫⑤
+                               protect_lanes=_guarded_lanes_before("trend", g["healthy_quota_frac"]))   # I-2:不可换出已配置的配额行
+    fin_idx = _swap_lane_quota(m, conv, fin_idx, "lowturn", g["lane_floors"]["lowturn"], "lowturn_quota",   # 守卫⑥
+                               qualify_conv=g["qualify_conv"]["lowturn"],
+                               protect_lanes=_guarded_lanes_before("lowturn", g["healthy_quota_frac"]))
 
     # 守卫⑧ sector_cap(2026-08-22 批 C):同 `sector` 至多 L3_SECTOR_CAP 席,超出剔最弱 + 回填异行业。
     # 2026-08-21:贵金属(12 只成分的申万二级)拿 4 席 + 下游饰品 1 席 = 5/9,而 L3/merge 此前
@@ -403,14 +466,18 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
     # 可剔判据:conviction<75(ins75 保护)∧ 剔掉后该行 lane 的配额仍满足 —— 保护的是**配额**
     # 不是每一行(当日贵金属 4 席里 3 席 lane=healthy,整 lane 免剔则帽子永远不咬)。
     # 回填还须不把补进来的票自己所在 sector 顶破帽。`sector` 列缺 → no-op(parity)。
-    fin_idx = _apply_sector_cap(m, conv, fin_idx, L3_SECTOR_CAP)
+    fin_idx = _apply_sector_cap(m, conv, fin_idx, g["sector_cap"])
 
+    m["new_buy_eligible"] = [
+        candidate_eligible(m.loc[i], qualify_conv=g["conv_min"], g=g) for i in m.index
+    ]
     fin_order = sorted(fin_idx, key=lambda i: conv.loc[i], reverse=True)
     fin = m.loc[fin_order].copy()
     fin["ticker"] = fin["code"]
     cols = ["ticker", "code", "name", "sector", "lenses", "conviction",
             "triage_lean", "triage_reason", "thesis", "mechanism", "risk", "catalyst",
-            "lane", "sentiment", "guard"]
+            "lane", "sentiment", "guard", "schema_version", "veto_reasons", "veto_status",
+            "sector_cap_exception", "new_buy_eligible"]
     fin = fin[[c for c in cols if c in fin.columns]].reset_index(drop=True)
 
     bench_idx = [i for i in m.index if i not in fin_idx]
@@ -450,6 +517,9 @@ def inject_composite_seats(fin: pd.DataFrame, seats: list[dict],
     new_rows: list[pd.DataFrame] = []
     for seat in seats:
         code = str(seat["code"]).zfill(6)
+        hit = judged_z[judged_z["code"] == code] if judged_z is not None else None
+        if hit is not None and len(hit) and not candidate_eligible(hit.iloc[0]):
+            continue
         if code in have:
             m = out["code"] == code
             # guard 留痕但**不覆盖**已有的更具体标记(如 lowturn_quota/chase_backfill):
@@ -462,7 +532,7 @@ def inject_composite_seats(fin: pd.DataFrame, seats: list[dict],
         if hit is not None and len(hit):
             r0 = hit.iloc[0].to_dict()
             r0.pop("finalist", None)
-            row = {**{k: v for k, v in r0.items() if pd.notna(v)}, **row}
+            row = {**{k: v for k, v in r0.items() if _present(v)}, **row}
         else:
             row["name"] = seat.get("name", "")
             row["sector"] = seat.get("sector", "")
@@ -534,12 +604,13 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
             m = out["code"] == code
             out.loc[m, "lane"] = "pinned"
             out.loc[m, "pinned_note"] = note
+            out.loc[m, "new_buy_eligible"] = False
             continue
         if code in seen_new:                      # 同票重复 pin 条目(用户笔误)→ 只注一次
             continue
         seen_new.add(code)
         row_data: dict = {"code": code, "ticker": code, "lane": "pinned",
-                          "pinned_note": note, "data_missing": True}
+                          "pinned_note": note, "data_missing": True, "new_buy_eligible": False}
         # ① judged 优先:pinned 被 L3 判过但未入选(finalist=false → 落 bench,不在 `fin`)时,
         #    它的 thesis/risk/catalyst/conviction 就在 judged 帧里 —— 必须整段带过来。
         #    2026-07-12 生产实测:4/4 保送持仓都走这条路,此前只查 L2(无这些列)→ L3 判断被
@@ -549,7 +620,7 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
         if hit_j is not None and len(hit_j):
             r0 = hit_j.iloc[0].to_dict()
             r0.pop("finalist", None)              # finalist 是 judged 内部字段,不进 finalists.csv
-            row_data = {**{k: v for k, v in r0.items() if pd.notna(v)}, **row_data}
+            row_data = {**{k: v for k, v in r0.items() if _present(v)}, **row_data}
             row_data["data_missing"] = False
         # ② L2 兜底:L3 压根没判过它(pass1 切了 / 不在 L2)→ 只能取展示字段,不编数。
         elif lookup_z is not None:
@@ -595,6 +666,8 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     scan_dir = base / date
     source = Path(judged_path) if judged_path is not None else scan_dir / "_l3_judged.json"
     picks = json.loads(source.read_text(encoding="utf-8"))
+    from autoresearch.scan.l3.validation import l3_veto_status, validate_rank_artifact
+    validate_rank_artifact(picks, scan_dir)
     jd = pd.DataFrame(picks)
     if jd.empty or "code" not in jd.columns:
         raise ValueError(f"_l3_judged.json 空或缺 code 列:{scan_dir / '_l3_judged.json'}")
@@ -611,24 +684,15 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
         # `not in jd.columns` 前置条件;列缺 → 守卫⑦ no-op(parity),那正是 L2 表也缺时的行为。
         if "pct_1d" not in jd.columns and "pct_1d" in l2.columns:
             jd = jd.merge(l2[["code", "pct_1d"]], on="code", how="left")
-    jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(assemble/trace)
-
     from autoresearch.scan.l4.card_count import effective_caps
-    from autoresearch.scan.user_config import load_user_config
-    from autoresearch.scan.user_config import load_pinned
+    from autoresearch.scan.user_config import load_pinned, load_user_config
     caps = effective_caps(load_user_config(), budget)
     kept = load_pinned(date, path=pinned_path)["kept"]
     pinned_codes = {str(p["code"]).zfill(6) for p in kept}
-    # 📌 不占名额(2026-09-26 复审 I-1):l3-rank 若把 📌 也判进 finalist tier,它会在 v3 的 cap 截尾里
-    # 占掉一个非📌 名额,之后 lane 改判 pinned、守卫⑩又不数它 → 当日少一张卡且无痕。按 tier 里的
-    # 📌 数 k 放宽 v3 的 cap(k 随放宽单调不减、上界 = 📌 数,几轮即稳定);k=0 的日子只跑一轮 = parity。
-    k = 0
-    for _ in range(len(pinned_codes) + 1):
-        fin, bench = merge_l3_finalists_v3(jd, budget=budget + k, finalist_max=caps["finalist_cap"] + k)
-        k_now = int(fin["code"].astype(str).isin(pinned_codes).sum()) if len(fin) else 0
-        if k_now <= k:
-            break
-        k = k_now
+    # Holdings enter only the mandatory research path, before seats/caps are counted.
+    jd["pinned"] = jd["code"].isin(pinned_codes) | jd.apply(_is_pinned, axis=1)
+    jd["veto_status"] = [l3_veto_status(row) for row in jd.to_dict("records")]
+    fin, bench = merge_l3_finalists_v3(jd, budget=budget, finalist_max=caps["finalist_cap"])
     finalist_n = int(len(fin))
 
     # 守卫⑨ composite 席位(2026-08-26 §3 路A):在 v3 全部守卫**之后**、pinned 注入**之前**
@@ -637,8 +701,11 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     seats: list[dict] = []
     seat_m = caps["seat_m"]        # = composite m,卡数压到 ≤ m 时让位到 max_cards − 1(card_count)
     if seat_m > 0:
+        hard_excluded = {str(row["code"]) for _, row in jd.iterrows()
+                         if not candidate_eligible(row)}
         seats = pick_composite_seats(l2, seat_m,
-                                     exclude={str(c) for c in fin.get("code", [])})
+                                     exclude={str(c) for c in fin.get("code", [])}
+                                     | pinned_codes | hard_excluded)
         fin = inject_composite_seats(fin, seats, judged=jd)
         if len(seats):
             bench = bench[~bench["code"].astype(str).isin({s["code"] for s in seats})
@@ -679,8 +746,17 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     # 卡的非 📌 票数」≤ l4.max_cards,无论前面哪条直通车加了行。
     fin, bench, max_cards_cut = apply_max_cards(fin, bench, caps["max_cards"])
     bench_n = int(len(bench))
-    bench.to_csv(scan_dir / "_l3_bench.csv", index=False)
-    fin.to_csv(scan_dir / "finalists.csv", index=False)
+    def write_csv(frame, path):
+        output = frame.copy()
+        if "veto_reasons" in output.columns:
+            output["veto_reasons"] = output["veto_reasons"].map(
+                lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, list) else value)
+        output.to_csv(path, index=False)
+
+    write_csv(jd, scan_dir / "L3_judged_full.csv")
+    write_csv(bench, scan_dir / "_l3_bench.csv")
+    write_csv(fin, scan_dir / "finalists.csv")
     with contextlib.suppress(Exception):
         from autoresearch.scan.stock_stage import record_l3_results
 

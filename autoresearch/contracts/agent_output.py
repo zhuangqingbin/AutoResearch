@@ -63,6 +63,19 @@ OW_GATES: tuple[str, ...] = ("主力真在", "业绩真兑现", "估值不透支
 EXEC_LINE_MAX_PCT_1D: float = 3.0
 EXEC_LINE_MAX_POS_IN_RANGE: float = 0.7
 
+
+def exec_line_thresholds(cfg: dict | None = None) -> tuple[float, float]:
+    """`scan_config.execution.entry_line.{pct_chg_max, pos_in_range_max}`(缺键 = 上面两常量)。
+
+    单源三处共用:`scan/outcome` 事后记账 exec_ok、任务包「本次参数」块渲染给 l4-card、
+    `self_review.exec_line_threshold_lint`(文档缺省句 vs 常量)。契约层经注册表级 knob 读 config。
+    """
+    from autoresearch.contracts import scan_config as _cfg_registry
+    d = _cfg_registry.knob("execution", "entry_line", None, {}, cfg) or {}
+    if not isinstance(d, dict):
+        d = {}
+    return float(d.get("pct_chg_max", EXEC_LINE_MAX_PCT_1D)), float(d.get("pos_in_range_max", EXEC_LINE_MAX_POS_IN_RANGE))
+
 # ───────────── ResearchCard v1 词表(工作包 D,Q-D ① 裁定:词表单源在这里)─────────────
 #
 # 2026-09-07:与 08-31 稿 D8「卡片双写」是同一件事;字段取两稿**并集**。校验函数在
@@ -158,16 +171,29 @@ L4_CARD = OutputContract(
     ),
 )
 
-#: `l3-rank` 的 `_l3_judged.json`。这些键此前只写在 def 散文里,python 只校 5 个。
+#: L3 v2 保持根数组;每行显式版本,历史无版本/拒绝字段 = v1/UNKNOWN。
+L3_RANK_SCHEMA_VERSION = 2
+L3_RANK_CONTRACT_MARKER = f"〔L3输出契约 v{L3_RANK_SCHEMA_VERSION}〕"
+L3_VETO_REASON_CODES: tuple[str, ...] = ("L3_CONSTRAINT_B", "L3_CONSTRAINT_E")
+L3_VETO_REASON_FIELDS: tuple[str, ...] = ("reason_code", "reason_text", "evidence_refs")
+L3_RANK_FIELDS_V1: tuple[str, ...] = (
+    "code", "name", "sector", "lenses", "conviction", "fragility", "thesis", "mechanism",
+    "risk", "catalyst", "triage_lean", "lane", "pct_60d", "sentiment", "finalist",
+)
+L3_RANK_FIELDS_V2: tuple[str, ...] = (*L3_RANK_FIELDS_V1, "schema_version", "veto_reasons")
+
 L3_RANK = OutputContract(
     role="l3-rank",
     artifact="l3_judged_raw",
     fields=(
         Field("code", r"^\d{6}$", True),
         Field("thesis", r".+", True, "数字须能在 L2 行或 market_pack 找到(l3/validation 已锁)"),
-        Field("mechanism", r".+", True, "两日内兑现机制 + 明日买家;写不出不选"),
-        Field("conviction", r"^\d{1,3}$", True),
+        Field("mechanism", r".+", True, "D1 收盘买入至 D2 开盘卖出的兑现机制与买家"),
+        Field("conviction", r"^\d{1,3}$", True, "0–100 序数确信度,不是胜率"),
         Field("finalist", r"^(true|false)$", True),
+        Field("schema_version", r"^2$", True, "新产物逐行声明 v2;旧数组不追填"),
+        Field("veto_reasons", r".*", True,
+              "结构化 B/E 拒绝数组,元素为 reason_code/reason_text/evidence_refs;空数组=已核无拒绝"),
         Field("catalyst", r".+", False),
         Field("risk", r".+", False),
         Field("sentiment", r".+", False),

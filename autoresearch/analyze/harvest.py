@@ -189,6 +189,8 @@ from autoresearch.analyze.slim_io import (  # noqa: E402
     _split_slim_for_progressive,
     _write_slim_files,
 )
+from autoresearch.trace.source_receipts import capture_active_responses  # noqa: E402
+
 
 def _slug(title: str) -> str:
     """节标题 → 端点账本的兜底 slug(`analyze:` 前缀 + kebab-case)。
@@ -327,6 +329,7 @@ def _blk_uzi_volprice(ctx: dict) -> str | None:
                     endpoint="analyze:uzi-volprice")
 
 
+@capture_active_responses
 def _blk_macro_series(ctx: dict) -> str:
     return "".join(
         _section(f"Macro: {series}", get_macro_indicators,

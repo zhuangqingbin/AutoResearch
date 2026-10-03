@@ -154,6 +154,22 @@ def test_failed_optional_l3_repair_preserves_judged_and_releases_gate2(tmp_path)
     (handle.staging / "_l3_repair_pack.json").write_text(
         json.dumps({"failures": [{"code": "600519"}]})
     )
+    # This historical v1 fixture models a completed L3 lint. Freeze its actual
+    # gate inputs so READY checks exercise the same artifact boundary as a run.
+    original_judged = [{"code": "600519", "thesis": "original judgment"}]
+    frozen_inputs = {
+        "scan.l3.judged": ("_l3_judged.json", original_judged),
+        "scan.l3.validation": ("session_outputs/l3.validation.json", {"ok": False}),
+        "scan.l3.context.bundle": ("session_outputs/l3.context.bundle.json", {"schema_version": 1}),
+        "scan.gate1.result": ("session_outputs/gate1.json", {"ok": True, "l4_budget": 13}),
+        "scan.run_mode": ("run_mode.json", {"mode": "FULL", "pinned_codes": []}),
+    }
+    for artifact_id, (relative, value) in frozen_inputs.items():
+        source = handle.staging / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(json.dumps(value))
+        if artifact_id in {"scan.gate1.result", "scan.run_mode"}:
+            artifacts.register_artifact(handle, artifact_id, source, "READ")
     register_scan_expansion_artifacts(request(), handle, repair)
     task_store = json.loads((session / "tasks.json").read_text())
     task_store["tasks"]["scan.l3.lint"]["state"] = "SUCCEEDED"
@@ -178,4 +194,5 @@ def test_failed_optional_l3_repair_preserves_judged_and_releases_gate2(tmp_path)
     )
     assert degraded["status"] == "DEGRADED"
     assert degraded["preserved_original"] is True
+    assert json.loads((handle.staging / "_l3_effective_judged.json").read_text()) == original_judged
     assert artifacts.snapshot_artifact(handle, "scan.l3.repair.result")["sha256"]

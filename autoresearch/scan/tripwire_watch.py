@@ -42,6 +42,12 @@ _EVENT_RE = re.compile(r"\[事件旗\]\s*([^→\n]+?)\s*(?:→\s*(.*))?$")
 _EXEC_RE = re.compile(
     r"\[执行线\]\s*(pct_chg|pos_in_range)\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*(?:→\s*(.*))?")
 _DATE_LEAD_DAYS = 3          # 日期线提前几天开始预警(交易日近似 = 日历日)
+
+
+def date_lead_days() -> int:
+    """`scan_config.tripwire.date_lead_days`(缺省 = _DATE_LEAD_DAYS)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("tripwire", "date_lead_days", None, _DATE_LEAD_DAYS))
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
         ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
 
@@ -183,7 +189,7 @@ def check(date: str, codes: list[str] | None = None,
                     gap = (datetime.strptime(w["date"], "%Y-%m-%d") - as_of).days
                 except ValueError:
                     continue
-                if 0 <= gap <= _DATE_LEAD_DAYS:
+                if 0 <= gap <= date_lead_days():
                     hits.append({"code": code, "kind": "date", "card_date": card_date,
                                  "raw": w["raw"],
                                  "detail": f"{w['date']} 还有 {gap} 天"

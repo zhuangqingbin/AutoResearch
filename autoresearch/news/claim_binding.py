@@ -17,10 +17,35 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
+from autoresearch.common.atomic import canonical_json, sha256_bytes
 from autoresearch.contracts.claim_evidence import RULE_VERSION, validate_bundle, validate_event
 from autoresearch.news.claim_support import compare_events, quote_matches
+
+
+@dataclass(frozen=True)
+class VerifiedFields:
+    """Internal capability created after independently checking a source receipt.
+
+    A JSON list supplied by the extracting model cannot grant this capability.
+    The owner must validate the deterministic adapter or human review identity.
+    """
+    fields: frozenset[str]
+    event_hash: str
+    source_hash: str
+    basis: str
+
+    @classmethod
+    def from_verified_source(cls, fields, event, source_hash, basis):
+        validate_event(event)
+        if basis not in {"structured_source", "human_review"}:
+            raise ValueError("field trust requires deterministic source or human review")
+        return cls(frozenset(fields), sha256_bytes(canonical_json(event).encode()), source_hash, basis)
+
+    def __iter__(self):
+        return iter(self.fields)
 
 
 def _aware(value) -> datetime | None:
@@ -53,6 +78,10 @@ def support_bound_claim(claim_event: dict, bundle: dict, *, observations: dict, 
         if seen is None or seen > cutoff:
             return {"verdict": "UNKNOWN", "reason": "NOT_AVAILABLE_AT_DECISION",
                     "rule_version": RULE_VERSION}
+    for i in ids:
+        changed = _aware(observations[i].get("superseded_at"))
+        if observations[i].get("source_status") in {"RETRACTED", "CORRECTED"} and (changed is None or changed <= cutoff):
+            return {"verdict": "UNKNOWN", "reason": "SOURCE_NOT_CURRENT", "rule_version": RULE_VERSION}
     spans = bundle["quote_spans"]
     if not spans or any(
         s["source_observation_id"] not in ids
@@ -60,5 +89,11 @@ def support_bound_claim(claim_event: dict, bundle: dict, *, observations: dict, 
         for s in spans
     ):
         return {"verdict": "UNKNOWN", "reason": "QUOTE_NOT_VERIFIED", "rule_version": RULE_VERSION}
-    result = compare_events(claim_event, bundle["event"], checked_fields=set(trusted_fields))
+    checked = set()
+    if (isinstance(trusted_fields, VerifiedFields)
+            and trusted_fields.basis == bundle["verification_basis"]
+            and trusted_fields.event_hash == sha256_bytes(canonical_json(bundle["event"]).encode())
+            and all(span["blob_hash"] == trusted_fields.source_hash for span in spans)):
+        checked = set(trusted_fields.fields)
+    result = compare_events(claim_event, bundle["event"], checked_fields=checked)
     return {**result, "reason": "COMPARED"}

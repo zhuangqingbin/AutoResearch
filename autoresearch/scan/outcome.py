@@ -129,6 +129,9 @@ SWING_SIDE_COLUMNS = ("fwd_5_oc", "fwd_10_oc")
 #: (`is` 恒成立),不是复制——改数值只需要改那一处。
 EXEC_MAX_PCT_1D = EXEC_LINE_MAX_PCT_1D
 EXEC_MAX_POS_IN_RANGE = EXEC_LINE_MAX_POS_IN_RANGE
+from autoresearch.contracts.agent_output import (  # noqa: E402 — execution.entry_line 单源
+    exec_line_thresholds,
+)
 
 LEDGER_COLUMNS = (
     # `mode`/`src` 是**读这本账之前必须先看的两列**,不是装饰:
@@ -403,40 +406,18 @@ def resolve_outcome_sessions(analysis_date: str, *, calendar, today: object = No
     后续 session 之后,才能用"D 不在可信交易日集合"判 `INVALID_ANALYSIS_DATE`——不能
     据弱/窄日历下此结论④T+1/T2 只从日历选,T+2 晚于 `today` → `PENDING_SESSION`。
     """
-    today_c = _normalize_today(today)
+    from autoresearch.common.outcome_sessions import resolve_sessions
     D = _compact_or_none(analysis_date)
-    base: dict = {
-        "analysis_date": D if D is not None else str(analysis_date), "today": today_c,
-        "t1": None, "t2": None, "t5": None, "t10": None,
-        "calendar_quality": "", "calendar_digest": "", "sessions": [],
-    }
     if D is None:
-        return {**base, "status": INVALID_ANALYSIS_DATE,
-                "reason": "analysis_date 格式非法(非 YYYY-MM-DD/YYYYMMDD 合法日期)"}
+        return resolve_sessions(analysis_date, sessions=[], quality='',
+                                today=_normalize_today(today))
     start, end = _shift(D, -_SESSION_LOOKBACK_DAYS), _shift(D, _SESSION_LOOKAHEAD_DAYS)
-    sessions, quality, digest, err = _fetch_trusted_sessions(start, end, calendar=calendar)
-    base.update(calendar_quality=quality, calendar_digest=digest, sessions=sessions)
+    sessions, quality, _digest_unused, err = _fetch_trusted_sessions(start, end, calendar=calendar)
+    result = resolve_sessions(D, sessions=sessions, quality=quality,
+                              today=_normalize_today(today))
     if err:
-        return {**base, "status": UNVERIFIED_CALENDAR, "reason": f"日历请求异常:{err}"}
-    if quality != TRADE_CAL_QUALITY:
-        return {**base, "status": UNVERIFIED_CALENDAR,
-                "reason": f"日历质量不可信:{quality or '空'}"}
-    if not sessions:
-        return {**base, "status": UNVERIFIED_CALENDAR, "reason": "日历为空"}
-    after = [s for s in sessions if s > D]
-    if len(after) < 2:
-        return {**base, "status": UNVERIFIED_CALENDAR,
-                "reason": "请求范围不完整:可信日历未覆盖到 T+2"}
-    if D not in sessions:
-        return {**base, "status": INVALID_ANALYSIS_DATE,
-                "reason": "analysis_date 不是可信交易日历里的交易日"}
-    t1, t2 = after[0], after[1]
-    t5 = after[4] if len(after) >= 5 else None
-    t10 = after[9] if len(after) >= 10 else None
-    base.update(t1=t1, t2=t2, t5=t5, t10=t10)
-    if t2 > today_c:
-        return {**base, "status": PENDING_SESSION, "reason": "可信目标 T+2 尚未到"}
-    return {**base, "status": "OK", "reason": ""}
+        result.update(status=UNVERIFIED_CALENDAR, reason=f"日历请求异常:{err}")
+    return result
 
 
 def _trusted_predecessor(day: str, *, calendar) -> str | None:
@@ -552,18 +533,28 @@ def _swing_status(main_status: str, *, t10: str | None = None, today_c: str = ""
     return main_status
 
 
-def _relative_columns(fr: pd.DataFrame, sectors: dict[str, str]) -> pd.DataFrame:
-    """三个相对列。分母各不相同,**列名即口径**(见模块 docstring 的表)。"""
+def _relative_columns(fr: pd.DataFrame, sectors: dict[str, str] | None = None,
+                      *, membership: dict | None = None) -> pd.DataFrame:
+    """Market and sector denominators are independent; candidate maps prove no membership."""
+    from autoresearch.common.benchmarks import sector_excess
     ok = _ruler.entry_tradable(fr, ruler_name=MAIN)
     gap = pd.to_numeric(fr[MAIN], errors="coerce")
     base = gap[ok & gap.notna()]
     out = pd.DataFrame(index=fr.index)
     out[_ruler.REL_MARKET] = gap - base.mean() if len(base) else np.nan
     out["excess_med_market"] = gap - base.median() if len(base) else np.nan
-    sec = pd.Series({c: sectors.get(c, "") for c in fr.index})
-    sec_mean = base.groupby(sec.reindex(base.index)).mean()
-    out[_ruler.REL_SECTOR] = gap - sec.map(sec_mean).where(sec.astype(str) != "")
+    eligible = fr.get('buyable_c1', pd.Series(pd.NA, index=fr.index, dtype='boolean'))
+    values, meta = sector_excess(gap, eligible, membership or
+        {'status': 'UNKNOWN', 'expected_codes': list(fr.index), 'members': {}})
+    out[_ruler.REL_SECTOR] = values
+    out.attrs['sector_benchmark'] = meta
     return out
+
+
+def _market_membership(date, lake_daily=None):
+    from autoresearch.data.benchmark_members import computation_view, load_membership
+    document = load_membership(date, lake_daily=lake_daily)
+    return computation_view(document), document
 
 
 def _num(value) -> float | None:
@@ -670,7 +661,7 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
         "decision_mode": facts["decision_mode"],
         "rule_version": facts["rule_version"],
         "read_from_shared_staging": facts["used_shared"],
-        "exec_line": {"max_pct_1d": EXEC_MAX_PCT_1D, "max_pos_in_range": EXEC_MAX_POS_IN_RANGE},
+        "exec_line": dict(zip(("max_pct_1d", "max_pos_in_range"), exec_line_thresholds(), strict=True)),
         "execution": execution,
     }
     if fr is None:
@@ -681,8 +672,11 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
         exec_fr, exec_meta = exec_anchor_frame(execution, lake_daily=lake_daily,
                                                calendar=calendar, today=today)
         exec_status = exec_meta.get("exec_outcome_status")
-    sectors = {code: str(row.get("sector") or "") for code, row in facts["rows"].items()}
-    rel = _relative_columns(fr, sectors)
+    membership, membership_doc = _market_membership(date, lake_daily)
+    rel = _relative_columns(fr, membership=membership)
+    doc["sector_benchmark"] = rel.attrs["sector_benchmark"]
+    doc["membership_hash"] = membership_doc.get("membership_hash")
+    doc["benchmark_version"] = "whole_market_sector.v1"
     ok_entry = _ruler.entry_tradable(fr, ruler_name=MAIN)
     # 5/10 日旁列的 null 门(2026-09-12 §2.3 末条,ruling #7):窗口未核验/不完整时
     # 置 null,但**绝不能拖累上面已经判定的隔夜主尺**——`fr`/`meta["outcome_status"]`
@@ -698,7 +692,8 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
         buyable = bool(ok_entry.loc[code]) if (m is not None and code in ok_entry.index) else None
         exec_ok = None
         if pct1 is not None and pos is not None and buyable is not None:
-            exec_ok = bool(buyable and pct1 <= EXEC_MAX_PCT_1D and pos < EXEC_MAX_POS_IN_RANGE)
+            _pct_max, _pos_max = exec_line_thresholds()
+            exec_ok = bool(buyable and pct1 <= _pct_max and pos < _pos_max)
         rows[code] = {
             **{k: row.get(k) for k in ("code", "name", "sector", "role", "lane", "guard",
                                        "conviction", "rating", "early_stop_reason",
@@ -979,14 +974,15 @@ def _migration_dir(migration_id: str, reports_root: Path | None = None) -> Path:
     return migrations_root(reports_root) / migration_id
 
 
-def _migration_id(*, run_id: str | None, rebuild: bool) -> str:
+def _migration_id(*, run_id: str | None, rebuild: bool, evaluation_only: bool = False) -> str:
     """由**输入**派生,不由挂钟派生(§6 bullet 8)——同一个 `--run-id`/`--rebuild`
     组合永远映射到同一个目录,这正是"重跑相同输入不新增重复"(C13)在目录这一层的落点。
     含一段人读 slug,方便在 `outcome_migrations/` 下用肉眼分辨这是哪一次迁移;真正的
     唯一性由 sha256 摘要保证(slug 本身不足以唯一,理论上两个不同 `today` 的重跑会撞
     同一个 slug,但那正是希望的行为——见模块头部说明)。
     """
-    payload = json.dumps({"run_id": run_id or "", "rebuild": bool(rebuild)},
+    payload = json.dumps({"run_id": run_id or "", "rebuild": bool(rebuild),
+                          **({"evaluation_only": True} if evaluation_only else {})},
                          sort_keys=True, ensure_ascii=False)
     digest = sha256_bytes(payload.encode("utf-8"))[:12]
     slug = run_id if run_id else "all"
@@ -1044,10 +1040,11 @@ def _doc_code_row(doc: dict | None, code: str) -> dict:
     doc 级的 `t1`/`t2` 仍然按文档本身广播(同 `_ledger_rows` 的既定手法),空文档才是
     `None`。"""
     if not isinstance(doc, dict):
-        return {"t1": None, "t2": None, "main": None, "outcome_status": None}
+        return {"t1": None, "t2": None, "main": None, "outcome_status": None, "sector_excess": None}
     row = (doc.get("rows") or {}).get(code) or {}
     return {"t1": doc.get("t1"), "t2": doc.get("t2"),
-           "main": row.get(MAIN), "outcome_status": doc.get("outcome_status") or None}
+           "main": row.get(MAIN), "outcome_status": doc.get("outcome_status") or None,
+           "sector_excess": row.get(_ruler.REL_SECTOR)}
 
 
 def _comparable_doc(doc: dict | None) -> tuple:
@@ -1057,14 +1054,15 @@ def _comparable_doc(doc: dict | None) -> tuple:
     if not isinstance(doc, dict):
         return ("ABSENT",)
     rows = doc.get("rows") or {}
-    row_tuple = tuple(sorted((code, row.get(MAIN)) for code, row in rows.items()))
+    row_tuple = tuple(sorted((code, row.get(MAIN), row.get(_ruler.REL_SECTOR)) for code, row in rows.items()))
     return (doc.get("outcome_status"), doc.get("t1"), doc.get("t2"),
-           doc.get("calendar_quality"), row_tuple)
+           doc.get("calendar_quality"), doc.get("benchmark_version"), doc.get("membership_hash"), row_tuple)
 
 
 def plan_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path | None = None,
                            run_id: str | None = None, rebuild: bool = False,
-                           calendar=None, today: object = None, now: str | None = None) -> dict:
+                           calendar=None, today: object = None, now: str | None = None,
+                           evaluation_only: bool = False) -> dict:
     """纯计算(计划本身不写盘):`_scope_runs` 选中的每个 run 各调一次
     `compute_outcome`(**与 `--dry-run` 是否联网完全相同的一次调用**——规划阶段就是
     读日历/读湖的阶段,`--dry-run` 并不豁免这一步,只豁免"把结果写回真实账本"那一步,
@@ -1079,8 +1077,8 @@ def plan_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path
     `--rebuild` 确认没有新东西要修"),这里也会把它排除在 `runs`/`rows` 之外,migration
     目录不会为"其实什么都没变"的 run 制造前/后镜像。
     """
-    runs = _scope_runs(reports_root, run_id=run_id, rebuild=rebuild)
-    mig_id = _migration_id(run_id=run_id, rebuild=rebuild)
+    runs = _scope_runs(reports_root, run_id=run_id, rebuild=rebuild or evaluation_only)
+    mig_id = _migration_id(run_id=run_id, rebuild=rebuild, evaluation_only=evaluation_only)
     source_ledger_digest = _sha_or_absent(_csv_bytes_or_absent(reports_root))
     run_entries: dict[str, dict] = {}
     diff_rows: list[dict] = []
@@ -1106,6 +1104,7 @@ def plan_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path
                 "old_t1": old["t1"], "new_t1": new["t1"],
                 "old_t2": old["t2"], "new_t2": new["t2"],
                 "old_main": old["main"], "new_main": new["main"],
+                "old_sector_excess": old["sector_excess"], "new_sector_excess": new["sector_excess"],
                 "old_outcome_status": old["outcome_status"],
                 "new_outcome_status": new["outcome_status"],
                 "reason": after_doc.get("reason") or "",
@@ -1125,7 +1124,7 @@ def plan_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path
                  "by_transition": by_transition}
     return {
         "schema_version": MIGRATION_SCHEMA_VERSION, "migration_id": mig_id,
-        "scope": {"run_id": run_id, "rebuild": bool(rebuild)},
+        "scope": {"run_id": run_id, "rebuild": bool(rebuild), "evaluation_only": evaluation_only},
         "source_ledger_digest": source_ledger_digest,
         "rows": diff_rows, "population": population, "runs": run_entries,
     }
@@ -1224,6 +1223,24 @@ def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = No
     if not state_path.is_file():
         raise ValueError(f"迁移目录不存在或尚未规划:{migration_id}")
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    if state.get('scope', {}).get('evaluation_only'):
+        output = ledger_root(reports_root) / 'evaluations/outcome_labels.v2/outcomes'
+        for run_id, expected in state['runs'].items():
+            historical = outcome_path(run_id, reports_root)
+            current = _sha_or_absent(historical.read_bytes() if historical.is_file() else None)
+            if current != expected['before_sha256']:
+                raise RuntimeError('historical outcome changed since evaluation plan')
+            content = (mdir / 'after' / f'{run_id}.json').read_bytes()
+            if sha256_bytes(content) != expected['after_sha256']:
+                raise RuntimeError('corrected evaluation candidate hash mismatch')
+            target = output / f'{run_id}.json'
+            if target.exists() and target.read_bytes() != content:
+                raise RuntimeError('corrected evaluation already exists with different content')
+            atomic_write_bytes(target, content)
+        state['status'] = 'applied'
+        atomic_write_json(state_path, state)
+        return {'ok': True, 'status': 'evaluation_applied', 'migration_id': migration_id,
+                'affected_runs': len(state['runs']), 'output_dir': str(output)}
     if state["status"] == "applied":
         return {"ok": True, "status": "already_applied", "migration_id": migration_id,
                "affected_runs": len(state["runs"])}
@@ -1289,6 +1306,8 @@ def restore_outcome_migration(migration_id: str, *, reports_root: Path | None = 
     mdir = _migration_dir(migration_id, reports_root)
     state_path = mdir / MIGRATION_STATE_FILE
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    if state.get('scope', {}).get('evaluation_only'):
+        raise ValueError('evaluation-only migration cannot restore historical ledger')
     verified: dict[str, dict] = {}
     for run_id, run_state in sorted(state["runs"].items()):
         target = outcome_path(run_id, reports_root)
@@ -1317,7 +1336,7 @@ def restore_outcome_migration(migration_id: str, *, reports_root: Path | None = 
 def run_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path | None = None,
                           run_id: str | None = None, rebuild: bool = False, calendar=None,
                           today: object = None, now: str | None = None,
-                          dry_run: bool = False) -> dict:
+                          dry_run: bool = False, evaluation_only: bool = False) -> dict:
     """`fill(dry_run=True 或 run_id is not None)` 的落点——把规划/应用两半接起来。
 
     幂等入口:先看这份 scope(`run_id`+`rebuild`,§6 bullet 8)对应的迁移目录**是否
@@ -1327,13 +1346,13 @@ def run_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path 
     的 run 会被跳过,`already_applied` 整体状态直接短路——这就是 C13"相同输入两次不
     重复"在这一层的实现)。
     """
-    mig_id = _migration_id(run_id=run_id, rebuild=rebuild)
+    mig_id = _migration_id(run_id=run_id, rebuild=rebuild, evaluation_only=evaluation_only)
     mdir = _migration_dir(mig_id, reports_root)
     state_path = mdir / MIGRATION_STATE_FILE
     if not state_path.is_file():
         plan = plan_outcome_migration(reports_root=reports_root, lake_daily=lake_daily,
                                       run_id=run_id, rebuild=rebuild, calendar=calendar,
-                                      today=today, now=now)
+                                      today=today, now=now, evaluation_only=evaluation_only)
         write_migration_plan(plan, reports_root=reports_root)
         population = plan["population"]
     else:
@@ -1341,7 +1360,7 @@ def run_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path 
         population = diff_doc["population"]
     result = {
         "ok": True, "dry_run": dry_run, "migration_id": mig_id, "migration_dir": str(mdir),
-        "scope": {"run_id": run_id, "rebuild": bool(rebuild)},
+        "scope": {"run_id": run_id, "rebuild": bool(rebuild), "evaluation_only": evaluation_only},
         "affected_runs": population["affected_runs"], "affected_rows": population["affected_rows"],
         "diff_path": str(mdir / MIGRATION_DIFF_FILE),
         "network": ("只读日历核验默认走 exec_anchor.trading_sessions → tushare trade_cal"
@@ -1361,7 +1380,7 @@ def run_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path 
 def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
          limit: int | None = None, now: str | None = None,
          rebuild: bool = False, calendar=None, today: object = None,
-         dry_run: bool = False, run_id: str | None = None) -> dict:
+         dry_run: bool = False, run_id: str | None = None, evaluation_only: bool = False) -> dict:
     """回填全部**未核验或未算过**的已发布 run。
 
     `dry_run`/`run_id`(2026-09-12 §6 Task C3):任一非缺省值都会把整次调用**整体**
@@ -1388,10 +1407,10 @@ def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
     一个,不会在不知情的情况下把行为换了个底层机制。`rebuild=False`(缺省,平常
     每晚跑的形状)完全不受影响——只增量重算"还没核验过"的 run,从不覆写已核验值。
     """
-    if dry_run or run_id is not None:
+    if dry_run or run_id is not None or evaluation_only:
         return run_outcome_migration(reports_root=reports_root, lake_daily=lake_daily,
                                      run_id=run_id, rebuild=rebuild, calendar=calendar,
-                                     today=today, now=now, dry_run=dry_run)
+                                     today=today, now=now, dry_run=dry_run, evaluation_only=evaluation_only)
     if rebuild:
         raise ValueError(
             "fill(rebuild=True) 裸调用会绕开可审阅迁移,静默就地覆写已核验通过的历史行——"
@@ -1531,14 +1550,14 @@ def ledger_line(reports_root: Path | None = None) -> str:
                and str(r.get("calendar_quality") or "") == TRADE_CAL_QUALITY]
     unverified_n = len(buys) - len(verified)
     scored = [r for r in verified if _num(r.get(MAIN)) is not None]
-    if len(scored) < MIN_LEDGER_N:
+    if len(scored) < __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["min_ledger_n"]:
         return (f"结果账本:{len(rows)} 行 · active BUY {len(all_buys)} 笔"
                 f"(可执行 {len(buys)}·已成熟 {len(scored)})"
                 + (f" · 另 shadow 期 {shadow_n} 笔不计" if shadow_n else "")
                 + (f" · 迟到 {late_n} 笔不计" if late_n else "")
                 + (f" · 锚未知 {unknown_n} 笔不计" if unknown_n else "")
                 + (f" · 日历未验证 {unverified_n} 笔不计" if unverified_n else "")
-                + f" · 攒样本 {len(scored)}/{MIN_LEDGER_N},不印均值")
+                + f" · 攒样本 {len(scored)}/{__import__('autoresearch.scan.observability', fromlist=['x']).observability_cfg()['min_ledger_n']},不印均值")
     gaps = [_num(r.get(MAIN)) for r in scored]
     rel = [_num(r.get(_ruler.REL_MARKET)) for r in scored
            if _num(r.get(_ruler.REL_MARKET)) is not None]
@@ -1567,6 +1586,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="精确范围过滤:report_run_id(发布目录名,不是 capsule 内部 contract_run_id)")
     ap.add_argument("--migration-id", default=None,
                     help="restore 命令:要从 before 镜像恢复的迁移目录 id")
+    ap.add_argument("--evaluation-only", action="store_true",
+                    help="publish corrected evaluations independently; preserve historical outcomes")
     args = ap.parse_args(argv)
     if args.command == "line":
         print(ledger_line())
@@ -1582,7 +1603,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         res = fill(limit=args.limit, now=args.today, rebuild=args.rebuild,
-                  dry_run=args.dry_run, run_id=args.run_id)
+                  dry_run=args.dry_run, run_id=args.run_id, evaluation_only=args.evaluation_only)
     except ValueError as exc:
         # fix round 1 finding 1:裸 `--rebuild` 在 `fill()` 里抛出——这里只负责把它
         # 转成 CLI 惯用的 `{"ok": False, "error": ...}` + 非零退出码,不吞、不改措辞。

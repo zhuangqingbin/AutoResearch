@@ -27,22 +27,30 @@ def load_pool(path: Path | None = None) -> dict:
             reports_root=ws.run_reports_root("dossier-init"),
         )
         if isinstance(committed, dict) and isinstance(committed.get("stocks"), dict):
-            committed.setdefault("cap", 30)
+            committed.setdefault("cap", _pool_cap())
             return committed
     if p.exists():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(d, dict) and isinstance(d.get("stocks"), dict):
-                d.setdefault("cap", 30)
+                d.setdefault("cap", _pool_cap())
                 return d
         except Exception:
             pass
         with contextlib.suppress(Exception):
             shutil.copy2(p, p.with_suffix(".json.bak"))  # 坏 json(语法或形状):备份后重建
-    return {"stocks": {}, "cap": 30}
+    return {"stocks": {}, "cap": _pool_cap()}
 
 
-def _recent_scan_days(scan_root: Path, n: int = 20) -> list[str]:
+def _pool_cap() -> int:
+    from autoresearch.dossier.config import dossier_cfg
+    return dossier_cfg()["pool_cap"]
+
+
+def _recent_scan_days(scan_root: Path, n: int | None = None) -> list[str]:
+    if n is None:
+        from autoresearch.dossier.config import dossier_cfg
+        n = dossier_cfg()["recent_days"]
     if not scan_root.exists():
         return []
     days = sorted(
@@ -175,8 +183,10 @@ def _refresh_unlocked(
 
     for c, note in kept.items():  # pinned 即入/保活
         _touch(c, "pinned", note)
-    for c, ds in sel.items():  # 真选 ≥2 入
-        if len(ds) >= 2:
+    from autoresearch.dossier.config import dossier_cfg
+    entry_min = dossier_cfg()["entry_min"]
+    for c, ds in sel.items():  # 真选 ≥entry_min 入
+        if len(ds) >= entry_min:
             _touch(c, "finalist_2x")
         elif c in stocks and stocks[c].get("status") == "active":
             _touch(c, stocks[c].get("entry_reason", "manual"))  # 已在池:单次也刷新 last_selected
@@ -194,7 +204,7 @@ def _refresh_unlocked(
 
     actives = [c for c, s in stocks.items() if s.get("status") == "active"]
     if len(actives) > pool.get(
-        "cap", 30
+        "cap", _pool_cap()
     ):  # cap LRU:按 last_selected 升序驱逐,不是入池序 FIFO(pinned 永不被 cap 退)
         evictable = sorted(
             (c for c in actives if c not in kept),

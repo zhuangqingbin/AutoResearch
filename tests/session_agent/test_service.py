@@ -115,8 +115,18 @@ def _planner(request, handle):
     return value
 
 
-def test_synthetic_workflow_runs_begin_to_finish(tmp_path):
+@pytest.mark.parametrize("relative_workspace", [False, True])
+def test_synthetic_workflow_runs_begin_to_finish(tmp_path, monkeypatch, relative_workspace):
+    from pathlib import Path
+
     handle = _handle(tmp_path)
+    if relative_workspace:
+        repo = Path.cwd()
+        for directory in (".claude", ".codex"):
+            (tmp_path / directory).symlink_to(repo / directory, target_is_directory=True)
+        monkeypatch.chdir(tmp_path)
+        for name in ("workspace", "staging", "capsule"):
+            setattr(handle, name, getattr(handle, name).relative_to(tmp_path))
     result = service.begin(_request(), begin_capsule=lambda request: handle, planner=_planner)
     assert result["state"] == "READY"
     output_one = handle.staging / "one.txt"
@@ -150,8 +160,10 @@ def test_synthetic_workflow_runs_begin_to_finish(tmp_path):
     )
     assert claimed["result"]["envelope"]["role"] == "stock.card"
 
+    from pathlib import Path
+    output_two = Path(claimed['result']['claim_receipt']['output_paths']['step.two.output'])
     output_two.write_text("**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: HOLD\n")
-    digest = artifacts.bind_artifact_hash(handle, "step.two.output")["sha256"]
+    digest = sha256_bytes(output_two.read_bytes())
     submission = {
         "schema_version": 1,
         "envelope": claimed["result"]["envelope"],

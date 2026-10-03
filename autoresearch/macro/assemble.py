@@ -7,8 +7,8 @@ Two-tier like autoresearch.analyze.assemble, plus a 中观 tier:
                · sino-us(divergence/desync/geopolitics/relative) · meso_evidence(industry_cycle)
 
 The decision (cross-asset) and sector_map (A股行业) tables each carry one keyed
-`- <KEY>: **Rating**: <band>` line per row; parse_allocation runs the project's
-parse_rating on each so all five-band tilts stay machine-checked.
+`- <KEY>: **Rating**: <band>` line per row; parse_allocation validates each
+extracted value against the five-tier vocabulary before publication.
 
 Usage:
     python -m autoresearch.macro.assemble context/macro/<YYYY-MM-DD>
@@ -16,10 +16,11 @@ Usage:
 """
 import argparse
 import re
+from collections.abc import Collection, Mapping
 from datetime import datetime
 from pathlib import Path
 
-from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import RATINGS_5_TIER
 from autoresearch.common import workspace as ws
 
 DECISION_REL = "1_spine/decision.md"
@@ -70,17 +71,122 @@ MESO_BANNER = "**═══════════ 中观落地 · A股行业/�
 APPENDIX_BANNER = "**═══════════ 证据附录 · Evidence Appendix═══════════**"
 
 
-def parse_allocation(text: str) -> dict:
-    """Extract every keyed allocation rating. Each row: `- <KEY>: **Rating**: <band>`.
-    parse_rating runs on the single line, so each row's band is machine-checked."""
+def _allocation_key(value: str) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[\w][\w ()（）·/&.+-]*", value))
+
+
+# The FULL playbook's cross-asset scope; a credit evidence section is optional,
+# but the allocation table still declares its stance on credit.
+CROSS_ASSET_KEYS = (
+    "OVERALL 风险档", "美债", "美股", "A股·港股", "USD", "CNY", "JPY", "黄金", "大宗", "加密(BTC)", "信用",
+)
+
+
+def allocation_scope(data_text: str, *, include_sectors: bool = True) -> dict[str, tuple[str, ...]]:
+    """Derive the FULL keyset from the playbook and this run's deterministic data.
+
+    Industry scope is the rendered fund-flow population, not all SW industries
+    and never the model's sector_map output. Missing scope fails closed.
+    """
+    scope = {DECISION_REL: CROSS_ASSET_KEYS}
+    if not include_sectors:
+        return scope
+    sectors: list[str] = []
+    in_flow = False
+    in_table = False
+    for line in data_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("**行业资金净流入("):
+            in_flow, in_table = True, False
+            continue
+        if not in_flow:
+            continue
+        if not stripped.startswith("|"):
+            if in_table or stripped:
+                in_flow = False
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells[0] == "行业" and any("净流入" in cell for cell in cells[1:]):
+            in_table = True
+            continue
+        if not in_table or cells[0] in {"…", "..."} or re.fullmatch(r"[-: ]+", cells[0]):
+            continue
+        if len(cells) != 3 or not _allocation_key(cells[0]):
+            raise ValueError("allocation scope has malformed industry flow row")
+        if cells[0] not in sectors:
+            sectors.append(cells[0])
+    if not sectors:
+        raise ValueError("allocation scope unavailable: deterministic industry flow table missing or empty")
+    scope[SECTOR_MAP_REL] = tuple(sectors)
+    return scope
+
+
+def resolve_allocation_scope(
+    root: Path,
+    expected_keys: Mapping[str, Collection[str]] | None = None,
+    *,
+    include_sectors: bool = True,
+) -> dict[str, tuple[str, ...]]:
+    """Publishing default is deterministic scope; explicit callers may supply a subset.
+
+    Unscoped ``parse_allocation`` remains a historical-text reader. It is not a
+    publishing fallback. A spine-only state still needs no other report sections.
+    """
+    required = {DECISION_REL, SECTOR_MAP_REL} if include_sectors else {DECISION_REL}
+    if expected_keys is None:
+        data_path = Path(root) / "data.md"
+        if include_sectors and not data_path.is_file():
+            raise ValueError("allocation scope unavailable: data.md is required for sector keys")
+        data = data_path.read_text(encoding="utf-8") if include_sectors else ""
+        return allocation_scope(data, include_sectors=include_sectors)
+    if not isinstance(expected_keys, Mapping) or not required <= set(expected_keys):
+        raise ValueError("allocation scope is missing required table keys")
+    if set(expected_keys) - {DECISION_REL, SECTOR_MAP_REL}:
+        raise ValueError("allocation scope contains unknown table keys")
+    scope = {}
+    for relative, keys in expected_keys.items():
+        if not isinstance(keys, Collection) or isinstance(keys, str):
+            raise ValueError("invalid expected allocation keys")
+        if any(not _allocation_key(key) for key in keys) or len(set(keys)) != len(keys):
+            raise ValueError("invalid or duplicate expected allocation keys")
+        scope[relative] = tuple(keys)
+    return scope
+
+
+def parse_allocation(text: str, expected_keys: Collection[str] | None = None) -> dict[str, str]:
+    """Validate keyed rows; a declared keyset comes from the deterministic caller.
+
+    Empty prose returns an empty table. Publishing callers require nonempty tables.
+    No global industry universe is inferred when ``expected_keys`` is absent.
+    """
+    if expected_keys is not None:
+        if isinstance(expected_keys, str) or any(not _allocation_key(key) for key in expected_keys):
+            raise ValueError("invalid expected allocation keys")
+        if len(set(expected_keys)) != len(expected_keys):
+            raise ValueError("duplicate expected allocation keys")
     out = {}
     for line in text.splitlines():
-        if "**Rating**" not in line and "Rating:" not in line:
+        if not re.search(r"\bRating\b", line, re.IGNORECASE):
             continue
-        m = re.match(r"\s*[-*]\s*(.+?)\s*[::]", line)
-        if not m:
-            continue
-        out[m.group(1).strip()] = parse_rating(line)
+        match = re.fullmatch(
+            r"\s*[-*]\s+(.+?)\s*[:：]\s*(?:\*\*)?Rating(?:\*\*)?\s*[:：]\s*"
+            r"(?:\*\*)?([A-Za-z]+)(?:\*\*)?\s*(?:[—–-]\s+.+)?", line, re.IGNORECASE,
+        )
+        if not match:
+            raise ValueError(f"malformed allocation rating line: {line}")
+        key, raw_rating = match.groups()
+        key = key.strip()
+        if not _allocation_key(key):
+            raise ValueError(f"invalid allocation key: {key!r}")
+        if key in out:
+            raise ValueError(f"duplicate allocation key: {key}")
+        rating = next((item for item in RATINGS_5_TIER if item.lower() == raw_rating.lower()), None)
+        if rating is None:
+            raise ValueError(f"invalid allocation Rating: {raw_rating}")
+        out[key] = rating
+    if expected_keys is not None and set(out) != set(expected_keys):
+        raise ValueError(f"allocation keys differ: missing={sorted(set(expected_keys) - set(out))}, "
+                         f"unexpected={sorted(set(out) - set(expected_keys))}")
     return out
 
 
@@ -107,6 +213,7 @@ def _main_unlocked(
     *,
     clock: datetime | None = None,
     scan_root: Path | str | None = None,
+    expected_keys: Mapping[str, Collection[str]] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(description="组装宏观分节报告")
     parser.add_argument("root", help="宏观分节草稿目录")
@@ -123,6 +230,21 @@ def _main_unlocked(
         print("[MISSING] 必需分段文件不存在,请先写齐核心 agent 文件再组装:")
         for rel in missing:
             print(f"  - {root / rel}")
+        return 1
+
+    try:
+        expected_keys = resolve_allocation_scope(root, expected_keys)
+        allocations = {}
+        for relative in (DECISION_REL, SECTOR_MAP_REL):
+            table = parse_allocation(
+                _read(root, relative),
+                expected_keys=expected_keys.get(relative) if expected_keys is not None else None,
+            )
+            if not table:
+                raise ValueError(f"empty allocation table: {relative}")
+            allocations[relative] = table
+    except ValueError as exc:
+        print(f"[CONTRACT] {exc}")
         return 1
 
     skipped = [rel for _, items in (SPINE + MESO + APPENDIX)
@@ -169,17 +291,19 @@ def _main_unlocked(
         from autoresearch.macro.state import write_macro_state
         state_out = Path(args.state_out_dir) if args.state_out_dir else root.parent
         kwargs = {"scan_root": scan_root} if scan_root is not None else {}
-        st = write_macro_state(root, report_path=out_path, out_dir=state_out, **kwargs)
+        st = write_macro_state(
+            root, report_path=out_path, out_dir=state_out, expected_keys=expected_keys, **kwargs,
+        )
         print(f"[macro_state] {state_out / 'macro_state.json'}(as_of {st['as_of']} · "
               f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
               f"regime_at_run {st['regime_at_run'] or '未记'})")
     except Exception as e:  # noqa: BLE001
         print(f"[warn] macro_state 落盘失败(不阻报告): {e}")
 
-    alloc = parse_allocation(_read(root, DECISION_REL))
+    alloc = allocations[DECISION_REL]
     print(f"[parse_rating → cross-asset ({len(alloc)})] {alloc}")
     if (root / SECTOR_MAP_REL).exists():
-        sectors = parse_allocation(_read(root, SECTOR_MAP_REL))
+        sectors = allocations[SECTOR_MAP_REL]
         print(f"[parse_rating → A股 sectors ({len(sectors)})] {sectors}")
     if skipped:
         print("[note] 跳过未提供的可选分段: " + ", ".join(skipped))
@@ -191,11 +315,12 @@ def main(
     *,
     clock: datetime | None = None,
     scan_root: Path | str | None = None,
+    expected_keys: Mapping[str, Collection[str]] | None = None,
 ) -> int:
     from autoresearch.trace.write_guard import guarded_ambient_write
 
     with guarded_ambient_write("macro.assemble"):
-        return _main_unlocked(argv, clock=clock, scan_root=scan_root)
+        return _main_unlocked(argv, clock=clock, scan_root=scan_root, expected_keys=expected_keys)
 
 
 if __name__ == "__main__":

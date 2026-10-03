@@ -48,6 +48,8 @@ design: `docs/specs/2026-08-29-full-coverage-research-system-brainstorm.md` §2.
   JSON 是机器真相,Markdown 只由 JSON 渲染)
 - ``acceptance`` —— 本引擎可导入/导出的 portable 验收 proof
   `$RPT/_acceptance/proofs/`；不读取另一引擎原始 context/reports。
+- ``run_workspace`` —— 活动 run 的工作区 `RunHandle.workspace`；session 控制文件位于其下，
+  不属于 staging 数据包或已发布报告。
 
 `presence`:``always`` = 该阶段跑到就必须有;``gated`` = 有前置条件才有(缺席是事实
 不是洞);``conditional`` = 只有被触发才有(复核、修补)。
@@ -82,7 +84,7 @@ ROOTS: tuple[str, ...] = (
     "staging", "report", "ledger", "capsule",
     "analyze_ctx", "analyze_staging", "analyze_report", "analyze_ledger",
     "metering",
-    "acceptance",
+    "acceptance", "run_workspace",
     # 2026-09-07(Q-R 裁定①):研究仪器与券商取数层的产物根,此前从未登记、守卫也不扫。
     # research_report = $RPT/research/(读数、离线实验目录);research_ctx = $CTX/research/
     # (研究账本);factor_lab = ws.factor_lab_root();broker = ws.broker_root()。
@@ -93,6 +95,36 @@ PRESENCES: tuple[str, ...] = ("always", "gated", "conditional")
 
 
 ARTIFACTS: tuple[Artifact, ...] = (
+    Artifact("session_storage_layout", "session/storage.json", "run_workspace", "frame",
+             "session_agent.service", "json", "gated", required_when="session output layout v2"),
+    Artifact("session_storage_identity", "identity/session/storage.json", "capsule", "frame",
+             "session_agent.service", "json", "gated", required_when="session output layout v2"),
+    Artifact("session_frozen_dispatch", "session/dispatch/*.json", "run_workspace", "l4",
+             "session_agent.dispatch", "json", "conditional", required_when="v2 inference attempt dispatched"),
+    Artifact("session_private_outputs", "session_outputs/attempts/*/a*/outputs/*", "staging", "l4",
+             "session_agent.dispatch", "txt", "conditional", required_when="v2 inference attempt wrote outputs"),
+    Artifact("session_captured_outputs", "session_outputs/accepted/*/a*/*/*", "staging", "l4",
+             "session_agent.artifacts", "txt", "conditional", required_when="v2 candidate captured; acceptance owned by tasks.json"),
+    Artifact("session_artifact_registry", "session/artifacts.json", "run_workspace", "frame",
+             "session_agent.artifacts", "json", "conditional", required_when="session_v1 artifact registration"),
+    Artifact("stock_card_facts", "session_outputs/card.facts.json", "staging", "write",
+             "session_agent.card_facts", "json", "conditional", required_when="two-stage-v1 stock LITE"),
+    Artifact("stock_card_initial", "session_outputs/card.initial.json", "staging", "write",
+             "l4-card", "json", "conditional", required_when="two-stage-v1 stock LITE"),
+    Artifact("stock_card_changes", "session_outputs/card.changes.json", "staging", "write",
+             "l4-card", "json", "conditional", required_when="two-stage-v1 stock LITE"),
+    Artifact("scan_card_facts", "session_attempts/*/a*/facts.json", "staging", "l4_prep",
+             "session_agent.card_facts", "json", "conditional", required_when="two-stage-v1 scan L4"),
+    Artifact("scan_card_initial", "session_attempts/*/a*/initial.json", "staging", "l4",
+             "l4-card", "json", "conditional", required_when="two-stage-v1 scan L4"),
+    Artifact("scan_card_changes", "session_attempts/*/a*/changes.json", "staging", "l4",
+             "l4-card", "json", "conditional", required_when="two-stage-v1 scan L4"),
+    Artifact("stock_evidence_bundle", "session_outputs/evidence_bundle.json", "staging", "write",
+             "session_agent.evidence_bundle", "json", "conditional",
+             required_when="session_v1 stock FULL 完成分析师阶段"),
+    Artifact("research_frame", "session_outputs/decision_frame.json", "staging", "frame",
+             "session_agent.decision_frame", "json", "conditional",
+             required_when="session_v1 新计划冻结 research.frame 输入"),
     # ---- frame(L0 帧 + 三个 pack)---------------------------------------
     Artifact("run_contract", "run_contract.json", "staging", "frame", "frame", "json", "always", replayable=True),
     Artifact("market_pack", "market_pack.json", "staging", "frame", "frame", "json", "always", replayable=True),
@@ -469,6 +501,29 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "factor_lab", "json", "gated", required_when="factor_lab harvest"),
     Artifact("factor_lab_youzi_seats", "youzi_seats.json", "factor_lab", "observe",
              "factor_lab", "json", "gated", required_when="factor_lab harvest(席位缓存)"),
+    # 决策证据与可复核实验输入；条件产物不改变普通扫描的完整性要求。
+    Artifact("card_claim_uses", "l4/*.claim-uses.json", "staging", "l4",
+             "card_claims", "json", "conditional"),
+    Artifact("scan_research_provenance", "_research_provenance.json", "staging", "assemble",
+             "research_provenance", "json", "conditional"),
+    Artifact("session_metering", "agents/session/metering.json", "capsule", "observe",
+             "session_agent.metering", "json", "conditional"),
+    Artifact("session_tasks", "session/tasks.json", "run_workspace", "observe",
+             "session_agent.service", "json", "conditional"),
+    Artifact("forward_protocol", "*/protocol.json", "research_report", "observe",
+             "forward_study", "json", "conditional"),
+    Artifact("forward_registration", "*/registration.json", "research_report", "observe",
+             "forward_study", "json", "conditional"),
+    Artifact("production_export_manifest", "*/export.json", "research_report", "observe",
+             "production_export", "json", "conditional"),
+    Artifact("production_export_e6", "*/e6.json", "research_report", "observe",
+             "production_export", "json", "conditional"),
+    Artifact("production_export_population", "*/population.csv", "research_report", "observe",
+             "production_export", "csv", "conditional"),
+    Artifact("production_export_forward_inputs", "*/forward-inputs.json", "research_report", "observe",
+             "production_export", "json", "conditional"),
+    Artifact("production_export_references", "*/*.ref.json", "research_report", "observe",
+             "production_export", "json", "conditional"),
     # ── 离线实验目录(F1 冻结 / F8 阶段价值 / C5 执行评价;experiment_id 一目录,排他创建)──
     Artifact("experiment_spec", "*/spec.json", "research_report", "observe",
              "experiment_io", "json", "conditional"),
@@ -490,6 +545,12 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "observe", "execution_audit", "csv", "conditional"),
     Artifact("execution_coverage", "execution/*/coverage.json", "research_report",
              "observe", "execution_audit", "json", "conditional"),
+    Artifact("execution_day_panel", "execution/*/execution_day_panel.json", "research_report",
+             "observe", "execution_audit", "json", "conditional",
+             required_when="execution audit consumes a frozen forward study"),
+    Artifact("research_casebook", "*/casebook.json", "research_ctx",
+             "observe", "research.casebook", "json", "conditional",
+             required_when="explicit offline casebook freeze"),
     # F6 W3 三格普查(2026-09-07 登记;冻结方案见 docs/research/2026-09-07-w3-three-grids-family.spec.json)
     Artifact("w3_grids_cells", "w3_grids/*/cells.csv", "research_report", "observe",
              "w3_grids", "csv", "conditional"),
@@ -604,6 +665,8 @@ def paths() -> frozenset[str]:
 #: 新增一个名字之前先问「它是不是一个产物」,是就进 `ARTIFACTS`。
 NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     # glob / 路径片段
+    # 下列是给已有 basename 追加的后缀；完整产物族已在上面登记。
+    ".claim-uses.json", ".ref.json",
     "*/_budget_observation.json", "*/attempt-*/result.json",
     "gate*.json", "_ensemble*.json", "_ensemble.json", ".meta.json",
     "reasoning/l4/_l4_tasks.json",

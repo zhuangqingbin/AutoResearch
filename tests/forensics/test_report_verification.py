@@ -248,7 +248,7 @@ def test_full_verification_recomputes_instead_of_trusting_stored_closure(
     evidence.parent.mkdir(parents=True)
     evidence.write_text(canonical_json(plan), encoding="utf-8")
     stored = handle.capsule / "verification/evidence_closure.json"
-    stored.parent.mkdir(parents=True)
+    stored.parent.mkdir(parents=True, exist_ok=True)
     stored.write_text(
         canonical_json(
             {
