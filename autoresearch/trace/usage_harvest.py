@@ -72,6 +72,8 @@ def legacy_usage_dict(record: UsageRecord) -> dict:
         "retry_count": record.retry_count,
         "discarded": record.discarded,
         "reasoning_output": record.reasoning_output,
+        "models": list(record.models),
+        "host_version": record.host_version,
     }
     tot["billed_in"] = tot["input"] + tot["cache_create"] + tot["cache_read"]
     tot["weighted_in"] = round(tot["input"] + tot["cache_create_5m"] * _W_WRITE_5M
@@ -473,6 +475,53 @@ def collect_run(
     return sorted(rows, key=lambda r: -r["weighted_in"])
 
 
+IDENTITY_SCHEMA_VERSION = 1
+
+
+def observed_identity(rows: list[dict]) -> dict:
+    """逐 transcript facts → 本场**实际**身份:宿主版本 + 每类 agent 用到的模型全 ID 与 effort。
+
+    这是「请求了什么」之外的另一半 —— 2026-09-22/09-28 `opus`/`sonnet` 别名换代时,配置与
+    agent 定义一字未改,只有 transcript 里的 `message.model` 变了;当时的对账把 ID 归一成家族,
+    所以没人看见。未计量行(模型为 "—")不进身份:没量到不等于「模型是 —」。
+    """
+    versions: set[str] = set()
+    agents: dict[str, dict] = {}
+    main: dict | None = None
+    for row in rows:
+        if row.get("status") == "UNMEASURED":
+            continue
+        models = [m for m in (row.get("models") or [row.get("model")]) if m and m != "—"]
+        effort = row.get("effort")
+        version = row.get("host_version")
+        if version and version != "—":
+            versions.add(str(version))
+        if not models:
+            continue
+        if row.get("role") == "main":
+            main = main or {"models": set(), "efforts": set()}
+            bucket = main
+        else:
+            bucket = agents.setdefault(
+                str(row.get("agent") or "(未标注)"), {"n": 0, "models": set(), "efforts": set()}
+            )
+            bucket["n"] += 1
+        bucket["models"].update(str(m) for m in models)
+        if effort and effort != "—":
+            bucket["efforts"].add(str(effort))
+
+    def _flat(bucket: dict) -> dict:
+        return {key: (sorted(value) if isinstance(value, set) else value)
+                for key, value in bucket.items()}
+
+    return {
+        "schema_version": IDENTITY_SCHEMA_VERSION,
+        "host_versions": sorted(versions),
+        "main": None if main is None else _flat(main),
+        "agents": {name: _flat(agents[name]) for name in sorted(agents)},
+    }
+
+
 def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
     """逐 transcript facts → 可机读总账。"""
     priced = [r for r in rows if r.get("estimated_usd") is not None]
@@ -511,6 +560,7 @@ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
         },
         "source": source,
         "cache_hit_rate": cache_hit_rate(rows),
+        "identity": observed_identity(rows),
         "totals": totals,
         "rows": rows,
     }
@@ -529,6 +579,20 @@ def _cost_cell(row: dict) -> str:
     if row.get("status") == "UNMEASURED":
         return "— (UNMEASURED)"
     return _usd(row.get("estimated_usd"))
+
+
+def _identity_line(identity: dict) -> str:
+    """一行「实际身份」:宿主版本 + 逐 agent 类型的模型全 ID。同类型出现两个 ID 时照印两个。
+
+    「宿主」= 跑这些 transcript 的 CLI(Claude Code 或 Codex);两个引擎共用这一行,不写死名字。
+    """
+    versions = " / ".join(identity["host_versions"]) or "—"
+    parts = []
+    if identity.get("main"):
+        parts.append("主会话 = " + " / ".join(identity["main"]["models"]))
+    parts += [f"{name} = " + " / ".join(spec["models"])
+              for name, spec in identity["agents"].items()]
+    return f"- **实际身份**:宿主 {versions} · " + (" · ".join(parts) or "—")
 
 
 def render(rows: list[dict], sub_dir: str | None = None) -> str:
@@ -576,6 +640,7 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
             f"未计量 {facts['unmeasured_transcripts']} 份)",
             f"- 价格口径:Claude API standard global list price · "
             f"{PRICE_SOURCE_EFFECTIVE_DATE} 快照 · {PRICE_SOURCE_URL}",
+            _identity_line(ledger["identity"]),
             ""]
     # dispatcher 列只在有 headless 行时出现:宿主场的 token_usage.md 逐字不变(parity)。
     if headless:

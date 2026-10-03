@@ -410,6 +410,22 @@ def _run_identity_and_budgets(scan: Path) -> tuple[str, dict | None]:
     return contract.run_id, contract.stage_budgets
 
 
+def _contract_facts(scan: Path) -> tuple[dict, str | None]:
+    """运行契约里身份要的事实(契约哈希/配置哈希/代码版本/schema)+ 契约记录的引擎。
+
+    没有契约的 run(老 run、单元夹具)得到全 None 的事实 —— 身份照算,只是这几项不比较。
+    """
+    from autoresearch.scan.run_drift import contract_facts
+
+    path = scan / "run_contract.json"
+    if not path.exists():
+        return contract_facts(None), None
+    from autoresearch.scan.run_contract import load_run_contract
+
+    contract = load_run_contract(path).to_dict()
+    return contract_facts(contract), (contract.get("engine") or None)
+
+
 def _effectiveness(scan: Path, estimated_usd: float | None) -> dict:
     """成本分母只读领域事实。
 
@@ -478,6 +494,7 @@ def render_run_observation(observation: dict) -> str:
         + " · "
         + (f"交互墙钟:{int(wall)}s" if wall is not None else "交互墙钟:—"),
         f"- 加权输入:{weighted_text} · 预算带:{observation.get('budget_band') or 'RED'}",
+        *run_drift_detail_lines(observation),
     ]
     if maturity.get("status") in {"PASS", "FAIL"}:
         lines.append(
@@ -510,6 +527,22 @@ def render_run_observation(observation: dict) -> str:
     return "\n".join(lines)
 
 
+def run_drift_detail_lines(observation: dict) -> list[str]:
+    """身份漂移 / 相对预算带(`run_drift`)+ 行为指纹(`behavior_fingerprint`)的附录 E 明细。"""
+    from autoresearch.scan.behavior_fingerprint import detail_lines as behavior_lines
+    from autoresearch.scan.run_drift import detail_lines
+
+    return [*detail_lines(observation), *behavior_lines(observation)]
+
+
+def run_drift_summary_fragment(observation: dict) -> str:
+    """summary「运行事实」一行里的 `身份 · 相对 · 行为` 三段。"""
+    from autoresearch.scan.behavior_fingerprint import summary_fragment as behavior_fragment
+    from autoresearch.scan.run_drift import summary_fragment
+
+    return f"{summary_fragment(observation)} · {behavior_fragment(observation)}"
+
+
 def _fmt_wall(seconds: object) -> str:
     if seconds is None:
         return "—"
@@ -539,6 +572,7 @@ def render_run_observation_line(observation: dict) -> str:
         f"LLM 调用 {'—' if calls is None else int(calls)}",
         f"加权输入 {weighted_text}",
         f"预算带:{observation.get('budget_band') or 'RED'}",
+        run_drift_summary_fragment(observation),
         f"计量:{observation.get('measurement_status', 'UNMEASURED')} {cost}"
         + (f"(cache {float(cache):.1%})" if cache is not None else "(cache —)"),
         "数据降级:" + ("、".join(str(f) for f in degraded) if degraded else "无"),
@@ -745,8 +779,13 @@ def _publish_run_observation_unlocked(
     real_scan: bool | None = None,
     phase: int = 1,
     decision_write: str = "write",
+    history_root: Path | str | None = None,
 ) -> dict:
     """从 canonical cost/timing JSON 发布观测；不导入也不写任何评级逻辑。
+
+    `history_root`:已发布 scan 报告根(身份漂移的上一场、相对预算带与成熟度的历史都从这里读,
+    只读)。缺省只在真实扫描时取 `workspace.run_reports_root("scan-market")`;测试与演练不传就
+    没有历史 —— 它们不该把仓库里真实的已发布报告读成自己的基线。
 
     `decision_write`(P0-2,`docs/research/2026-08-19-decision-file-two-writers-and-
     taskbook-hash.md` §4)—— `_relative_buy_decision.json` 有两个合法调用点(writer-1
@@ -793,12 +832,57 @@ def _publish_run_observation_unlocked(
         persist=False,
     )
     observation["warnings"] = list(dict.fromkeys([*observation["warnings"], *external_warnings]))
-    history = []
+    # 跨 run 的身份漂移与相对预算带(2026-10-03 A3/A5):只产事实与标签,不拥有任何门。
+    # 两条观测腿失败只留痕、记未计量,不让发布失败 —— 决策文件、可买性、报告刷新都在后面(复审 I-5)。
+    from autoresearch.scan import run_drift
+
+    published: list[dict] = []
+    try:
+        facts, contract_engine = _contract_facts(scan)
+        root = (Path(history_root) if history_root is not None
+                else ws.run_reports_root("scan-market") if real_scan else None)
+        published, unreadable = (
+            run_drift.load_history(root, exclude_run_id=observation["run_id"], engine=contract_engine)
+            if root is not None else ([], 0))
+        identity = run_drift.identity(usage, engine=contract_engine, **facts)
+        previous = run_drift.latest_identity(published)
+        observation["identity"] = identity
+        observation["usage_shape"] = run_drift.usage_shape(usage)
+        observation["drift"] = run_drift.drift(previous, identity)
+        observation["identity_canary"] = run_drift.canary(previous, identity)
+        observation["relative"] = run_drift.relative(
+            observation["usage_shape"], published, observation["budgets"]["relative"],
+            cohort=identity["model_cohort"])
+        if unreadable:
+            observation["advisories"].append(f"已发布预算观测 {unreadable} 份读不动(未进基线)")
+    except Exception as exc:  # noqa: BLE001 — 观测腿不得让发布失败,但必须留痕
+        observation["advisories"].append(f"身份 / 相对预算带未计量:{type(exc).__name__}: {exc}")
+        observation.update(
+            identity=None, usage_shape=None, identity_canary=None,
+            drift={"status": "UNMEASURED", "baseline_run": None, "changes": []},
+            relative={"status": "UNMEASURED", "n_baseline": 0, "scope": None, "metrics": {},
+                      "worst": None})
+    # 行为指纹(2026-10-03 A6):研究层这一场长什么样 + 对近期常态的偏离;同样只记账。
+    from autoresearch.scan import behavior_fingerprint
+
+    try:
+        rules = behavior_fingerprint.policy()
+        observation["fingerprint"] = behavior_fingerprint.fingerprint(scan)
+        observation["behavior"] = behavior_fingerprint.compare(
+            observation["fingerprint"], published, rules)
+    except Exception as exc:  # noqa: BLE001 — 同上
+        observation["advisories"].append(f"行为指纹未计量:{type(exc).__name__}: {exc}")
+        observation["fingerprint"] = None
+        observation["behavior"] = {"status": "UNMEASURED", "n_baseline": 0, "deviations": []}
+    # 成熟度的历史 = 已发布的真实扫描 + 同根的兄弟观测 + 本场。2026-09 起 staging 按 run 分根,
+    # 只读兄弟目录时永远只数得到当场一场(「真实扫描 1/10」)。
+    history = list(published)
     for path in sorted(scan.parent.glob("*/_budget_observation.json")):
         try:
             history.append(_load_json(path))
         except (OSError, json.JSONDecodeError, ValueError):
             continue
+    history.append(observation)
     observation["maturity"] = evaluate_history(
         history,
         phase=phase,
@@ -870,6 +954,8 @@ def _publish_run_observation_unlocked(
                              tiering=_rb_tiering, rebalance_gate=_rb_gate)
     from autoresearch.scan.buyability import safe_write_buyability
     safe_write_buyability(scan)          # 不可买归因(2026-09-24 §2.7):读决策文件,必须在它之后
+    from autoresearch.scan.l4.shadow_fields import safe_write as _safe_write_shadow_fields
+    _safe_write_shadow_fields(scan)      # B5(2026-10-03):卡上三条影子机读行,只记账
     # 现场重建 Task 4(设计稿 §5.2 生产接线):绑定必须在**这里**——决策校验已经完成
     # (E6 现算/比对已定稿,不再改变),retain 还没把 staging 镜像进 report_dir,capsule
     # 也还没冻结。`safe_bind_run` 自己从不抛出(裁定③:证据采集失败不得让发布本身失败),
@@ -902,6 +988,9 @@ def _publish_run_observation_unlocked(
             "cache_hit_rate": observation["cache_hit_rate"],
             "maturity_status": observation["maturity"]["status"],
             "denominators": observation["effectiveness"]["denominators"],
+            "identity_drift": observation["drift"]["status"],
+            "relative_band": observation["relative"]["status"],
+            "behavior": observation["behavior"]["status"],
         },
         warnings=observation["warnings"],
         error=None,
@@ -947,6 +1036,7 @@ def publish_run_observation(
     real_scan: bool | None = None,
     phase: int = 1,
     decision_write: str = "write",
+    history_root: Path | str | None = None,
 ) -> dict:
     """Publish observations only while the scan run remains active."""
     from autoresearch.trace.write_guard import guarded_ambient_write
@@ -961,6 +1051,7 @@ def publish_run_observation(
             real_scan=real_scan,
             phase=phase,
             decision_write=decision_write,
+            history_root=history_root,
         )
 
 

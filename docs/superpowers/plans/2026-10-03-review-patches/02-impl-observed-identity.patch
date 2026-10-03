@@ -1,0 +1,155 @@
+--- a/autoresearch/trace/transcripts/base.py
++++ b/autoresearch/trace/transcripts/base.py
+@@ -179,6 +179,11 @@
+     retry_count: int
+     discarded: bool
+     reasoning_output: int = 0
++    #: 实际身份(2026-10-03):本 transcript 里出现过的全部模型 ID(按首次出现排序,
++    #: `<synthetic>` 不算)与宿主 CLI 版本。`model` 仍是首个模型(兼容面不变);
++    #: 取不到的版本是 "—",不猜。两个字段都带缺省,既有构造点无需改动。
++    models: tuple[str, ...] = ()
++    host_version: str = "—"
+ 
+ 
+ @dataclass(frozen=True)
+--- a/autoresearch/trace/transcripts/claude.py
++++ b/autoresearch/trace/transcripts/claude.py
+@@ -83,6 +83,8 @@
+     ) -> dict:
+         latest: dict[str, dict] = {}
+         agent = effort = model = None
++        models: list[str] = []
++        host_version = None
+         speed = "standard"
+         failures: list[int] = []
+         terminals: list[int] = []
+@@ -98,9 +100,12 @@
+                 failures.append(idx)
+             agent = agent or row.get("attributionAgent")
+             effort = effort or row.get("effort")
++            host_version = host_version or row.get("version")
+             candidate_model = msg.get("model")
+             if candidate_model and candidate_model != "<synthetic>":
+                 model = model or candidate_model
++                if candidate_model not in models:
++                    models.append(str(candidate_model))
+             usage = msg.get("usage")
+             if isinstance(usage, dict) and msg.get("id"):
+                 latest[str(msg["id"])] = usage
+@@ -131,6 +136,8 @@
+             "agent": resolved_agent,
+             "effort": effort or "—",
+             "model": model or "—",
++            "models": tuple(models),
++            "host_version": str(host_version) if host_version else "—",
+             "speed": speed,
+             "status": status,
+             "failure_count": failure_count,
+@@ -450,6 +457,8 @@
+             failure_count=summary["failure_count"],
+             retry_count=summary["retry_count"],
+             discarded=summary["status"] == "FAILED",
++            models=summary["models"],
++            host_version=summary["host_version"],
+         )
+ 
+         started_at, ended_at = self._timestamp_bounds(rows)
+--- a/autoresearch/trace/usage_harvest.py
++++ b/autoresearch/trace/usage_harvest.py
+@@ -72,6 +72,8 @@
+         "retry_count": record.retry_count,
+         "discarded": record.discarded,
+         "reasoning_output": record.reasoning_output,
++        "models": list(record.models),
++        "host_version": record.host_version,
+     }
+     tot["billed_in"] = tot["input"] + tot["cache_create"] + tot["cache_read"]
+     tot["weighted_in"] = round(tot["input"] + tot["cache_create_5m"] * _W_WRITE_5M
+@@ -471,6 +473,53 @@
+ 
+     rows.extend(headless_rows)
+     return sorted(rows, key=lambda r: -r["weighted_in"])
++
++
++IDENTITY_SCHEMA_VERSION = 1
++
++
++def observed_identity(rows: list[dict]) -> dict:
++    """逐 transcript facts → 本场**实际**身份:宿主版本 + 每类 agent 用到的模型全 ID 与 effort。
++
++    这是「请求了什么」之外的另一半 —— 2026-09-22/09-28 `opus`/`sonnet` 别名换代时,配置与
++    agent 定义一字未改,只有 transcript 里的 `message.model` 变了;当时的对账把 ID 归一成家族,
++    所以没人看见。未计量行(模型为 "—")不进身份:没量到不等于「模型是 —」。
++    """
++    versions: set[str] = set()
++    agents: dict[str, dict] = {}
++    main: dict | None = None
++    for row in rows:
++        if row.get("status") == "UNMEASURED":
++            continue
++        models = [m for m in (row.get("models") or [row.get("model")]) if m and m != "—"]
++        effort = row.get("effort")
++        version = row.get("host_version")
++        if version and version != "—":
++            versions.add(str(version))
++        if not models:
++            continue
++        if row.get("role") == "main":
++            main = main or {"models": set(), "efforts": set()}
++            bucket = main
++        else:
++            bucket = agents.setdefault(
++                str(row.get("agent") or "(未标注)"), {"n": 0, "models": set(), "efforts": set()}
++            )
++            bucket["n"] += 1
++        bucket["models"].update(str(m) for m in models)
++        if effort and effort != "—":
++            bucket["efforts"].add(str(effort))
++
++    def _flat(bucket: dict) -> dict:
++        return {key: (sorted(value) if isinstance(value, set) else value)
++                for key, value in bucket.items()}
++
++    return {
++        "schema_version": IDENTITY_SCHEMA_VERSION,
++        "host_versions": sorted(versions),
++        "main": None if main is None else _flat(main),
++        "agents": {name: _flat(agents[name]) for name in sorted(agents)},
++    }
+ 
+ 
+ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
+@@ -511,6 +560,7 @@
+         },
+         "source": source,
+         "cache_hit_rate": cache_hit_rate(rows),
++        "identity": observed_identity(rows),
+         "totals": totals,
+         "rows": rows,
+     }
+@@ -529,6 +579,17 @@
+     if row.get("status") == "UNMEASURED":
+         return "— (UNMEASURED)"
+     return _usd(row.get("estimated_usd"))
++
++
++def _identity_line(identity: dict) -> str:
++    """一行「实际身份」:宿主版本 + 逐 agent 类型的模型全 ID。同类型出现两个 ID 时照印两个。"""
++    versions = " / ".join(identity["host_versions"]) or "—"
++    parts = []
++    if identity.get("main"):
++        parts.append("主会话 = " + " / ".join(identity["main"]["models"]))
++    parts += [f"{name} = " + " / ".join(spec["models"])
++              for name, spec in identity["agents"].items()]
++    return f"- **实际身份**:Claude Code {versions} · " + (" · ".join(parts) or "—")
+ 
+ 
+ def render(rows: list[dict], sub_dir: str | None = None) -> str:
+@@ -576,6 +637,7 @@
+             f"未计量 {facts['unmeasured_transcripts']} 份)",
+             f"- 价格口径:Claude API standard global list price · "
+             f"{PRICE_SOURCE_EFFECTIVE_DATE} 快照 · {PRICE_SOURCE_URL}",
++            _identity_line(ledger["identity"]),
+             ""]
+     # dispatcher 列只在有 headless 行时出现:宿主场的 token_usage.md 逐字不变(parity)。
+     if headless:

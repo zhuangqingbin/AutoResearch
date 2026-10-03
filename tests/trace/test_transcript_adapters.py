@@ -2457,3 +2457,39 @@ def test_claude_bound_segment_is_positional(tmp_path):
     assert [item.payload["text"] for item in whole.items] == [f"turn {i}" for i in range(4)]
     assert [item.payload["text"] for item in segment.items] == ["turn 1", "turn 2"]
 
+
+
+# --- 2026-10-03 实际身份:Codex 侧对应物 --------------------------------------
+
+
+def test_codex_usage_records_cli_version_and_the_segment_model(codex_ref):
+    usage = CodexTranscriptAdapter().usage(codex_ref)
+
+    assert usage.models == ("gpt-5.6-sol",)
+    assert usage.host_version == "0.149.1"
+
+
+def test_codex_usage_lists_every_model_a_segment_ran_on(tmp_path):
+    """档位 fallback(sol → terra)发生在段内时,`model` 只剩最后一个;`models` 两个都留。"""
+    rows = [
+        _codex_row("session_meta", 0, {"id": "s", "cli_version": "0.159.3"}, "2026-10-03T00:00:00Z"),
+        _codex_row("turn_context", 1, {"model": "gpt-5.6-sol"}, "2026-10-03T00:00:01Z"),
+        _codex_row("turn_context", 2, {"model": "gpt-5.6-terra"}, "2026-10-03T00:00:02Z"),
+        _codex_row("turn_context", 3, {"model": "gpt-5.6-sol"}, "2026-10-03T00:00:03Z"),
+    ]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "rollout.jsonl", role="l4-card")
+
+    usage = CodexTranscriptAdapter().stats_from_rows(rows, ref).usage
+
+    assert usage.model == "gpt-5.6-sol"
+    assert usage.models == ("gpt-5.6-sol", "gpt-5.6-terra")
+    assert usage.host_version == "0.159.3"
+
+
+def test_codex_usage_without_session_meta_has_no_guessed_version(tmp_path):
+    rows = [_codex_row("turn_context", 1, {"model": "gpt-5.6-sol"}, "2026-10-03T00:00:01Z")]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "rollout.jsonl", role="l4-card")
+
+    usage = CodexTranscriptAdapter().stats_from_rows(rows, ref).usage
+
+    assert usage.host_version == "—"

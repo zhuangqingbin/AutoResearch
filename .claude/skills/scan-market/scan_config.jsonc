@@ -186,10 +186,11 @@
     }
   },
 
-  // ── l4 · 决策卡卡数 ── 生效点 scan/l4/card_count.effective_caps · scan/self_review.l4_card_count_lint · scan/menu.budget_cfg · scan/menu.l4_budget · scan/menu.zero_buy_streak · scan/l4/rubric.rubric_cfg · scan/l4/rubric.rubric_rating · scan/l4/rubric.force_full_card · scan/dossier.configured_max_days · scan/l4/prompts.configured_echo_lookback · scan/l4/producers.producers_cfg · scan/l4/producers.fetch_pledge · scan/l4/producers.fetch_seats · scan/l4/producers.fetch_consensus · scan/l4/producers.slim_min_bytes · scan/l4_tasks.prepare_slim · scan/l4/prompts.slim_hint · workflows/l4-stock.js · scan/decision_finalize.review_cfg · scan/decision_finalize.review_trigger · scan/decision_finalize._ensemble_flag · session_agent/domain_ops.scan_review_plan · session_agent/workflows/scan.review3_expansion
+  // ── l4 · 决策卡卡数 ── 生效点 scan/l4/card_count.effective_caps · scan/self_review.l4_card_count_lint · scan/l4/prompts.params_block · scan/menu.budget_cfg · scan/menu.l4_budget · scan/menu.zero_buy_streak · scan/l4/rubric.rubric_cfg · scan/l4/rubric.rubric_rating · scan/l4/rubric.force_full_card · scan/dossier.configured_max_days · scan/l4/prompts.configured_echo_lookback · scan/l4/producers.producers_cfg · scan/l4/producers.fetch_pledge · scan/l4/producers.fetch_seats · scan/l4/producers.fetch_consensus · scan/l4/producers.slim_min_bytes · scan/l4_tasks.prepare_slim · scan/l4/prompts.slim_hint · workflows/l4-stock.js · scan/decision_finalize.review_cfg · scan/decision_finalize.review_trigger · scan/decision_finalize._ensemble_flag · session_agent/domain_ops.scan_review_plan · session_agent/workflows/scan.review3_expansion
   "l4": {
     "max_cards": 10,                   // 非 📌 卡上限(含 composite 席位;📌 持仓恒出卡不占额)
     "budget_flags": true,              // finalist 名额再与菜单预算取小(max_cards = 13 时预算档最低 10,旗咬不到)
+    "shadow_fields": true,             // 卡上三条影子机读行(兑现机制/入场否决/情景),只记账不进门
     "budget": {                        // 菜单感知 L4 预算(menu.l4_budget;只降不升)
       "base": 30,                      // 预算基准
       "floor": 12,                     // 预算下限
@@ -300,10 +301,17 @@
   "agent_engines": {
     "claude": {
       "tiers": {
-        "critical":   { "effort": "max" },                    // 判断类(模型落 agent 定义文件)
-        "analytical": { "effort": "xhigh" },                  // 描述类
-        "repair":     { "effort": "medium" },                 // 修复类
-        "relay":      { "model": "sonnet", "effort": "low" }  // 命令壳
+        "critical":   { "model": "claude-opus-5-5", "effort": "max" },     // 判断类
+        "analytical": { "model": "claude-opus-5-5", "effort": "xhigh" },   // 描述类
+        "repair":     { "model": "claude-opus-5-5", "effort": "medium" },  // 修复类
+        "relay":      { "model": "sonnet", "effort": "low" }               // 命令壳
+      },
+      "role_overrides": {
+        "l4_intel":      { "model": "claude-sonnet-5-5" },
+        "company_intel": { "model": "claude-sonnet-5-5" },
+        "us_intel":      { "model": "claude-sonnet-5-5" },
+        "sector_intel":  { "model": "claude-sonnet-5-5" },
+        "global_intel":  { "model": "claude-sonnet-5-5" }             // 情报员跑 Sonnet
       }
     },
     "codex": {
@@ -323,7 +331,7 @@
     }
   },
 
-  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history
+  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy
   "budgets": {
     "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
     "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED,不截断)
@@ -336,6 +344,12 @@
     "maturity": {                      // 成本 / 墙钟成熟门目标
       "phase1": { "cost_reduction": 0.15, "p50": 75, "p90": 100 },   // 一期:成本降幅 / P50 分钟 / P90 分钟
       "phase2": { "cost_reduction": 0.25, "p50": 65, "p90": 90 }     // 二期
+    },
+    "relative": {                      // 相对预算带:对近期已发布真实扫描中位数的倍数(只告警)
+      "window": 10,                    // 基线取最近几场
+      "min_runs": 3,                   // 基线不足此数 = NO_BASELINE
+      "warn_ratio": 1.5,               // 任一指标达此倍数 = ELEVATED
+      "alarm_ratio": 2.0               // 任一指标达此倍数 = SPIKE
     }
   },
 
@@ -465,13 +479,15 @@
     "mailbox": {                       // mailbox 执行器(仅 session_agent)
       "never_taken_factor": 4.0,       // 无人领取:超过角色预算的几倍放弃
       "wait_s": 90.0,                  // mailbox wait 缺省秒数(要 < 宿主 Bash 120 秒)
-      "dead_heartbeats": 6             // 心跳超过几拍未更新判 runner 已死
+      "dead_heartbeats": 6,            // 心跳超过几拍未更新判 runner 已死
+      "by_reference": false            // 按引用派发:宿主只传指针,全文冻结成授权文件(仅 session_agent)
     },
     "max_attempts": 2,                 // SESSION 任务瞬时错最多尝试次数(仅 session_agent)
     "runner": {                        // runner 循环(仅 session_agent)
       "poll_seconds": 5.0,             // 轮询间隔
       "max_rounds": 20000,             // 轮数上限
-      "timeout_multiplier": 1.0        // 超时倍率
+      "timeout_multiplier": 1.0,       // 超时倍率
+      "fanout_warmup_s": 0             // 同一角色首份派发后其余等几秒(prompt 缓存预热;0 = 关)
     }
   },
 
@@ -499,7 +515,7 @@
     "stale_days": 90                   // 档案陈旧告警阈值(天)
   },
 
-  // ── observability · 账本读数样本门与 lint 阈(只影响观测) ── 生效点 scan/observability.observability_cfg
+  // ── observability · 账本读数样本门与 lint 阈(只影响观测) ── 生效点 scan/observability.observability_cfg · scan/behavior_fingerprint.policy
   "observability": {
     "min_ledger_n": 20,                // 结果账本统计最少样本
     "min_session_n": 20,               // 账本视图分段统计最少样本
@@ -510,6 +526,15 @@
     "menu_knife_tolerance": 0.06,      // 不可买归因:菜单落刀容差
     "price_claim_tol_pp": 1.5,         // 价格断言对账容差(百分点)
     "unknown_rate_tolerance": 0.05,    // 价格断言 unknown 率容差
+    "round_trip_cost_bp": 12,          // 一买一卖总成本估算(bp):账本与 brief 的扣成本口径
+    "exec_floor_pct_1d": -3.0,         // 执行线下沿:T+1 涨幅不高于此(%)单独记一档
+    "exec_floor_pos_in_range": 0.1,    // 执行线下沿:T+1 收盘在当日区间位不高于此
+    "fingerprint": {                   // 行为指纹相对近期常态的偏离告警(只记账)
+      "window": 10,                    // 基线取最近几场
+      "min_runs": 3,                   // 基线不足此数 = NO_BASELINE
+      "share_delta": 0.25,             // 占比类指标与基线中位相差达此值 = 偏离
+      "ratio_warn": 1.5                // 标量与基线中位之比达此倍数(或倒数)= 偏离
+    },
     "nan_warn": 0.30                   // 列 NaN 率告警线
   }
 }

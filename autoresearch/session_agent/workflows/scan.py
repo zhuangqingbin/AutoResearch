@@ -419,6 +419,8 @@ def _l4_ids(code: str, attempt: int = 1) -> dict[str, str]:
         "intel": f"{prefix}.intel",
         "intel_status": f"{prefix}.intel_status",
         "intel_bundle": f"{prefix}.intel_bundle",
+        # A11(2026-10-03):守卫后的情报正文,按 attempt 冻结,登记为卡的输入。
+        "intel_doc": f"{prefix}.intel_doc",
         "card": f"{prefix}.card",
         "ticket": f"{prefix}.ticket",
         **{kind: f"{prefix}.{kind}" for kind in ("facts", "initial", "changes")},
@@ -527,13 +529,14 @@ def l4_retry_expansion(
         status_dependencies = ["scan.l4.prepare"]
         status_inputs = ["scan.l4.source.bundle", ids["prompt"]]
         status_operation = "scan.l4.intel.disabled"
+    intel_doc = [ids["intel_doc"]] if intel_enabled else []
     tasks.append(
         _task(
             f"{prefix}.intel_status",
             "DETERMINISTIC",
             dependencies=status_dependencies,
             inputs=status_inputs,
-            outputs=[ids["intel_status"], ids["intel_bundle"]],
+            outputs=[ids["intel_status"], ids["intel_bundle"], *intel_doc],
             contract="scan.l4.intel_status.v1",
             operation=status_operation,
             subject=code,
@@ -545,7 +548,8 @@ def l4_retry_expansion(
             f"{prefix}.card",
             "INFERENCE",
             dependencies=[f"{prefix}.slim", f"{prefix}.intel_status"],
-            inputs=[ids["prompt"], ids["slim"], ids["deep"], ids["intel_status"], "scan.finalists"],
+            inputs=[ids["prompt"], ids["slim"], ids["deep"], ids["intel_status"], *intel_doc,
+                    "scan.finalists"],
             outputs=[ids["card"]],
             contract="stock.lite.v1",
             role="scan.l4.card",
@@ -677,13 +681,14 @@ def l4_expansion(
             status_dependencies = ["scan.l4.prepare"]
             status_inputs = ["scan.l4.source.bundle", ids["prompt"]]
             status_operation = "scan.l4.intel.disabled"
+        intel_doc = [ids["intel_doc"]] if intel_enabled else []
         tasks.append(
             _task(
                 f"l4.{code}.a1.intel_status",
                 "DETERMINISTIC",
                 dependencies=status_dependencies,
                 inputs=status_inputs,
-                outputs=[ids["intel_status"], ids["intel_bundle"]],
+                outputs=[ids["intel_status"], ids["intel_bundle"], *intel_doc],
                 contract="scan.l4.intel_status.v1",
                 operation=status_operation,
                 subject=code,
@@ -694,7 +699,8 @@ def l4_expansion(
             f"l4.{code}.a1.card",
             "INFERENCE",
             dependencies=[f"l4.{code}.a1.slim", f"l4.{code}.a1.intel_status"],
-            inputs=[ids["prompt"], ids["slim"], ids["deep"], ids["intel_status"], "scan.finalists"],
+            inputs=[ids["prompt"], ids["slim"], ids["deep"], ids["intel_status"], *intel_doc,
+                    "scan.finalists"],
             outputs=[ids["card"]],
             contract="stock.lite.v1",
             role="scan.l4.card",
@@ -1237,7 +1243,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
         )
     match = re.fullmatch(
         r"scan\.l4\.(\d{6})\.a(\d+)\."
-        r"(prompt|slim|deep|intel|intel_status|intel_bundle|card|review2|review3|review_none|ticket|facts|initial|changes)",
+        r"(prompt|slim|deep|intel|intel_status|intel_bundle|intel_doc|card|review2|review3|review_none|ticket|facts|initial|changes)",
         artifact_id,
     )
     if match:
@@ -1264,6 +1270,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 / "session_outputs"
                 / "intel_bundles"
                 / f"{code}.a1.json",
+                "intel_doc": staging / "session_attempts" / code / "a1" / "intel_doc.md",
                 "card": staging / "details" / f"{code}.md",
                 "review2": staging / "ensemble" / f"{code}.run2.md",
                 "review3": staging / "ensemble" / f"{code}.run3.md",
@@ -1279,6 +1286,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 "intel": retry / "intel.md",
                 "intel_status": retry / "intel_status.json",
                 "intel_bundle": retry / "intel_bundle.json",
+                "intel_doc": retry / "intel_doc.md",
                 "card": retry / "card.md",
                 "review2": retry / "review2.md",
                 "review3": retry / "review3.md",

@@ -475,7 +475,7 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         # 本进程就是扫描锁的持有者:begin 的锁检查(复审 I3)对它显式放行。
         code, out = _call(_session_agent("begin", "--orchestration", "session_v1",
                                          "--request-file", str(request_path),
-                                         "--ignore-scan-lock"),
+                                         "--ignore-scan-lock", "--executor", "headless"),
                           env=_env(), timeout=runner_cfg()["subprocess_timeout_s"], stderr=stream)
         doc = _last_json(out) or {}
         if code != 0 or not doc.get("run_id"):

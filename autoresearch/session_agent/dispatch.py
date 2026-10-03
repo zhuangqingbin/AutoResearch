@@ -257,7 +257,7 @@ def render_prompt(handle, task: dict, attempt: int, *, inputs: dict, outputs: di
                        and row.get("lane") == "pinned" for row in rows):
                     usage = "holding_review"
         depth_inputs = {key: value for key, value in inputs.items()
-                        if key.endswith((".slim", ".deep", ".intel_status"))}
+                        if key.endswith((".slim", ".deep", ".intel_status", ".intel_doc"))}
         prefix += (
             f"usage={usage} · depth=LITE。以下是本次 attempt 的授权证据路径，"
             "优先于历史任务包中的同类路径。普通候选早停不读 deep；进入 P4 或持仓复核必须实际读取 deep。"
@@ -265,12 +265,28 @@ def render_prompt(handle, task: dict, attempt: int, *, inputs: dict, outputs: di
             + json.dumps(depth_inputs, ensure_ascii=False, sort_keys=True) + "\n"
         )
     if getattr(handle, 'workspace', None) is not None and artifacts.layout_version(handle) >= 2:
-        prefix += (
-            '本次只读取以下 artifact 输入；任务包中的旧路径以此映射为准。'
-            '只写本次列出的私有输出路径，任务包中的旧输出路径不可写。\n'
-            + json.dumps({'inputs': inputs, 'outputs': outputs}, ensure_ascii=False, sort_keys=True) + '\n'
-        )
+        prefix += artifact_scope(get_role(task['role'])['tool_policy'], inputs, outputs,
+                                 engine=getattr(handle, 'engine', 'claude'))
     return prefix + _render_domain_prompt(handle, task, attempt, inputs=domain_inputs, outputs=outputs)
+
+
+def artifact_scope(tool_policy: str, inputs: dict, outputs: dict, *, engine: str = 'claude') -> str:
+    """layout v2 派发前缀:能读什么、写什么、能用哪些工具。
+
+    没有 READ 的盲搜角色(l4-intel 等)登记的输入只作溯源 —— 不把路径摆给它,也不叫它去读
+    (A11,2026-10-03:10-02 首跑里 l4-intel 被叫去读卡任务包,没有 Read 工具,读不到也不该读)。
+    """
+    from autoresearch.session_agent.task_access import tool_allowance
+
+    if 'READ' in str(tool_policy).split('_'):
+        head = ('本次只读取以下 artifact 输入；任务包中的旧路径以此映射为准。'
+                '只写本次列出的私有输出路径，任务包中的旧输出路径不可写。\n')
+        body = {'inputs': inputs, 'outputs': outputs}
+    else:
+        head = '本任务不读任何文件(所需信息已写在下文,登记的输入只作溯源);只写本次列出的私有输出路径。\n'
+        body = {'outputs': outputs}
+    return (head + json.dumps(body, ensure_ascii=False, sort_keys=True) + '\n'
+            + tool_allowance(tool_policy, engine) + '\n')
 
 
 def _render_domain_prompt(handle, task: dict, attempt: int, *, inputs: dict, outputs: dict) -> str:
@@ -445,11 +461,22 @@ def build_request(
         instruction_refs = freeze_instructions(role_id, instruction_refs,
             Path(handle.workspace) / 'session/instructions' / f"{task['task_id']}-a{attempt}", outputs)
     prompt = render_prompt(handle, task, attempt, inputs=inputs, outputs=outputs)
+    host_prompt = None
     if artifacts.layout_version(handle) >= 2:
         prompt += ("\nC4 输入边界：契约仅从冻结 instruction_refs 读取；文中的旧路径与链接不授权扩展。"
                    "使用宿主结构化文件工具或根会话绑定后给出的规范 task_file_broker 命令；禁止通用 shell。"
                    "本阶段显式登记的 deep 已由任务图授权，按原渐进DD规则条件读取；未登记文件不可追加。\n"
                    + json.dumps({'instruction_refs': instruction_refs}, ensure_ascii=False))
+        # B8(2026-10-03):按引用派发。全文冻结成文件并进授权读取;宿主只传一行指针,省掉主会话
+        # 逐字复述(10-02 首跑 23.3 万字符)。没有 READ 的盲搜角色读不了文件,照旧传全文。
+        by_reference = session_cfg(orchestration_config(handle))["mailbox"]["by_reference"]
+        if by_reference and "READ" in role["tool_policy"].split("_"):
+            prompt_file = frozen_path.with_name(f"{task['task_id']}-a{attempt}.prompt.md")
+            prompt_file.parent.mkdir(parents=True, exist_ok=True)
+            prompt_file.write_text(prompt, encoding="utf-8")
+            instruction_refs = (*instruction_refs, str(prompt_file))
+            host_prompt = (f"执行冻结任务 {task['task_id']}(attempt {attempt})。第一步:用 Read 完整读取 "
+                           f"{prompt_file},它就是本任务的全部指令;严格照做,不读其中未列出的文件。")
     request = DispatchRequest(
         run_id=handle.run_id,
         engine=handle.engine,
@@ -474,6 +501,7 @@ def build_request(
         host_session_ref=host_profile["session_ref"],
         resolution=resolution,
         access_manifest_path=str(frozen_path.with_suffix('.access.json')) if artifacts.layout_version(handle) >= 2 else None,
+        host_prompt=host_prompt,
     )
 
     if artifacts.layout_version(handle) >= 2:

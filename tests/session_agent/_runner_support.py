@@ -130,6 +130,7 @@ def begin_synthetic_run(
     host: dict | None = None,
     run_kind: str = "stock-research",
     user_config: dict | None = None,
+    executor: str = "mailbox",
 ) -> SyntheticRun:
     monkeypatch.setattr(ws, "ENGINE", ENGINE)
     workspace = tmp_path / f"context_{ENGINE}" / "runs" / RUN_ID
@@ -209,6 +210,7 @@ def begin_synthetic_run(
         begin_capsule=lambda req: handle,
         planner=planner,
         artifact_registrar=registrar,
+        executor=executor,
     )
     return run
 

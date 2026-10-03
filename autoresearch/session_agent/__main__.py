@@ -27,6 +27,9 @@ def _parser(*, read_only=False):
     )
     begin.add_argument("--legacy-reason")
     begin.add_argument("--ignore-scan-lock", action="store_true")
+    # 谁来派发推理任务:mailbox = 宿主原生 agent 工具(定义 frontmatter 决定模型,须与冻结配置一致);
+    # headless = `claude -p` 显式透传 --model/--effort。与之后 `run --executor` 用同一个值。
+    begin.add_argument("--executor", choices=("mailbox", "headless"), default="mailbox")
     for command in ("status", "next", "resume", "finish"):
         child = subparsers.add_parser(command)
         child.add_argument("--run-id", required=True)
@@ -229,6 +232,7 @@ def main(argv=None):
                 request,
                 orchestration=args.orchestration,
                 legacy_reason=args.legacy_reason,
+                executor=args.executor,
             )
         elif args.command in {"status", "next", "resume", "finish"}:
             value = getattr(service, args.command)(args.run_id)

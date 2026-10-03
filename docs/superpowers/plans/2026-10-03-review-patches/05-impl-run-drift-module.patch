@@ -1,0 +1,339 @@
+--- /dev/null
++++ b/autoresearch/scan/run_drift.py
+@@ -0,0 +1,336 @@
++#!/usr/bin/env python3
++"""跨 run 的身份漂移与相对预算带(零 LLM;纯函数 + 一个只读的历史装载器)。
++
++回答三个问题,全部只读已经在盘上的事实:
++
++1. **这一场是什么**(`identity`):每类研究 agent 实际用的模型全 ID 与 effort、宿主版本、
++   agent 契约文件的哈希、配置哈希;并折成一个 `cohort_key` —— 读数只在同一 cohort 内可比。
++2. **和上一场是不是同一个东西**(`drift`):逐项列出变了什么。
++3. **比最近的常态贵多少**(`relative`):本场相对最近 N 场已发布真实扫描中位数的倍数。
++
++为什么不沿用 `budget_band`:它是绝对阈值(`run_weighted_warn`),自 2026-09 起每场都超,
++恒为 RED;2026-09-22 `opus` 别名换代、成本 +61% 的那一场也是 RED。恒亮的灯等于没有灯。
++
++本模块只产出事实与标签,不拥有任何门:不改评级、不截断研究、不让发布失败。
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import statistics
++from pathlib import Path
++
++SCHEMA_VERSION = 1
++#: 不进 cohort 的 agent 类型:命令壳与 harness 包装(前两个是 Claude 的,后两个是 Codex 的)。
++#: 它们的数量随编排方式变(legacy 有 160 个壳,session_v1 一个没有),而研究行为由研究 agent 决定。
++RELAY_AGENTS = frozenset({"general-purpose", "workflow-subagent", "gp-shell", "trace-control"})
++MAIN = "(主会话)"
++#: 每个引擎真正装载的 agent 契约住在哪 —— cohort 只认本引擎那一份。
++AGENT_PROMPT_PREFIXES = {"claude": ".claude/agents/", "codex": ".codex/agents/"}
++
++DEFAULT_POLICY = {"window": 10, "min_runs": 3, "warn_ratio": 1.5, "alarm_ratio": 2.0}
++
++
++def _ledger_identity(usage_ledger: dict) -> dict:
++    block = usage_ledger.get("identity")
++    if isinstance(block, dict):
++        return block
++    # 2026-10-03 之前的账本没有 identity 块:从逐行事实现算(版本当时没记,保持为空)。
++    from autoresearch.trace.usage_harvest import observed_identity
++
++    return observed_identity(list(usage_ledger.get("rows") or []))
++
++
++def identity(usage_ledger: dict, *, prompt_hashes: dict | None, config_hash: str | None,
++             engine: str | None = None) -> dict:
++    """本场身份。没量到任何研究 agent 时 `cohort_key` 为 None —— 不拿空集合冒充一个 cohort。
++
++    `engine` 缺省取当前引擎(`workspace.detect_engine`);它决定认哪个目录下的 agent 契约,
++    并且进 cohort:两个引擎即使 agent 名相同也不是同一个东西。
++    """
++    if engine is None:
++        from autoresearch.common import workspace as ws
++
++        engine = ws.detect_engine()
++    prefix = AGENT_PROMPT_PREFIXES[engine]
++    observed = _ledger_identity(usage_ledger or {})
++    research: dict[str, dict] = {}
++    relay: dict[str, dict] = {}
++    for name, spec in sorted((observed.get("agents") or {}).items()):
++        entry = {"models": list(spec.get("models") or []), "efforts": list(spec.get("efforts") or [])}
++        (relay if name in RELAY_AGENTS else research)[name] = entry
++    agent_prompts = {path: digest for path, digest in sorted((prompt_hashes or {}).items())
++                     if path.startswith(prefix)}
++    cohort = None
++    if research:
++        payload = json.dumps({"engine": engine, "agents": research, "agent_prompts": agent_prompts},
++                             ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++        cohort = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
++    main = observed.get("main") or {}
++    return {
++        "schema_version": SCHEMA_VERSION,
++        "engine": engine,
++        "host_versions": list(observed.get("host_versions") or []),
++        "main_models": list(main.get("models") or []),
++        "agents": research,
++        "relay_agents": relay,
++        "agent_prompts": agent_prompts,
++        "config_hash": config_hash,
++        "cohort_key": cohort,
++    }
++
++
++def drift(previous: dict | None, current: dict) -> dict:
++    """本场身份 vs 上一场已发布真实扫描。`previous` 形如 `{"run_id", "identity"}`。
++
++    状态:`UNMEASURED`(本场没量到身份,不做任何断言)/ `NO_BASELINE`(没有可比的上一场,或上一场是另一个引擎)/
++    `SAME` / `CHANGED`。变化按 host → agent_set → model → effort → prompt → config 的固定顺序列出。
++    任一侧缺席的宿主版本、契约哈希、配置哈希不比较:缺席不是「变了」。
++    """
++    if current.get("cohort_key") is None:
++        return {"status": "UNMEASURED", "baseline_run": None, "changes": []}
++    before = (previous or {}).get("identity")
++    if (not isinstance(before, dict) or before.get("cohort_key") is None
++            or before.get("engine", current.get("engine")) != current.get("engine")):
++        return {"status": "NO_BASELINE", "baseline_run": None, "changes": []}
++    changes: list[dict] = []
++
++    def add(kind: str, scope: str, old, new) -> None:
++        changes.append({"kind": kind, "scope": scope, "before": old, "after": new})
++
++    old_host, new_host = before.get("host_versions") or [], current.get("host_versions") or []
++    if old_host and new_host and old_host != new_host:
++        add("host", "宿主", old_host, new_host)
++    old_agents, new_agents = before.get("agents") or {}, current.get("agents") or {}
++    for name in sorted(set(old_agents) ^ set(new_agents)):
++        add("agent_set", name, "在场" if name in old_agents else "缺席",
++            "在场" if name in new_agents else "缺席")
++    shared = sorted(set(old_agents) & set(new_agents))
++    for kind, field in (("model", "models"), ("effort", "efforts")):
++        for name in shared:
++            if old_agents[name].get(field) != new_agents[name].get(field):
++                add(kind, name, old_agents[name].get(field), new_agents[name].get(field))
++    old_prompts, new_prompts = before.get("agent_prompts") or {}, current.get("agent_prompts") or {}
++    if old_prompts and new_prompts:
++        for path in sorted(set(old_prompts) | set(new_prompts)):
++            if old_prompts.get(path) != new_prompts.get(path):
++                add("prompt", path, (old_prompts.get(path) or "缺席")[:12],
++                    (new_prompts.get(path) or "缺席")[:12])
++    old_cfg, new_cfg = before.get("config_hash"), current.get("config_hash")
++    if old_cfg and new_cfg and old_cfg != new_cfg:
++        add("config", "scan_config", old_cfg[:12], new_cfg[:12])
++    return {"status": "CHANGED" if changes else "SAME",
++            "baseline_run": (previous or {}).get("run_id"), "changes": changes}
++
++
++def _median(values: list[float]):
++    value = statistics.median(values)
++    return int(value) if float(value).is_integer() else round(float(value), 1)
++
++
++def usage_shape(usage_ledger: dict) -> dict:
++    """本场用量的形状:总输出、加权输入、每类 agent 的份数与输出 / 消息数中位。未计量不写成 0。"""
++    rows = [row for row in (usage_ledger or {}).get("rows") or []
++            if row.get("status") != "UNMEASURED"]
++    if not rows:
++        return {"schema_version": SCHEMA_VERSION, "measured": False, "output_total": None,
++                "weighted_input": None, "agents": {}}
++    buckets: dict[str, list[dict]] = {}
++    for row in rows:
++        name = MAIN if row.get("role") == "main" else str(row.get("agent") or "(未标注)")
++        buckets.setdefault(name, []).append(row)
++    agents = {}
++    for name in sorted(buckets):
++        outputs = [int(row.get("output") or 0) for row in buckets[name]]
++        agents[name] = {
++            "n": len(outputs),
++            "output_median": _median(outputs),
++            "output_total": sum(outputs),
++            "messages_median": _median([int(row.get("messages") or 0) for row in buckets[name]]),
++        }
++    totals = usage_ledger.get("totals") or {}
++    weighted = totals.get("weighted_input_proxy", totals.get("weighted_in"))
++    return {"schema_version": SCHEMA_VERSION, "measured": True,
++            "output_total": sum(spec["output_total"] for spec in agents.values()),
++            "weighted_input": weighted, "agents": agents}
++
++
++def _history_shape(observation: dict) -> dict | None:
++    shape = observation.get("usage_shape")
++    if isinstance(shape, dict) and shape.get("measured"):
++        return shape
++    weighted = observation.get("weighted_input_proxy")
++    if weighted is None:
++        return None
++    # 没有 usage_shape 的老观测:只贡献加权输入这一项基线。
++    return {"measured": True, "output_total": None, "weighted_input": weighted, "agents": {}}
++
++
++def relative(shape: dict, history: list[dict], policy: dict | None = None) -> dict:
++    """本场相对最近 `window` 场已发布真实扫描的中位数倍数。
++
++    不按 cohort 过滤基线:模型换代后的第一场正是要和旧常态比,才看得见跳变;几场之后基线
++    自己会移到新常态。指标只取两边都有的:`weighted_input`、`output_total`、
++    `output_median:<研究 agent>`。任一指标 ≥ `alarm_ratio` → SPIKE;≥ `warn_ratio` → ELEVATED。
++    """
++    rules = {**DEFAULT_POLICY, **(policy or {})}
++    base = {"n_baseline": 0, "metrics": {}, "worst": None}
++    if not shape.get("measured"):
++        return {"status": "UNMEASURED", **base}
++    shapes = [candidate for candidate in
++              (_history_shape(row) for row in history if row.get("real_scan") is True)
++              if candidate is not None][-int(rules["window"]):]
++    if len(shapes) < int(rules["min_runs"]):
++        return {"status": "NO_BASELINE", **base, "n_baseline": len(shapes)}
++
++    series: dict[str, tuple[float | None, list[float]]] = {
++        "weighted_input": (shape.get("weighted_input"),
++                           [s["weighted_input"] for s in shapes if s.get("weighted_input")]),
++        "output_total": (shape.get("output_total"),
++                         [s["output_total"] for s in shapes if s.get("output_total")]),
++    }
++    for name, spec in (shape.get("agents") or {}).items():
++        if name == MAIN or name in RELAY_AGENTS:
++            continue
++        series[f"output_median:{name}"] = (
++            spec.get("output_median"),
++            [s["agents"][name]["output_median"] for s in shapes
++             if name in (s.get("agents") or {}) and s["agents"][name].get("output_median")],
++        )
++    metrics: dict[str, dict] = {}
++    for name, (value, past) in series.items():
++        if value is None or len(past) < int(rules["min_runs"]):
++            continue
++        median = _median(past)
++        metrics[name] = {"value": value, "baseline_median": median,
++                         "ratio": round(float(value) / float(median), 2)}
++    if not metrics:
++        return {"status": "NO_BASELINE", **base, "n_baseline": len(shapes)}
++    worst = max(metrics, key=lambda name: (metrics[name]["ratio"], name))
++    top = metrics[worst]["ratio"]
++    status = ("SPIKE" if top >= float(rules["alarm_ratio"]) else
++              "ELEVATED" if top >= float(rules["warn_ratio"]) else "NORMAL")
++    return {"status": status, "n_baseline": len(shapes), "metrics": metrics,
++            "worst": worst if status != "NORMAL" else None}
++
++
++#: 已发布观测在盘上的两种位置:legacy 日期目录,与 session_v1 的不可变发布根。
++_HISTORY_GLOBS = ("*/trace/_budget_observation.json",
++                  "runs/*/p*/report/trace/_budget_observation.json")
++
++
++def load_history(reports_scan_root: Path | str, *, exclude_run_id: str | None = None,
++                 limit: int = 40) -> tuple[list[dict], int]:
++    """已发布 scan run 的预算观测(只读),按 (analysis_date, run_id) 升序;返回 `(观测, 读不动的份数)`。
++
++    观测里没有 `usage_shape` / `identity`(2026-10-03 之前发布的 run)时,从同一份发布物的
++    `trace/staging/_token_usage.json` 现算 —— 这样上线第一场就有输出中位的基线。老 run 没有
++    契约哈希,`agent_prompts` 留空,不编。读不动的文件计数返回,不静默丢。
++    """
++    root = Path(reports_scan_root)
++    if not root.is_dir():
++        return [], 0
++    rows: dict[str, dict] = {}
++    unreadable = 0
++    for pattern in _HISTORY_GLOBS:
++        for path in sorted(root.glob(pattern)):
++            try:
++                observation = json.loads(path.read_text(encoding="utf-8"))
++            except (OSError, json.JSONDecodeError, ValueError):
++                unreadable += 1
++                continue
++            if not isinstance(observation, dict):
++                unreadable += 1
++                continue
++            run_id = str(observation.get("run_id") or path.parents[1].name)
++            if run_id == exclude_run_id:
++                continue
++            if "usage_shape" not in observation or "identity" not in observation:
++                usage = _read_json(path.parent / "staging" / "_token_usage.json")
++                if usage is not None:
++                    observation.setdefault("usage_shape", usage_shape(usage))
++                    observation.setdefault(
++                        "identity", identity(usage, prompt_hashes=None, config_hash=None))
++            observation["run_id"] = run_id
++            rows[run_id] = observation
++    ordered = sorted(rows.values(),
++                     key=lambda row: (str(row.get("analysis_date") or ""), str(row["run_id"])))
++    return ordered[-int(limit):], unreadable
++
++
++def _read_json(path: Path) -> dict | None:
++    try:
++        value = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError, ValueError):
++        return None
++    return value if isinstance(value, dict) else None
++
++
++def latest_identity(history: list[dict]) -> dict | None:
++    """最近一场**有身份**的已发布真实扫描 → `{"run_id", "identity"}`;没有 → None。"""
++    for row in reversed(history):
++        block = row.get("identity")
++        if row.get("real_scan") is True and isinstance(block, dict) and block.get("cohort_key"):
++            return {"run_id": row.get("run_id"), "identity": block}
++    return None
++
++
++_KIND_LABEL = {"model": "模型", "effort": "effort", "host": "版本", "prompt": "契约",
++               "config": "配置", "agent_set": "在场"}
++_METRIC_LABEL = {"weighted_input": "加权输入", "output_total": "总输出"}
++
++
++def _metric_label(name: str) -> str:
++    if name.startswith("output_median:"):
++        return f"{name.split(':', 1)[1]} 输出中位"
++    return _METRIC_LABEL.get(name, name)
++
++
++def summary_fragment(observation: dict) -> str:
++    """summary 紧凑行里的一段:`身份:… · 相对:…`。没数据就写 UNMEASURED,不写 SAME / NORMAL。"""
++    drift_block = observation.get("drift") or {}
++    status = drift_block.get("status") or "UNMEASURED"
++    changes = drift_block.get("changes") or []
++    identity_text = f"身份:{status}"
++    if changes:
++        names = "、".join(f"{c['scope']} {_KIND_LABEL.get(c['kind'], c['kind'])}" for c in changes[:3])
++        more = "…" if len(changes) > 3 else ""
++        identity_text += f"({len(changes)} 项:{names}{more})"
++    rel = observation.get("relative") or {}
++    rel_status = rel.get("status") or "UNMEASURED"
++    relative_text = f"相对:{rel_status}"
++    worst = rel.get("worst")
++    if worst and worst in (rel.get("metrics") or {}):
++        relative_text += f" ×{rel['metrics'][worst]['ratio']:.2f}({_metric_label(worst)})"
++    return f"{identity_text} · {relative_text}"
++
++
++def detail_lines(observation: dict) -> list[str]:
++    """appendix E 的明细行:身份、逐项变化、相对预算带逐指标。"""
++    ident = observation.get("identity") or {}
++    drift_block = observation.get("drift") or {}
++    status = drift_block.get("status") or "UNMEASURED"
++    head = f"- 身份:{status}"
++    if drift_block.get("baseline_run"):
++        head += f"(对上一场 {drift_block['baseline_run']})"
++    if ident.get("cohort_key"):
++        head += f" · cohort `{ident['cohort_key']}`"
++    if ident.get("host_versions"):
++        head += " · 宿主 " + " / ".join(ident["host_versions"])
++    lines = [head]
++    for change in drift_block.get("changes") or []:
++        before, after = change["before"], change["after"]
++        if isinstance(before, list):
++            before = " / ".join(str(v) for v in before) or "—"
++        if isinstance(after, list):
++            after = " / ".join(str(v) for v in after) or "—"
++        lines.append(f"  - {change['scope']} {_KIND_LABEL.get(change['kind'], change['kind'])}:"
++                     f"{before} → {after}")
++    rel = observation.get("relative") or {}
++    rel_status = rel.get("status") or "UNMEASURED"
++    lines.append(f"- 相对预算带:{rel_status}(可比的已发布真实扫描 {rel.get('n_baseline', 0)} 场)")
++    for name, metric in sorted((rel.get("metrics") or {}).items(),
++                               key=lambda item: -item[1]["ratio"]):
++        lines.append(f"  - {_metric_label(name)}:{metric['value']} vs 中位 "
++                     f"{metric['baseline_median']} = ×{metric['ratio']:.2f}")
++    return lines

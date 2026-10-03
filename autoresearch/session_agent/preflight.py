@@ -122,6 +122,20 @@ def preflight_roles(handle, role_ids, host_profile: dict, *, executor="mailbox",
                     reasons.append(source)
                 spec, source = definition, "PROJECT_AGENT_DEFINITION"
             row.update(config_source=source, definition=definition_path, model=spec.get("model") or definition.get("model"), tier=tier)
+            if executor_name == "mailbox":
+                # 2026-10-03 钉版:mailbox 宿主派发时生效的是项目 agent 定义(Claude frontmatter /
+                # Codex toml),不是请求里的解析值。两边不一致 = 这一场跑的不是冻结配置钉的模型,
+                # 在任何取数之前拦下;headless 用 --model/--effort 显式透传,不受此约束。
+                effort_key = "effort" if engine == "claude" else "reasoning_effort"
+                for key in ("model", effort_key):
+                    want, have = spec.get(key), definition.get(key)
+                    if want is not None and have != want:
+                        reasons.append(
+                            f"agent definition {key}={have!r} ≠ frozen config {want!r} "
+                            "(mailbox host loads the definition; sync: "
+                            "uv run --no-sync python -m autoresearch.scan.agent_frontmatter --write; "
+                            "roles sharing one definition with different settings need "
+                            "begin/run --executor headless)")
             independent = (role_id in requested_independent if role_id in task_roles
                            else role["context_policy"] == "INDEPENDENT")
             available = (adapter or {}).get("independent_context")

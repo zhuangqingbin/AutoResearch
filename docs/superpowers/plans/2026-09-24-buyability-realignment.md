@@ -3018,6 +3018,14 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 5: 批 4 真跑验收（不是代码任务；10 个成功扫描日，两引擎各自记）**
 
+> 🧭 **2026-10-03 起算规则（用户按复盘稿 Q8 裁定「钉版后重新起算」）**：窗内模型换过两次代
+> （09-22 `opus` → `claude-opus-5-5`，09-28 `sonnet` → `claude-sonnet-5-5`，都是 Claude Code 自动升级改别名），
+> 而 09-24 / 09-28 / 09-29 / 09-30 四场都没走完发布链。**钉版（`scan_config` 与 agent 定义写全 ID）落地后的第一场
+> 成功扫描记为第 1 天**，之前的场次不计；只数 `runs.csv.model_cohort` 等于钉版 cohort 的行（cohort 一变，窗口重新起算）。
+> L5 的 $46 是 opus-5 / sonnet-5 cohort 的中位；同样 `effort: max` 下 Opus 5.5 每张卡的输出约是旧 cohort 的 2.6 倍，
+> 09-29 一场按官方牌价 $65.4 —— L5 在钉版 cohort 下预计不达标。按本节规则它连续 3 场不达标就把读数交用户裁；
+> 降成本的路是复盘稿 B1 的 effort sweep（过等价门才改档位），不是在窗内调规则。
+
 每场跑完读 `brief.md` ③ 的归因行与 `_ledger/views/runs.csv`：
 
 > ⚠️ **2026-09-25 更正**：下表原先的 L1 行（「A 级 BUY 天数 ≥ 5/10」）**已被实测推翻并重定义**，见

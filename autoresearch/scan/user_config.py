@@ -97,6 +97,17 @@ from autoresearch.contracts.agent_roles import configured_agents
 _AGENT_ROLES = set(configured_agents())
 _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _MODELS = {"haiku", "sonnet", "opus"}
+
+
+def _claude_model_ok(value) -> bool:
+    """别名(`_MODELS`)或价表认识的全 ID(`trace.pricing.KNOWN_MODEL_IDS`)。
+
+    全 ID 才是钉版:别名由 Claude Code 客户端解析,随自动升级移动。闭集取自价表,所以
+    钉一个价表不认识的 ID 在加载配置时就失败,而不是等成本读数变成 UNKNOWN 才发现。
+    """
+    from autoresearch.trace.pricing import KNOWN_MODEL_IDS
+
+    return isinstance(value, str) and (value in _MODELS or value in KNOWN_MODEL_IDS)
 _CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 _ENGINES = {"claude", "codex"}
 _WEB_SEARCH_MODES = {"disabled", "cached", "live"}
@@ -148,9 +159,9 @@ def _validate_engine_agent_spec(engine: str, spec, *, where: str,
         if "effort" in spec and (not isinstance(spec["effort"], str)
                                  or spec["effort"] not in _EFFORTS):
             raise ValueError(f"{where}.effort={spec.get('effort')!r} 非法")
-        if "model" in spec and (not isinstance(spec["model"], str)
-                                or spec["model"] not in _MODELS):
-            raise ValueError(f"{where}.model={spec.get('model')!r} 非法")
+        if "model" in spec and not _claude_model_ok(spec["model"]):
+            raise ValueError(f"{where}.model={spec.get('model')!r} 非法"
+                             "(别名 haiku/sonnet/opus 或价表认识的全 ID)")
     else:
         if "reasoning_effort" in spec and (
                 not isinstance(spec["reasoning_effort"], str)
@@ -178,9 +189,8 @@ def _validate_legacy_agents(agents: dict) -> None:
         if "effort" in spec and (not isinstance(spec["effort"], str)
                                  or spec["effort"] not in _EFFORTS):
             raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
-        if "model" in spec and (not isinstance(spec["model"], str)
-                                or spec["model"] not in _MODELS):
-            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
+        if "model" in spec and not _claude_model_ok(spec["model"]):
+            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)} 或全 ID)")
 
 
 def _validate_dual_agents(cfg: dict, agents: dict) -> None:
@@ -434,8 +444,8 @@ def resolve_agent_config(cfg: dict, *, require_all: bool = True,
             raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
         if "effort" in spec and spec["effort"] not in _EFFORTS:
             raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
-        if "model" in spec and spec["model"] not in _MODELS:
-            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
+        if "model" in spec and not _claude_model_ok(spec["model"]):
+            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)} 或全 ID)")
         resolved[role] = {**_ROLE_FALLBACK.get(role, {}), **spec}
 
     if require_all:

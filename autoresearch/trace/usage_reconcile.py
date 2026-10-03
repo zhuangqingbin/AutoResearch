@@ -44,6 +44,7 @@ import re
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.trace.pricing import canonical_model_id
 
 # agentType(usage_harvest 的 `row["agent"]`,即派发时 Agent 工具的 `subagent_type`)→
 # 该 agentType 底下可能的 role **有序**元组:**第 0 位是主 role**(吸收剩余行),
@@ -141,6 +142,35 @@ def _norm_model(raw: str | None) -> str:
     return raw or "?"
 
 
+#: Claude Code 的模型别名。期望值是别名 = 这个 role **没钉版**:别名由客户端解析、随自动升级
+#: 移动(2026-09-22 `opus`→Opus 5.5、09-28 `sonnet`→Sonnet 5.5),只能按家族比。
+_MODEL_ALIASES = frozenset({"haiku", "sonnet", "opus", "fable"})
+
+
+def _is_alias(model: object) -> bool:
+    return str(model or "").strip().lower() in _MODEL_ALIASES
+
+
+def _model_token(expected: object, actual: str | None) -> str:
+    """把实测模型投影到「期望的粒度」后再比。
+
+    - 期望是别名(未钉)→ 家族名:`claude-opus-5` 与 `claude-opus-5-5` 都是 `opus`(老行为)。
+    - 期望是全 ID(已钉)→ 规整后的全 ID:同家族换代从此是 mismatch,而不是静默通过。
+    """
+    if _is_alias(expected):
+        return _norm_model(actual)
+    return canonical_model_id(actual) or "?"
+
+
+def _actual(exp: dict, field: str, value):
+    return _model_token(exp.get("model"), value) if field == "model" else value
+
+
+def _expected(exp: dict, field: str):
+    value = exp[field]
+    return value if field != "model" or _is_alias(value) else canonical_model_id(value)
+
+
 #: 次级 role 的派发次数从哪些产物读出来(Wave12-T34)。**只数次级 role**——主 role
 #: 吸收剩余行,所以不需要(也不该)去数它:数主 role 会引入第二个可能错的计数。
 _SECONDARY_ROLES = ("ens_review", "l3_repair")
@@ -231,7 +261,8 @@ def _normalise_expected_spec(spec: dict) -> dict:
 
 def _fits(exp: dict, got: tuple[str, str]) -> bool:
     """实测 `(model, effort)` 是否**逐字段**满足期望(期望里没有的字段不判)。"""
-    return all(exp[f] == g for f, g in (("model", got[0]), ("effort", got[1])) if f in exp)
+    return all(_expected(exp, f) == _actual(exp, f, g)
+               for f, g in (("model", got[0]), ("effort", got[1])) if f in exp)
 
 
 def _judge_multi_role(atype: str, roles: tuple[str, ...], got_rows: list[tuple[str, str]],
@@ -275,17 +306,19 @@ def _judge_multi_role(atype: str, roles: tuple[str, ...], got_rows: list[tuple[s
             got = remaining.pop(0)
             exp = specs[role]
             for field, got_val in (("model", got[0]), ("effort", got[1])):
-                if field in exp and exp[field] != got_val:
+                if field in exp and _expected(exp, field) != _actual(exp, field, got_val):
                     mismatches.append({"agent": atype, "role": role, "field": field,
-                                       "expected": exp[field], "actual": got_val})
+                                       "expected": exp[field],
+                                       "actual": _actual(exp, field, got_val)})
             need[role] -= 1
 
     for got in remaining:                        # ③ 剩下的归主 role
         exp = specs[primary]
         for field, got_val in (("model", got[0]), ("effort", got[1])):
-            if field in exp and exp[field] != got_val:
+            if field in exp and _expected(exp, field) != _actual(exp, field, got_val):
                 mismatches.append({"agent": atype, "role": primary, "field": field,
-                                   "expected": exp[field], "actual": got_val})
+                                   "expected": exp[field],
+                                   "actual": _actual(exp, field, got_val)})
 
     # census 说派了、实测行却不够 → 不当没发生:少的那几次要么没被 harvest 到,
     # 要么根本没派成。两种都是"这份对账不完整",按 wire 语义单列一条。
@@ -346,9 +379,11 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
     census = dict(census or {})
 
     gp_allowed: set[tuple[str, str]] = set()
+    gp_specs: dict[str, dict] = {}
     for shell in ("gp_shell", "gp_shell_json"):
         spec = _normalise_expected_spec({**_GP_SHELL_DEFAULT, **(agents_cfg.get(shell) or {})})
         gp_allowed.add((spec["model"], spec["effort"]))
+        gp_specs[shell] = spec
 
     mismatches: list[dict] = []
     seen_types: set[str] = set()
@@ -375,10 +410,11 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
             expected = _normalise_expected_spec(agents_cfg.get(config_role) or {})
             if not expected:
                 unknown_types.add(atype)
-            for field, got in (("model", _norm_model(r.get("model"))), ("effort", r.get("effort") or "(unset)")):
-                if field in expected and got != expected[field]:
+            for field, raw in (("model", r.get("model")), ("effort", r.get("effort") or "(unset)")):
+                if field in expected and _expected(expected, field) != _actual(expected, field, raw):
                     mismatches.append({"agent": atype, "role": config_role, "field": field,
-                                       "expected": expected[field], "actual": got})
+                                       "expected": expected[field],
+                                       "actual": _actual(expected, field, raw)})
             continue
         seen_types.add(atype)
         if r.get("model") in _UNMEASURED and r.get("effort") in _UNMEASURED:
@@ -386,13 +422,14 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
             # 仍计入 seen_types(agent 确实跑过),不计入 mismatches/unknown_types。
             unmeasured += 1
             continue
-        got = (_norm_model(r.get("model")), r.get("effort") or "(unset)")
+        got = (r.get("model"), r.get("effort") or "(unset)")   # 模型留原值:投影到期望粒度后再比
         if atype in AGENTTYPE_ROLES:
             by_type.setdefault(atype, []).append(got)   # 同 agentType 攒齐再判(多 role 需要全局视野)
         elif atype == "general-purpose":
-            if got not in gp_allowed:
+            if not any(_fits(spec, got) for spec in gp_specs.values()):
+                shown = _model_token(next(iter(gp_specs.values())).get("model"), got[0])
                 mismatches.append({"agent": atype, "role": None, "field": "model+effort",
-                                   "expected": sorted(gp_allowed), "actual": list(got)})
+                                   "expected": sorted(gp_allowed), "actual": [shown, got[1]]})
         elif atype in _HARNESS_TYPES:
             continue                          # harness 包装类型:无配置面可对账,单列留痕
         else:
@@ -419,15 +456,16 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
                     mismatches.append({
                         "agent": atype, "role": None, "field": "model+effort",
                         "expected": sorted(f"{role}:{specs[role]}" for role in live),
-                        "actual": list(got)})
+                        "actual": [_model_token(specs[roles[0]].get("model"), got[0]), got[1]]})
             continue
         role = roles[0]                     # 单 role,或多 role 但期望完全一致 → 逐行直判
         exp = specs[role]
         for got in got_rows:
             for field, got_val in (("model", got[0]), ("effort", got[1])):
-                if field in exp and exp[field] != got_val:
+                if field in exp and _expected(exp, field) != _actual(exp, field, got_val):
                     mismatches.append({"agent": atype, "role": role, "field": field,
-                                       "expected": exp[field], "actual": got_val})
+                                       "expected": exp[field],
+                                       "actual": _actual(exp, field, got_val)})
 
     wire_breaks = [role for role in _EXPECT_PRESENT if role in agents_cfg
                    and role not in session_seen
@@ -448,6 +486,19 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
     # presence-gated:压根没有 resolved(老 run)时不报 —— 那是"还没上线",不是"漏了"。
     missing_resolved_roles = sorted(dispatched - set(resolved)) if resolved else []
 
+    # 钉版可见性(2026-10-03):今天真跑过、但期望模型是别名或缺席的 role。只记账,不进 `ok`
+    # —— 壳类与老配置合法地用别名;它回答的是「哪些角色的换代今天看不见」。
+    role_specs: dict[str, dict] = {
+        role: _normalise_expected_spec(agents_cfg.get(role) or {}) for role in session_seen}
+    for atype in seen_types:
+        for role in AGENTTYPE_ROLES.get(atype, ()):
+            if role in dispatched:
+                role_specs[role] = _spec_of(atype, role, agents_cfg)
+        if atype == "general-purpose":
+            role_specs.update(gp_specs)
+    unpinned_roles = sorted(role for role, spec in role_specs.items()
+                            if "model" not in spec or _is_alias(spec["model"]))
+
     ok = (not mismatches and not wire_breaks and not unknown_agent_types
           and not missing_resolved_roles)
     actual_status = ("UNKNOWN" if checked == 0 or unmeasured == checked else
@@ -457,7 +508,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
             "unknown_agent_types": unknown_agent_types,
             "harness_types": sorted(t for t in seen_types if t in _HARNESS_TYPES),
             "missing_resolved_roles": missing_resolved_roles, "checked": checked,
-            "unmeasured": unmeasured}
+            "unmeasured": unmeasured, "unpinned_roles": unpinned_roles}
 
 
 def reconcile_with_resolved(echo: dict, rows: list[dict], *, date: str,
@@ -544,6 +595,11 @@ def render(result: dict) -> str:
         "(limit-killed,判不了 model/effort,不计入 mismatch——见 I-1)",
         "",
     ]
+    if result.get("unpinned_roles"):
+        lines.append("**unpinned_roles**(今天跑过、但期望模型是别名或没写 —— 只能按家族比,"
+                     "同家族换代在这几行上看不见;不计入 ok):")
+        lines += [f"- `{role}`" for role in result["unpinned_roles"]]
+        lines.append("")
     if result["wire_breaks"]:
         lines.append("**wire_breaks**(config 写了该 role,当日实测行一次没见过——像是没接线):")
         lines += [f"- `{role}`" for role in result["wire_breaks"]]

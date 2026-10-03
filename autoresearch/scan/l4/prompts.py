@@ -71,6 +71,20 @@ def params_block() -> str:
     rc = rubric_cfg()
     bands, ff = rc["rating_bands"], rc["force_full"]
     pct_max, pos_max = exec_line_thresholds()
+    from autoresearch.scan.user_config import knob
+    shadow = []
+    if knob("l4", "shadow_fields", None, True):
+        # B5(2026-10-03):三条影子机读行,只记账不进任何门;样例与解析器同源(`l4.shadow_fields`)。
+        from autoresearch.scan.l4.shadow_fields import EXAMPLES
+        mech, veto, scen = EXAMPLES
+        shadow = [
+            "- 影子机读三行(只记账,不进任何门;写在 FINAL 行之前):",
+            f"  `**兑现机制**: 成立|不成立|未核` —— 成立 = 写得出具体的 D2 开盘买家或事件;极性固定,"
+            f"与前提表的 ✓/✗ 无关。例:`{mech}`",
+            f"  价格类入场否决每条一行 `[入场否决] close <op> <数> → <理由>`(op ∈ < <= > >=)。例:`{veto}`",
+            "  满卡加一行 `[情景] bull <概率>% <收益>% · base … · bear …`(概率合计 100;"
+            f"收益 = T+2 开盘 / 入场价 − 1)。例:`{scen}`",
+        ]
     return "\n".join([
         "## 本次参数(来自 scan_config,与机检代码同源;定义文件里的缺省句以此为准)",
         f"- 评分卡档位:Buy≥{bands['Buy']:+g} / OW≥{bands['Overweight']:+g} / Hold≥{bands['Hold']:+g} / UW≥{bands['Underweight']:+g},其余 Sell".replace("≥+", "≥"),
@@ -80,6 +94,7 @@ def params_block() -> str:
         f"`[执行线] pos_in_range < {pos_max:g} → 收盘在当日区间上 {100 - pos_max * 100:g}% 放弃入场`",
         f"- slim 可信地板:{slim_hint()}",
         f"- intel 网查软顶 {configured_soft_cap()} 条",
+        *shadow,
     ])
 
 

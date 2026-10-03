@@ -130,6 +130,10 @@ def prepare_scan_run(
         cap=pinned_cap,
         ttl_days=pinned_ttl,
     )
+    # 观测旋钮开跑就校验(复审 I-5):非法的指纹策略不能等到一小时后的发布点才炸。
+    from autoresearch.scan.behavior_fingerprint import policy as fingerprint_policy
+
+    fingerprint_policy(user_config)
     budgets = {
         **normalize_budgets(user_config.get("budgets")),
         # 2026-09-26:l3.finalist_max 退役,卡数只由 l4.max_cards 决定(scan/l4/card_count)。

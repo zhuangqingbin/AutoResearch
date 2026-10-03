@@ -124,6 +124,8 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
         "min_real_scans": 10,
         "pinned_cap": 5,
         "pinned_ttl_days": 10,
+        # 2026-10-03 A5:相对预算带(budgets.relative 缺省)随 normalize_budgets 进 run contract。
+        "relative": {"window": 10, "min_runs": 3, "warn_ratio": 1.5, "alarm_ratio": 2.0},
         # 2026-09-04 S5:两个 weighted 预算键随 normalize_budgets 进 run contract。
         # 值是 float 不是 jsonc 里的 int —— normalize_budgets 统一过 _finite_number,
         # 所以这里的字面量与 scan_config.jsonc 的写法不同是对的,不要"修正"成 int。

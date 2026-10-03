@@ -45,9 +45,11 @@ def session_cfg(cfg: dict | None = None) -> dict:
         "default_max_turns": int(knob("session", "default_max_turns", None, _hl.DEFAULT_MAX_TURNS, cfg)),
         "mailbox": {"never_taken_factor": float(mb.get("never_taken_factor", _mb.NEVER_TAKEN_FACTOR)),
                     "wait_s": float(mb.get("wait_s", _mb.DEFAULT_WAIT_SECONDS)),
-                    "dead_heartbeats": int(mb.get("dead_heartbeats", _mb.DEAD_HEARTBEATS))},
+                    "dead_heartbeats": int(mb.get("dead_heartbeats", _mb.DEAD_HEARTBEATS)),
+                    "by_reference": bool(mb.get("by_reference", False))},
         "max_attempts": int(knob("session", "max_attempts", None, _runner.SESSION_MAX_ATTEMPTS, cfg)),
         "runner": {"poll_seconds": float(rn.get("poll_seconds", 5.0)),
                    "max_rounds": int(rn.get("max_rounds", 20000)),
-                   "timeout_multiplier": float(rn.get("timeout_multiplier", 1.0))},
+                   "timeout_multiplier": float(rn.get("timeout_multiplier", 1.0)),
+                   "fanout_warmup_s": float(rn.get("fanout_warmup_s", 0.0))},
     }

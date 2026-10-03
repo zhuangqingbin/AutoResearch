@@ -46,6 +46,93 @@ from autoresearch.scan.recall.l2_stratify import select_l2
 
 COMPOSITE_QUOTA = 400          # `recall/channels.py` 的 composite 通道 quota(留底名单里没有 quota,这里显式给)
 
+# ── B2 / Q1-b(2026-10-03):偏好做资格门、门内按低热度排(离线影子)──────────────────────
+#: 热度四个代理:换手、RSI6、获利盘、当日涨幅。4.5 年日线代理里热度是隔夜收益头号负因子。
+HEAT_COLUMNS = ("turnover", "rsi6", "winner_rate", "pct_1d")
+#: 截面 IC 至少要这么多只可算的票(与 `scan.populations.MIN_IC_NAMES` 同口径)。
+MIN_IC_NAMES = 8
+
+
+def heat_score(frame: pd.DataFrame) -> pd.Series:
+    """当日热度 = 四个代理在当日帧内百分位的均值(0 冷 → 1 热);四个都缺 → NaN。"""
+    parts = [pd.to_numeric(frame[c], errors="coerce").rank(pct=True)
+             for c in HEAT_COLUMNS if c in frame.columns]
+    if not parts:
+        return pd.Series(np.nan, index=frame.index)
+    return pd.concat(parts, axis=1).mean(axis=1, skipna=True)
+
+
+def lowheat_gate_score(composite: pd.Series, heat: pd.Series, *, gate_q: float) -> pd.Series:
+    """偏好 composite 的当日分位 > `gate_q` 的票进门,门内按热度从冷到热排;门外整体排在门内之后。
+
+    输出 0–100 的替身分,直接喂生产同一个 L1′/L2′ 重放(门内 50–100,门外 0–50)。热度缺失按最热处理
+    (不让「没数据」变成「最冷」)。
+    """
+    pct = pd.to_numeric(composite, errors="coerce").rank(pct=True)
+    eligible = pct > float(gate_q)
+    inside = 50.0 + 50.0 * (1.0 - pd.to_numeric(heat, errors="coerce").fillna(1.0))
+    outside = 50.0 * pct.fillna(0.0)
+    return inside.where(eligible, outside).clip(lower=0, upper=100)
+
+
+def outcome_ic(score: pd.Series, analysis_date: str, *, ledger_root: Path) -> float | None:
+    """`score`(按 code 索引)对当日主尺 `gap_c1_o2` 的截面秩相关;标签读账本 universe 层。
+
+    只用成熟 ∧ 买腿可执行 ∧ 有值的票;标签文件缺、可算票不足 `MIN_IC_NAMES` 或任一侧没有差异 → None。
+    """
+    path = Path(ledger_root) / "evaluations/outcome_labels.v2/universe" / f"{analysis_date}.parquet"
+    if not path.is_file():
+        return None
+    labels = pd.read_parquet(path, columns=["code", "gap_c1_o2", "status_gap_c1_o2", "buyable_c1"])
+    labels["code"] = labels["code"].astype(str).str.zfill(6)
+    ok = (labels["status_gap_c1_o2"] == "MATURE") & labels["buyable_c1"].fillna(False).astype(bool)
+    labels = labels[ok & labels["gap_c1_o2"].notna()].drop_duplicates("code").set_index("code")
+    # 同一 code 多一行(tushare 盘后半截快照)→ 留第一行;静默去重会藏住数据问题,但这里只读排序信号。
+    score = pd.to_numeric(score, errors="coerce")
+    score = score[~score.index.duplicated(keep="first")]
+    joined = pd.DataFrame({"x": score, "y": labels["gap_c1_o2"]}).dropna()
+    if len(joined) < MIN_IC_NAMES or joined["x"].nunique() < 2 or joined["y"].nunique() < 2:
+        return None
+    return float(joined["x"].rank().corr(joined["y"].rank()))
+
+
+def b2_gate(rows: list[dict]) -> dict:
+    """B2 验收门(跨日合并):变体菜单的主尺 IC 均值 ≥ 0,且落刀占比不升、健康占比不降。
+
+    没有任何一天有成熟标签 → `pass=None`(不判,不是不过)。
+    """
+    def mean(key):
+        values = [r[key] for r in rows if r.get(key) is not None]
+        return float(np.mean(values)) if values else None
+
+    ic_variant, ic_current = mean("IC_main_variant"), mean("IC_main_current")
+    knife_v, knife_c = mean("A4_l2_knife_variant"), mean("A4_l2_knife_new")
+    healthy_v, healthy_c = mean("A5_l2_healthy_variant"), mean("A5_l2_healthy_new")
+    if ic_variant is None:
+        return {"pass": None, "reason": "no matured outcome labels"}
+    checks = {
+        "ic_non_negative": ic_variant >= 0,
+        "knife_not_up": knife_v is None or knife_c is None or knife_v <= knife_c,
+        "healthy_not_down": healthy_v is None or healthy_c is None or healthy_v >= healthy_c,
+    }
+    return {"pass": all(checks.values()), "checks": checks, "IC_main_variant": ic_variant,
+            "IC_main_current": ic_current, "n_days": sum(r.get("IC_main_variant") is not None
+                                                          for r in rows)}
+
+
+def _analysis_date(staging: Path) -> str | None:
+    """staging 目录对应的分析日:run_contract(session_v1 staging / 已发布 trace)或报告 manifest。"""
+    for path in (staging / "run_contract.json", staging.parent / "run_contract.json",
+                 staging.parents[1] / "manifest.json" if len(staging.parents) > 1 else None):
+        if path is not None and path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8")).get("analysis_date")
+            except (OSError, json.JSONDecodeError):
+                continue
+            if value:
+                return str(value)
+    return None
+
 
 def load_staging(staging: Path) -> dict:
     s = Path(staging)
@@ -188,7 +275,9 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
 
 
 def run_one(staging: Path, weights_doc: dict, *, floors: dict | None, knife_cap: bool,
-            enabled_channels=None, sector_seats_cfg: dict | None = None) -> dict:
+            enabled_channels=None, sector_seats_cfg: dict | None = None,
+            variant: str | None = None, gate_q: float = 0.4,
+            ledger_root: Path | None = None) -> dict:
     data = load_staging(staging)
     full, l1_old, l2_old = data["full"], data["full"][data["full"]["recalled"].astype(bool)], data["l2"]
     comp_new = recompute_composite(full, weights_doc)
@@ -216,9 +305,26 @@ def run_one(staging: Path, weights_doc: dict, *, floors: dict | None, knife_cap:
     l2p_uncapped = replay_l2(l1p, floors=floors, knife_cap_share=None, enabled_channels=enabled_channels,
                              sector_seats=seats, full=full_new)
     merit_core_knife_uncapped = merit_core_knife_share(l2p_uncapped)
-    return {"staging": str(staging),
+    row = {"staging": str(staging),
            **metrics(full, l1p, l2p, l1_old=l1_old, l2_old=l2_old,
                      merit_core_knife_uncapped=merit_core_knife_uncapped)}
+    if variant == "lowheat_gate":
+        # 同一份帧、同一个采样器,只把排序分换成「偏好门 + 门内低热度」;菜单形状与主尺 IC 并列记。
+        score = lowheat_gate_score(comp_new, heat_score(full), gate_q=gate_q)
+        l1v = replay_l1(full, data["channels"], score)
+        l2v = replay_l2(l1v, floors=floors, knife_cap_share=share, enabled_channels=enabled_channels,
+                        sector_seats=seats, full=full_new)
+        row["A4_l2_knife_variant"] = _share(falling_knife_mask(l2v))
+        row["A5_l2_healthy_variant"] = _share(healthy_riser_mask(l2v))
+        date = _analysis_date(Path(staging))
+        row["analysis_date"] = date
+        if ledger_root is not None and date:
+            codes = full["code"].astype(str).str.zfill(6)
+            row["IC_main_current"] = outcome_ic(pd.Series(comp_new.to_numpy(), index=codes), date,
+                                                ledger_root=ledger_root)
+            row["IC_main_variant"] = outcome_ic(pd.Series(score.to_numpy(), index=codes), date,
+                                                ledger_root=ledger_root)
+    return row
 
 
 def resolve_sector_seats_cfg(sector_seats_flag: bool, l2cfg: dict) -> dict | None:
@@ -240,6 +346,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default=".claude/skills/scan-market/scan_config.jsonc")
     ap.add_argument("--knife-cap", action="store_true")
     ap.add_argument("--sector-seats", action="store_true", help="读 l2.sector_seats 配置块现选当日行业席位;块自己的 enabled 仍须为 true(与 production 同口径,M7)")
+    ap.add_argument("--variant", choices=["lowheat_gate"], default=None,
+                    help="B2 影子变体:偏好 composite 当资格门(分位 > --gate-q),门内按低热度排")
+    ap.add_argument("--gate-q", type=float, default=0.4, help="偏好门:composite 当日分位须高于此")
+    ap.add_argument("--ledger-root", default=None,
+                    help="结果账本根(读 universe 层主尺标签算 IC;缺省 = 当前引擎 reports/scan/_ledger)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     from autoresearch.scan.user_config import load_user_config
@@ -251,16 +362,27 @@ def main(argv: list[str] | None = None) -> int:
         from autoresearch.common.scoring import _load_weights
         weights_doc = _load_weights(regime="range")
     sector_seats_cfg = resolve_sector_seats_cfg(args.sector_seats, l2cfg)
+    ledger_root = None
+    if args.variant:
+        from autoresearch.scan.outcome import ledger_root as _ledger_root
+        ledger_root = Path(args.ledger_root) if args.ledger_root else _ledger_root()
     rows = [run_one(Path(s), weights_doc, floors=l2cfg.get("floors"), knife_cap=args.knife_cap,
                     enabled_channels=funnel.get("recall_channels"),
-                    sector_seats_cfg=sector_seats_cfg) for s in args.staging]
+                    sector_seats_cfg=sector_seats_cfg, variant=args.variant, gate_q=args.gate_q,
+                    ledger_root=ledger_root) for s in args.staging]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(rows)
     frame.to_csv(out / "menu_replay.csv", index=False)
+    gate_text = ""
+    if args.variant:
+        gate = b2_gate(rows)
+        (out / "b2_gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=1), encoding="utf-8")
+        gate_text = (f"\n\n## B2 验收门(variant={args.variant} · gate_q={args.gate_q})\n\n"
+                     + json.dumps(gate, ensure_ascii=False) + "\n")
     (out / "menu_replay.md").write_text(
         f"# menu_replay · profile={args.profile} · knife_cap={args.knife_cap} · sector_seats={args.sector_seats}\n\n"
-        + frame.to_markdown(index=False) + "\n", encoding="utf-8")
+        + frame.to_markdown(index=False) + gate_text + "\n", encoding="utf-8")
     (out / "weights_doc.json").write_text(json.dumps(weights_doc, ensure_ascii=False, indent=1), encoding="utf-8")
     print(frame.to_string(index=False))
     return 0

@@ -1117,6 +1117,112 @@ def _ratio_metric(per_day: list[dict], stage: str, metric: str) -> list[dict]:
     return _pooled(per_day, stage, metric, MAIN, 0)
 
 
+#: 截面尺(2026-10-03 A8)一天至少要这么多只可算的票才出 IC。L3 judged 一天只有 ~27 只,所以
+#: 不能沿用全市场赢家门 `MIN_CROSS_SECTION`(50);8 与复盘稿探针 p13 同口径。
+MIN_IC_NAMES = 8
+
+#: 人口表上的截面尺各报三把:主尺、10 日尺、Q2 影子腿 `c1→c2`(卖点换成 T+2 收盘,不换主尺)。
+#: 全市场表(universe)没有 `ret_c1_c2` 列,只报前两把。
+POPULATION_RULERS = (("", MAIN), ("_fwd10", "fwd_10_oc"), ("_c1c2", "ret_c1_c2"))
+UNIVERSE_TWINS = (("", MAIN), ("_fwd10", "fwd_10_oc"))
+
+
+def _ic_metric(tables: dict[str, pd.DataFrame], stage: str, metric: str, family, signal: str,
+               ruler: str = MAIN) -> list[dict]:
+    """家族内「信号 × 事后收益」的逐日 Spearman 秩相关(截面 IC),再按日聚合 + bootstrap 区间。
+
+    只算可算的票(`_measurable`:成熟 ∧ 有值 ∧ 买腿可执行);信号或收益当天没有差异 → 当天不出
+    读数(秩相关无定义,不拿 NaN 冒充 0)。家族在场但尺还没成熟的日子计 PENDING。
+    """
+    per_day, pending = [], 0
+    for session in sorted(tables):
+        table = tables[session]
+        if signal not in table.columns or f"status_{ruler}" not in table.columns:
+            continue
+        mask = family(table).fillna(False).astype(bool)
+        if not mask.any():
+            continue
+        if table.loc[mask, f"status_{ruler}"].eq(PENDING).any():
+            pending += 1
+        usable = mask & _measurable(table, ruler)
+        frame = pd.DataFrame({
+            "x": pd.to_numeric(table.loc[usable, signal], errors="coerce"),
+            "y": pd.to_numeric(table.loc[usable, ruler], errors="coerce"),
+        }).dropna()
+        if len(frame) < MIN_IC_NAMES or frame["x"].nunique() < 2 or frame["y"].nunique() < 2:
+            continue
+        ic = float(frame["x"].rank().corr(frame["y"].rank()))
+        if not math.isfinite(ic):
+            continue
+        per_day.append({"session": session, "value": ic, "n_names": int(len(frame)),
+                        "coverage": len(frame) / int(mask.sum())})
+    return _pooled(per_day, stage, metric, ruler, pending)
+
+
+def _pool_minus_market(sessions: dict[str, pd.DataFrame], universes: dict[str, pd.DataFrame],
+                       stage: str, metric: str, pool, ruler: str = MAIN) -> list[dict]:
+    """菜单池(人口表上的一个家族)− 同日全市场(universe 全部可算票)的等权均值差。"""
+    per_day, pending = [], 0
+    for session in sorted(sessions):
+        table, uni = sessions[session], universes.get(session)
+        if uni is None or f"status_{ruler}" not in uni.columns:
+            continue
+        mask = pool(table).fillna(False).astype(bool)
+        if not mask.any():
+            continue
+        if table.loc[mask, f"status_{ruler}"].eq(PENDING).any():
+            pending += 1
+        a, na, ta = _family_mean(table, mask, ruler)
+        b, _nb, _tb = _family_mean(uni, pd.Series(True, index=uni.index), ruler)
+        if a is None or b is None:
+            continue
+        per_day.append({"session": session, "value": a - b, "n_names": na,
+                        "coverage": (na / ta) if ta else None})
+    return _pooled(per_day, stage, metric, ruler, pending)
+
+
+def _cross_sectional_rulers(universes: dict[str, pd.DataFrame],
+                            sessions: dict[str, pd.DataFrame]) -> list[dict]:
+    """A8:排序信号本身准不准(IC)+ 菜单与 L3 对「没被选的同侪」赢了多少。
+
+    `finalist − bench` 只比 L3 自己挑剩下的那一小撮;复盘稿 §3.2 实测它读 0 的同时,
+    finalist 对「L2 其余」剔 📌 后是 −0.24pp(t=−3.3)—— 选择效应被现行尺子遮住了。
+    """
+    rows: list[dict] = []
+
+    def everyone(t: pd.DataFrame) -> pd.Series:
+        return pd.Series(True, index=t.index)
+
+    def in_l1(t: pd.DataFrame) -> pd.Series:
+        return t["in_l1"].fillna(False)
+
+    def in_l2(t: pd.DataFrame) -> pd.Series:
+        return t["in_l2"].fillna(False)
+
+    def judged(t: pd.DataFrame) -> pd.Series:
+        return t["l3_judged"].fillna(False) & _plain(t)
+
+    def finalist(t: pd.DataFrame) -> pd.Series:
+        return t["is_finalist"].fillna(False) & _plain(t)
+
+    def l2_rest(t: pd.DataFrame) -> pd.Series:
+        return t["in_l2"].fillna(False) & ~t["is_finalist"].fillna(False) & _plain(t)
+
+    for suffix, ruler in UNIVERSE_TWINS:
+        rows += _ic_metric(universes, "L1", f"l1_composite_ic{suffix}", everyone, "composite",
+                           ruler)
+        rows += _pool_minus_market(sessions, universes, "L2", f"l2_pool_minus_market{suffix}",
+                                   in_l2, ruler)
+    for suffix, ruler in POPULATION_RULERS:
+        rows += _ic_metric(sessions, "L1", f"l1_n_channels_ic{suffix}", in_l1, "n_channels",
+                           ruler)
+        rows += _ic_metric(sessions, "L3", f"l3_conviction_ic{suffix}", judged, "l3_conviction",
+                           ruler)
+        rows += _paired_metric(sessions, "L3", f"l3_finalist_minus_l2_rest{suffix}", finalist,
+                               l2_rest, ruler)
+    return rows
+
+
 def _load_tables(reports_root: Path | None) -> tuple[dict[str, pd.DataFrame],
                                                      dict[str, pd.DataFrame], dict]:
     """读回两层人口;同一 analysis_date 多个 run 时按 **selected run** 去重。"""
@@ -1208,6 +1314,13 @@ def stage_rulers(*, reports_root: Path | None = None) -> pd.DataFrame:
         sessions, "L3", "l3_finalist_minus_bench_fwd10",
         lambda t: t["is_finalist"].fillna(False) & _plain(t),
         lambda t: t["is_bench"].fillna(False) & _plain(t), "fwd_10_oc")
+    # Q2 影子腿(2026-10-03):同一家族,卖点换成 T+2 收盘。只记账,不换主尺。
+    rows += _paired_metric(
+        sessions, "L3", "l3_finalist_minus_bench_c1c2",
+        lambda t: t["is_finalist"].fillna(False) & _plain(t),
+        lambda t: t["is_bench"].fillna(False) & _plain(t), "ret_c1_c2")
+    # ── 截面尺(2026-10-03 A8):IC、L3 对 L2 其余、菜单池对市场 ─────────────────
+    rows += _cross_sectional_rulers(universes, sessions)
 
     # ── L4:拒绝价值(负 = 否决对了)。两把 horizon 各一行,互不阻塞 ──────────
     def rejected(t: pd.DataFrame) -> pd.Series:
@@ -1220,12 +1333,26 @@ def stage_rulers(*, reports_root: Path | None = None) -> pd.DataFrame:
     rows += _paired_metric(sessions, "L4", "l4_reject_value_gap", rejected, comparable, MAIN)
     rows += _paired_metric(sessions, "L4", "l4_reject_value_fwd10", rejected, comparable,
                            "fwd_10_oc")
+    rows += _paired_metric(sessions, "L4", "l4_reject_value_c1c2", rejected, comparable,
+                           "ret_c1_c2")
 
     # ── E6:BUY − **其余 eligible 池成员**(不与已判 ineligible 的票混比)──────
     rows += _paired_metric(
         sessions, "E6", "e6_buy_minus_pool",
         lambda t: t["is_buy"].fillna(False),
         lambda t: t["e6_eligible"].fillna(False) & ~t["is_buy"].fillna(False))
+    rows += _paired_metric(
+        sessions, "E6", "e6_buy_minus_pool_c1c2",
+        lambda t: t["is_buy"].fillna(False),
+        lambda t: t["e6_eligible"].fillna(False) & ~t["is_buy"].fillna(False), "ret_c1_c2")
+    # A9(2026-10-03):BUY 对同日更宽的两个参照 —— 菜单 L2 池其余与全市场。只在 eligible 池里比,
+    # 看不出「整个菜单都在亏」那种日子;这两行能。
+    rows += _paired_metric(
+        sessions, "E6", "e6_buy_minus_l2_pool",
+        lambda t: t["is_buy"].fillna(False),
+        lambda t: t["in_l2"].fillna(False) & ~t["is_buy"].fillna(False))
+    rows += _pool_minus_market(sessions, universes, "E6", "e6_buy_minus_market",
+                               lambda t: t["is_buy"].fillna(False))
 
     # ── E6:A 级天数占比(2026-09-24 §2.7 的成功尺;card-backed 允许才算 A)──────
     a_days = []

@@ -116,6 +116,7 @@ def begin_via_entry(
     *,
     orchestration: str,
     legacy_reason: str | None = None,
+    executor: str = "mailbox",
 ) -> dict:
     """Select the session entry without ever invoking a legacy workflow implicitly."""
     if orchestration == "session_v1":
@@ -123,7 +124,7 @@ def begin_via_entry(
             raise ValueError("legacy_reason is only valid with legacy orchestration")
         from autoresearch.session_agent import service
 
-        return service.begin(request)
+        return service.begin(request, executor=executor)
     if orchestration != "legacy":
         raise ValueError(f"unknown orchestration: {orchestration!r}")
     if not str(legacy_reason or "").strip():

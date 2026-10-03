@@ -23,9 +23,9 @@ ECHO = {"agents": {"l4_card": {"effort": "max"}, "l4_intel": {"effort": "max"},
 # 配的 ECHO 不完整——`test_clean_run_ok` 的原始 2 行版本经实测确会失败,见 task-9-report.md)。
 # 补一行 l4-intel(与 frontmatter+echo 期望一致、不引入新 mismatch)让"干净跑"名副其实。
 ROWS = [
-    {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"},
-    {"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5", "effort": "low", "status": "SUCCEEDED"},
-    {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5", "effort": "max", "status": "SUCCEEDED"},
+    {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"},
+    {"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5-5", "effort": "low", "status": "SUCCEEDED"},
+    {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5", "effort": "max", "status": "SUCCEEDED"},
 ]
 
 
@@ -61,12 +61,13 @@ def test_wire_break_detected(tmp_path):
 
 
 def test_model_mismatch_caught(tmp_path):
-    """model 字段同样受检——不是只查 effort(frontmatter model=opus,实测混入 sonnet)。"""
-    rows = [dict(ROWS[0], model="claude-sonnet-5")] + ROWS[1:]
+    """model 字段同样受检——不是只查 effort(frontmatter 钉 claude-opus-5-5,实测混入 Sonnet)。"""
+    rows = [dict(ROWS[0], model="claude-sonnet-5-5")] + ROWS[1:]
     r = _run(tmp_path, ECHO, rows)
     assert not r["ok"]
     hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "model"]
-    assert hit and hit[0]["expected"] == "opus" and hit[0]["actual"] == "sonnet"
+    assert hit and hit[0]["expected"] == "claude-opus-5-5"
+    assert hit[0]["actual"] == "claude-sonnet-5-5"
 
 
 def test_echo_override_wins_over_frontmatter_default(tmp_path):
@@ -81,7 +82,7 @@ def test_role_without_echo_override_falls_back_to_frontmatter(tmp_path):
     """role 完全没在 echo 里配(既没有 l4_intel 键)→ 期望值全部落回 frontmatter 缺省。"""
     echo = {"agents": {"l4_card": {"effort": "max"}}}       # 不含 l4_intel
     rows = [ROWS[0],
-            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5",
+            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5",
              "effort": "medium", "status": "SUCCEEDED"}]    # frontmatter 缺省 effort=max,实测 medium
     r = _run(tmp_path, echo, rows)
     hit = [m for m in r["mismatches"] if m["agent"] == "l4-intel" and m["field"] == "effort"]
@@ -110,12 +111,12 @@ def test_gp_shell_defaults_to_sonnet_low_when_unconfigured(tmp_path):
     """
     echo = {"agents": {}}
     ok_rows = [{"role": "subagent", "agent": "general-purpose",
-               "model": "claude-sonnet-5", "effort": "low", "status": "SUCCEEDED"}]
+               "model": "claude-sonnet-5-5", "effort": "low", "status": "SUCCEEDED"}]
     r_ok = _run(tmp_path, echo, ok_rows, date="2026-08-01")
     assert not any(m["agent"] == "general-purpose" for m in r_ok["mismatches"])
 
     bad_rows = [{"role": "subagent", "agent": "general-purpose",
-                "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"}]
+                "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"}]
     r_bad = _run(tmp_path, echo, bad_rows, date="2026-08-02")
     assert any(m["agent"] == "general-purpose" for m in r_bad["mismatches"])
 
@@ -129,7 +130,7 @@ def test_unknown_agent_type_reported_not_silently_dropped(tmp_path):
     并且让 `ok` 翻假(与 `wire_breaks` 的"配置写了没人接"对称:这边是"来了个不认识的")。
     """
     rows = ROWS + [{"role": "subagent", "agent": "some-new-agent-type",
-                    "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"}]
+                    "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"}]
     r = _run(tmp_path, ECHO, rows)
     assert r["unknown_agent_types"] == ["some-new-agent-type"]
     assert r["ok"] is False
@@ -139,7 +140,7 @@ def test_unknown_agent_type_reported_not_silently_dropped(tmp_path):
 
 def test_unknown_agent_types_deduped_across_rows(tmp_path):
     """同一个未知 agentType 出现多行,只报一次(与 `wire_breaks` 按 role 去重的粒度一致)。"""
-    rows = [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5",
+    rows = [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5-5",
             "effort": "max", "status": "SUCCEEDED"} for _ in range(3)]
     r = _run(tmp_path, ECHO, rows)
     assert r["unknown_agent_types"] == ["mystery-agent"]
@@ -160,7 +161,7 @@ def test_main_role_rows_ignored(tmp_path):
     `checked` 只数真正进了比对循环的行(2026-08-06 review Minor 1)—— role=main 那行虽然
     在 rows 里,但从未被比对过,不该被算进"实测行 N 条"。
     """
-    rows = [{"role": "main", "agent": "(主会话)", "model": "claude-opus-5",
+    rows = [{"role": "main", "agent": "(主会话)", "model": "claude-opus-5-5",
             "effort": "max", "status": "FAILED"}]
     r = _run(tmp_path, ECHO, rows)
     assert r["checked"] == 0
@@ -175,7 +176,7 @@ ECHO_SPLIT = {"agents": {"l4_card": {"effort": "max"}, "ens_review": {"effort": 
 
 
 def _l4card_row(effort):
-    return {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
+    return {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5",
             "effort": effort, "status": "SUCCEEDED"}
 
 
@@ -250,7 +251,7 @@ def test_l3_repair_split_from_l3_rank(tmp_path):
     echo = {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}
 
     def _rows(*efforts):
-        return [{"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
+        return [{"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5-5",
                  "effort": e, "status": "SUCCEEDED"} for e in efforts]
 
     # 各按各的档跑 → 干净(老实现会把 medium 那行当成 l3_rank 违规)
@@ -420,7 +421,7 @@ def test_frontmatter_reads_real_l4_card_agent_def():
     `test_clean_run_ok` 之所以能通过的隐性前提(model=opus 未被 echo 覆盖,effort 被覆盖)。
     """
     fm = ur._frontmatter("l4-card")
-    assert fm.get("model") == "opus"
+    assert fm.get("model") == "claude-opus-5-5"
     assert fm.get("effort") == "max"   # 2026-09-27 Q6:frontmatter effort 对齐 config 档位(l4_card=critical=max)
 
 
@@ -459,7 +460,7 @@ def test_render_lists_mismatches_and_wire_breaks(tmp_path):
 
 
 def test_render_lists_unknown_agent_types(tmp_path):
-    rows = ROWS + [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5",
+    rows = ROWS + [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5-5",
                     "effort": "max", "status": "SUCCEEDED"}]
     r = _run(tmp_path, ECHO, rows)
     md = ur.render(r)
@@ -636,7 +637,7 @@ def test_partially_unmeasured_row_still_judged(tmp_path):
     """精度边界:只有 model **和** effort 都是 unmeasured 才豁免——只缺一个字段的行仍是
     真实信号(比如 effort 请求参数确实没打上),不能被这个兜底连带放过。
     """
-    rows = [{"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5",
             "effort": "—", "status": "SUCCEEDED"}] + ROWS[1:]
     r = _run(tmp_path, ECHO, rows)
     hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "effort"]
@@ -728,7 +729,7 @@ def test_missing_resolved_role_forces_ok_false():
     # 会额外触发 wire_breaks,把本条要看的信号混进去。
     resolved = {"l4_card": {"effort": "max"}}
     rows = [_l4card_row("max"),
-            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5",
+            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5",
              "effort": "max", "status": "SUCCEEDED"}]
     r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
     assert r["mismatches"] == [] and not r["wire_breaks"]
@@ -739,7 +740,7 @@ def test_missing_resolved_role_forces_ok_false():
 def test_missing_resolved_role_covers_shell_roles():
     """`general-purpose` 分不清是哪个壳 → 两个壳 role 都必须在 resolved 里。"""
     resolved = {"gp_shell": {"model": "sonnet", "effort": "low"}}
-    rows = [{"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5",
+    rows = [{"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5-5",
              "effort": "low", "status": "SUCCEEDED"}]
     r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
     assert r["missing_resolved_roles"] == ["gp_shell_json"] and r["ok"] is False
@@ -773,7 +774,7 @@ def test_render_lists_missing_resolved_roles():
     r = ur._reconcile_core({"resolved_agents": {"l4_card": {"effort": "max"}}},
                            [_l4card_row("max"),
                             {"role": "subagent", "agent": "l4-intel",
-                             "model": "claude-sonnet-5", "effort": "max"}],
+                             "model": "claude-sonnet-5-5", "effort": "max"}],
                            date="2026-08-09")
     md = ur.render(r)
     assert "missing_resolved_roles" in md and "l4_intel" in md
@@ -806,7 +807,7 @@ def test_stale_empty_prompt_does_not_manufacture_a_false_mismatch(tmp_path):
     (d / "user_config_echo.json").write_text(json.dumps(
         {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}))
     (d / "_token_usage.json").write_text(json.dumps({"rows": [
-        {"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
+        {"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5-5",
          "effort": "max", "status": "SUCCEEDED"}]}))
     (d / "_l3_repair_prompt.md").write_text(
         '```json\n{"codes": [], "rows": []}\n```\n', encoding="utf-8")
@@ -914,3 +915,68 @@ def test_session_role_usage_is_checked_and_main_is_excluded():
         date='2026-09-30', census={}, resolved_agent_config={'l4_card': {'model': 'gpt-6', 'effort': 'high'}})
     assert result['checked'] == 1
     assert any(row['field'] == 'effort' for row in result['mismatches'])
+
+
+# ───────────────── 2026-10-03:钉版后的逐 ID 对账(别名换代不再静默通过)─────────────────
+
+PINNED = {"agents": {"l4_card": {"model": "claude-opus-5-5", "effort": "max"},
+                     "l4_intel": {"model": "claude-sonnet-5-5", "effort": "max"},
+                     "gp_shell": {"model": "sonnet", "effort": "low"},
+                     "gp_shell_json": {"model": "sonnet", "effort": "low"}}}
+PINNED_ROWS = [
+    {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"},
+    {"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5-5", "effort": "low", "status": "SUCCEEDED"},
+    {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5", "effort": "max", "status": "SUCCEEDED"},
+]
+
+
+def test_pinned_id_is_satisfied_only_by_that_exact_model(tmp_path):
+    r = _run(tmp_path, PINNED, PINNED_ROWS)
+    assert r["ok"] and r["mismatches"] == []
+    assert "l4_card" not in r["unpinned_roles"] and "l4_intel" not in r["unpinned_roles"]
+
+
+def test_generation_swap_within_one_family_is_a_mismatch_once_pinned(tmp_path):
+    """2026-09-22 的真实形状:配置与 agent 定义一字未改,实测模型在同一家族内换了代。
+
+    旧实现把两边都归一成 `opus`,对账通过。钉了全 ID 之后必须逐 ID 比,并把两个 ID 都印出来。
+    """
+    rows = [dict(PINNED_ROWS[0], model="claude-opus-5")] + PINNED_ROWS[1:]
+    r = _run(tmp_path, PINNED, rows)
+    assert not r["ok"]
+    hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "model"]
+    assert hit == [{"agent": "l4-card", "role": "l4_card", "field": "model",
+                    "expected": "claude-opus-5-5", "actual": "claude-opus-5"}]
+
+
+def test_context_suffix_and_snapshot_date_are_the_same_model(tmp_path):
+    rows = [dict(PINNED_ROWS[0], model="claude-opus-5-5[1m]")] + PINNED_ROWS[1:]
+    assert _run(tmp_path, PINNED, rows)["ok"]
+
+
+def test_alias_expectation_keeps_family_comparison_and_is_reported_as_unpinned(tmp_path):
+    """没钉的 role(期望是别名)照旧按家族比 —— 但要列进 `unpinned_roles`:这一行换代看不见。"""
+    echo = {"agents": {**PINNED["agents"], "l4_card": {"model": "opus", "effort": "max"}}}
+    for model in ("claude-opus-5", "claude-opus-5-5"):
+        r = ur._reconcile_core(echo, [dict(PINNED_ROWS[0], model=model)] + PINNED_ROWS[1:],
+                               date="2026-10-03")
+        assert r["mismatches"] == [], model
+        assert r["unpinned_roles"] == ["gp_shell", "gp_shell_json", "l4_card"]
+
+
+def test_unpinned_roles_only_lists_roles_that_actually_ran(tmp_path):
+    r = ur._reconcile_core(PINNED, PINNED_ROWS[:1], date="2026-10-03")
+    assert r["unpinned_roles"] == []            # 壳今天没跑 → 不点名
+
+
+def test_multi_role_agent_type_reports_the_exact_wrong_id(tmp_path):
+    """同 agentType 多 role(l4_card + ens_review)下,错的那一行归谁由既有贪心算法定;
+    这里只钉本波的不变量:model mismatch 印的是两个全 ID,不是家族名。"""
+    echo = {"agents": {**PINNED["agents"],
+                       "ens_review": {"model": "claude-opus-5-5", "effort": "xhigh"}}}
+    rows = [dict(PINNED_ROWS[0]), dict(PINNED_ROWS[0], model="claude-opus-5", effort="xhigh")]
+    r = ur._reconcile_core(echo, rows, date="2026-10-03", census={"ens_review": 1})
+    wrong = [m for m in r["mismatches"] if m["field"] == "model"]
+    assert wrong, "同家族换代必须至少产出一条 model mismatch"
+    assert {m["actual"] for m in wrong} == {"claude-opus-5"}
+    assert {m["expected"] for m in wrong} == {"claude-opus-5-5"}

@@ -92,6 +92,23 @@ def test_prepare_scan_run_validates_already_decoded_config(tmp_path, monkeypatch
         )
 
 
+def test_prepare_scan_run_rejects_an_invalid_fingerprint_policy_before_the_run(
+    tmp_path, monkeypatch
+):
+    """复审 I-5:`budgets.relative` 开跑就校验;同类的指纹策略此前要到发布点才炸。"""
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    with pytest.raises(ValueError, match="observability.fingerprint"):
+        prepare_scan_run(
+            DATE,
+            config={"observability": {"fingerprint": {"window": 10, "min_runs": 12}}},
+            run_id=RUN_ID,
+            engine="codex",
+            workspace_path=ws.scan_run_root(RUN_ID),
+            now=NOW,
+        )
+
+
 def test_prepare_scan_run_resolves_agents_once_into_hashed_user_config(
     tmp_path, monkeypatch
 ):

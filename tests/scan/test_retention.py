@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -814,3 +815,34 @@ def test_manifest_covers_both_halves_of_the_publish_bundle(tmp_path):
     retention.write_manifest(run)
     (run / "appendix.md").unlink()
     assert retention.verify_manifest(run)["missing"] == ["appendix.md"]
+
+
+def test_prompt_sources_cover_both_engines_for_every_scan_research_role():
+    """Codex 的 run 也要记下自己真正装载的契约(2026-10-03)。
+
+    此前只有 6 份 `.claude/agents/*.md`:`l3-repair.md` 不在表里,`.codex/agents/*.toml` 一份没有 ——
+    Codex 的 run 记的是 Claude 契约的哈希,改 Codex 角色定义在运行身份里不留痕。
+    """
+    from autoresearch.contracts.agent_roles import PHYSICAL_AGENTS, dispatch_mapping
+
+    scan_roles = {config for role_id, (_, config) in dispatch_mapping().items()
+                  if role_id.startswith("scan.") or role_id in {"macro.brief", "sector.brief",
+                                                                 "dossier.init"}}
+    assert {"l3_repair", "l4_card", "ens_review", "strategist"} <= scan_roles
+    for config in sorted(scan_roles):
+        assert f".claude/agents/{PHYSICAL_AGENTS[config][0]}.md" in retention.PROMPT_SOURCES
+        assert f".codex/agents/{config}.toml" in retention.PROMPT_SOURCES
+    for rel in retention.PROMPT_SOURCES:
+        assert Path(rel).is_file(), rel                 # 表里的每一项在仓库里真实存在
+
+
+def test_codex_contracts_snapshot_under_their_own_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    scan = _staging(tmp_path)
+    codex = tmp_path / ".codex" / "agents"
+    codex.mkdir(parents=True)
+    (codex / "l4_card.toml").write_text('name = "L4 card"', encoding="utf-8")
+
+    retention.snapshot_inputs(scan, tmp_path / "run")
+
+    assert (tmp_path / "run" / "trace" / "inputs" / "prompts" / "codex__agents__l4_card.toml").is_file()

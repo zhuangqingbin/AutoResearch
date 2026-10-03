@@ -77,7 +77,8 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
 1. **begin**:同上 `begin --orchestration session_v1 --kind scan-market --mode AUTO`,请求用
    `examples/scan.request.json`;`host_profile.session_ref` 必须是本会话真实 session id(transcript 定位与
    计量都靠它),且如实声明 `independent_context/web_search/web_fetch=true` 并附证据(复核要独立上下文,
-   intel 要联网)。
+   intel 要联网)。主会话只跑机械的 wait → Agent → complete,研究质量不经过它:用 Opus 5.5 即可
+   (`/model opus`);Fable 5.1 的单价是它的 2.5 倍,一场多花约 $9。实际用了什么模型由观测附录 E 的身份行记录。
 2. **起 runner(后台,脱离壳进程树)**:
 
    ```bash
@@ -96,7 +97,12 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
 
    `--timeout` 不超过 100 s(宿主 Bash 默认 120 s 上限),IDLE 就再调;不要一次长等。
 
-   - `kind=REQUEST`:原样执行 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`(请求带 `model` 时一并传)。
+   - `kind=REQUEST`:原样执行 `Agent(**<agent_tool>, prompt=<host_prompt>)` —— `agent_tool` 与 `host_prompt` 都是
+     `wait` 算好的,照抄,不增不改。`session.mailbox.by_reference` 打开时 `host_prompt` 是一行指针(全文已冻结成
+     任务的授权文件,agent 第一步自己 Read),关着时它就是 `prompt` 全文。Claude 下它通常只有 `subagent_type`:请求的 `model` 是全 ID(如 `claude-opus-5-5`)时已钉在
+     agent 定义 frontmatter 里(preflight 核对两边一致),**不要**把它传给 Agent 工具(只收别名,会被拒),也
+     **不要**换成 `opus`/`sonnet` 别名(别名随 Claude Code 升级改指,2026-09-22/09-28 两次静默换代就是这么来的);
+     只有请求模型本来就是别名时 `agent_tool` 才带 `model`。
      C4 要求取得真实 agent ID 后先执行 `mailbox bind-access --run-id <RUN_ID> --task-id <TASK> --attempt <SESSION_ATTEMPT> --context-ref <AGENT_ID>`，将返回的登记命令发送给该 agent；绑定前工具调用会拒绝，不能跳过此步。
      model/effort 已由 runner 经 `resolve_agent_bundle` 解释并写在请求里(`model`/`effort`/`agent_spec`),
      不要改 prompt、不要另加指令。注意:Claude Code 的 `Agent` 工具不收 effort,host 模式下生效的是
@@ -152,8 +158,8 @@ intel 15m / card·复核 30m,**从 `.taken` 起算**;没人领的请求 4× 后�
 
 ## headless 执行器(批 4,无人值守,PILOT)
 
-`session_agent run --run-id <RUN_ID> --executor headless [--claude-bin <path>]`:同一个 runner,推理任务不交
-宿主会话,而是每个 attempt 起一个 `claude -p --agent <agent_type> --output-format json --permission-mode
+`session_agent begin … --executor headless` + `session_agent run --run-id <RUN_ID> --executor headless
+[--claude-bin <path>]`:同一个 runner,推理任务不交宿主会话,而是每个 attempt 起一个 `claude -p --agent <agent_type> --output-format json --permission-mode
 bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]` 子进程(独立顶级会话 = 独立上下文;
 项目 agent 定义与 hook 照常装载,见 `docs/research/2026-09-26-headless-driver-probes.md`)。只接 claude 引擎的
 run。超时按角色(intel 12m / card·复核 25m / L3 30m)杀整个进程组;结果 JSON 非法、`is_error`、或退出 0 但
@@ -166,6 +172,10 @@ argv 脱敏、pid + 启动时刻、usage、`total_cost_usd`、session id、trans
 (`dispatcher=headless`)。执行器不能重挂在飞的 `claude -p`:runner 崩了之后已认领的 attempt 报 orphan
 (STALLED)。无人值守整场(锁、交易日、湖就绪、begin、送达、FAILED 通知、launchd)见
 `docs/ops/scan-ops.md`「无人值守扫描」节;begin 请求由 `autoresearch.scan.scan_run.build_headless_request` 生成。
+begin 的 `--executor`(缺省 mailbox)冻结在 `identity/session/role_support.json`,之后的扩展沿用:mailbox / 宿主
+派发时生效的是 agent 定义的 frontmatter,所以 preflight 要求「定义 = 冻结配置」(不一致在取数前拦下,同步用
+`python -m autoresearch.scan.agent_frontmatter --write`);headless 用 `--model/--effort` 显式透传,不受这条约束
+—— 共用一份定义却要不同档位的角色(如 `l4_card` 与 `ens_review`)只能走 headless。
 
 ## 为什么可能省 token
 

@@ -194,6 +194,87 @@ def test_model_rollup_prices_fable_main_session(tmp_path):
     assert "估算成本" in md
 
 
+# ── 2026-10-03:实际身份(模型全 ID + 宿主版本)────────────────────────────────
+
+
+def _versioned(row, version="2.1.287"):
+    return {**row, "version": version}
+
+
+def test_row_keeps_every_model_seen_and_the_host_version(tmp_path):
+    """首个模型仍是 `model`(兼容);中途换过的模型进 `models`,不再被 `model or ...` 吞掉。"""
+    p = _write(tmp_path, "agent-swap.jsonl", [
+        _versioned(_row("m1", 10, 100, 10, model="claude-opus-5-5", effort="max")),
+        _versioned(_row("m2", 10, 100, 10, model="claude-opus-5", effort="max")),
+        _versioned(_row("m3", 10, 100, 10, model="claude-opus-5-5", effort="max")),
+    ])
+
+    row = U.usage_of(p)
+
+    assert row["model"] == "claude-opus-5-5"
+    assert row["models"] == ["claude-opus-5-5", "claude-opus-5"]
+    assert row["host_version"] == "2.1.287"
+
+
+def test_missing_version_and_synthetic_model_are_not_guessed(tmp_path):
+    p = _write(tmp_path, "agent-old.jsonl", [_row("m1", 10, 100, 10), _error()])
+
+    row = U.usage_of(p)
+
+    assert row["host_version"] == "—"
+    assert row["models"] == ["claude-opus-5"]          # `<synthetic>` 不是模型
+
+
+def test_ledger_identity_lists_exact_ids_per_agent_type(tmp_path):
+    main = _write(tmp_path, "main.jsonl", [
+        _versioned(_terminal("main", model="claude-fable-5-1", agent=None))])
+    _write(tmp_path, "agent-card1.jsonl", [
+        _versioned(_row("c1", 10, 100, 10, model="claude-opus-5-5", effort="max"))])
+    _write(tmp_path, "agent-card2.jsonl", [
+        _versioned(_row("c2", 10, 100, 10, model="claude-opus-5-5", effort="max"))])
+    _write(tmp_path, "agent-intel.jsonl", [
+        _versioned(_row("i1", 10, 100, 10, agent="l4-intel", model="claude-sonnet-5-5",
+                        effort="max"), version="2.1.284")])
+    rows = [U.usage_of(main, role="main"), *U.collect(tmp_path)]   # collect 只收 agent-*.jsonl
+
+    identity = U.build_ledger(rows, source="fixture")["identity"]
+
+    assert identity == {
+        "schema_version": 1,
+        "host_versions": ["2.1.284", "2.1.287"],
+        "main": {"models": ["claude-fable-5-1"], "efforts": ["xhigh"]},
+        "agents": {
+            "l4-card": {"n": 2, "models": ["claude-opus-5-5"], "efforts": ["max"]},
+            "l4-intel": {"n": 1, "models": ["claude-sonnet-5-5"], "efforts": ["max"]},
+        },
+    }
+
+
+def test_identity_skips_unmeasured_rows_instead_of_reporting_a_dash_model(tmp_path):
+    from autoresearch.trace.transcripts.base import TranscriptRef
+
+    ref = TranscriptRef(engine="claude", path=None, status="MISSING", role="subagent")
+    rows = [U.unmeasured_row(ref, reason="missing")]
+
+    identity = U.build_ledger(rows)["identity"]
+
+    assert identity == {"schema_version": 1, "host_versions": [], "main": None, "agents": {}}
+
+
+def test_render_prints_exact_model_ids_next_to_the_family_rollup(tmp_path):
+    _write(tmp_path, "agent-a.jsonl", [
+        _versioned(_row("m1", 10, 100, 10, model="claude-opus-5-5", effort="max"))])
+    _write(tmp_path, "agent-b.jsonl", [
+        _versioned(_row("m2", 10, 100, 10, model="claude-opus-5", effort="max"))])
+
+    md = U.render(U.collect(tmp_path))
+
+    assert "| opus |" in md                                  # 家族汇总仍在(成本方向)
+    assert "**实际身份**" in md
+    assert "宿主 2.1.287" in md                               # Claude Code / Codex 共用,不写死
+    assert "l4-card = claude-opus-5 / claude-opus-5-5" in md   # 同类型出现两个模型 = 一眼可见
+
+
 def test_transcripts_glob_mode(tmp_path):
     """--transcripts <glob> 追溯模式:计量代码晚于某次 run 落地时,仍能从存活 transcript 补账
     (Wave6 附录 A 的处境 —— 此前只能手写驱动脚本)。"""
@@ -393,7 +474,7 @@ def test_legacy_usage_dict_exactly_matches_claude_adapter_fixture():
         "input_usd", "output_usd", "cache_read_usd", "cache_write_1h_usd",
         "cache_write_5m_usd",
         "estimated_usd", "relative_opus_cost", "discarded_usd", "retry_usd",
-        "retry_cost_status",
+        "retry_cost_status", "models", "host_version",
     }
 
 

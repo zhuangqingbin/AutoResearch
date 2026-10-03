@@ -302,3 +302,26 @@ def test_observation_json_is_machine_readable(tmp_path):
     raw = json.loads((scan / "_budget_observation.json").read_text(encoding="utf-8"))
     assert raw["schema_version"] == 1
     assert raw["run_id"] == "run-json"
+
+
+
+@pytest.mark.parametrize("relative", [
+    {"warn_ratio": 2.5, "alarm_ratio": 2.0},          # 告警线高于报警线
+    {"warn_ratio": 1.0},                               # 1 倍 = 恒亮
+    {"window": 3, "min_runs": 5},                      # 基线永远凑不够
+    {"window": True},                                  # bool 不是整数
+    {"min_runs": 0},
+])
+def test_relative_band_policy_rejects_a_ruler_that_cannot_work(relative):
+    """配置写错不能静默变成另一把尺(2026-10-03 budgets.relative)。"""
+    from autoresearch.scan.budget import normalize_budgets
+
+    with pytest.raises(ValueError, match="budgets.relative"):
+        normalize_budgets({"relative": relative})
+
+
+def test_relative_band_policy_merges_partial_overrides_with_the_defaults():
+    from autoresearch.scan.budget import DEFAULT_BUDGETS, normalize_budgets
+
+    got = normalize_budgets({"relative": {"alarm_ratio": 3}})["relative"]
+    assert got == {**DEFAULT_BUDGETS["relative"], "alarm_ratio": 3.0}

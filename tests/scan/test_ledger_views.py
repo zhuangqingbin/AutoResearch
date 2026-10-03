@@ -958,3 +958,62 @@ def test_runs_view_counts_rows_with_a_mature_10_day_reading(tmp_path, monkeypatc
     assert rows["20260825_2000"]["n_mature_10"] == "0"
     assert rows["20260826_2000"]["n_mature_10"] == ""
     assert rows["20260827_2000"]["n_mature_10"] == ""
+
+
+# ───────── 2026-10-03 A7:cohort 键 —— 读数不跨「实际模型 + 契约」混算 ─────────
+
+
+def _usage_rows(card_model: str) -> dict:
+    from autoresearch.trace import usage_harvest
+
+    def row(agent, model, effort="max"):
+        return {"role": "subagent", "agent": agent, "model": model, "models": [model],
+                "effort": effort, "host_version": "2.1.287", "status": "SUCCEEDED",
+                "messages": 4, "input": 1, "output": 1000, "cache_read": 0, "cache_create": 0,
+                "cache_create_5m": 0, "cache_create_1h": 0, "weighted_in": 1,
+                "failure_count": 0, "retry_count": 0, "discarded": False,
+                "estimated_usd": 0.1, "discarded_usd": 0.0}
+
+    return usage_harvest.build_ledger([row("l4-card", card_model),
+                                       row("l4-intel", "claude-sonnet-5-5")])
+
+
+def test_runs_carry_cohort_keys_from_the_published_observation_or_its_usage_ledger(
+        tmp_path, monkeypatch):
+    from autoresearch.scan import run_drift
+
+    monkeypatch.chdir(tmp_path)
+    _flat_lake(tmp_path, SESSIONS)
+    new = _publish(tmp_path, "20260825-0826_2000", analysis_date="2026-08-25",
+                   capsule_run_id="20260826T200000000000Z",
+                   execution=_execution("2026-08-25", first="2026-08-26",
+                                        approved="2026-08-26T20:00:00"))
+    ident = run_drift.identity(_usage_rows("claude-opus-5-5"), prompt_hashes={}, config_hash=None,
+                               engine=ws.ENGINE)
+    (new / "trace" / "_budget_observation.json").write_text(
+        json.dumps({"run_id": "20260826T200000000000Z", "identity": ident}), encoding="utf-8")
+    old = _publish(tmp_path, "20260824-0825_2000", analysis_date="2026-08-24",
+                   capsule_run_id="20260825T200000000000Z",
+                   execution=_execution("2026-08-24", first="2026-08-25",
+                                        approved="2026-08-25T20:00:00"))
+    (old / "trace" / "staging" / "_token_usage.json").write_text(
+        json.dumps(_usage_rows("claude-opus-5")), encoding="utf-8")
+    _publish(tmp_path, "20260826-0827_2000", analysis_date="2026-08-26",
+             capsule_run_id="20260827T200000000000Z",
+             execution=_execution("2026-08-26", first="2026-08-27",
+                                  approved="2026-08-27T20:00:00"))
+
+    lv.build(reports_root=_scan(tmp_path), now="2026-08-28T12:00:00+00:00")
+    runs = {r["report_dir_id"]: r for r in _rows(lv.views_root(_scan(tmp_path)) / lv.RUNS_CSV)}
+
+    assert runs["20260825-0826_2000"]["model_cohort"] == ident["model_cohort"]
+    assert runs["20260825-0826_2000"]["cohort_key"] == ident["cohort_key"]
+    assert runs["20260825-0826_2000"]["host_version"] == "2.1.287"
+    assert runs["20260825-0826_2000"]["research_models"] == (
+        "l4-card=claude-opus-5-5;l4-intel=claude-sonnet-5-5")
+    # 老 run 没有身份块:从同一份发布物的用量账本现算 —— 模型换代切 cohort。
+    assert runs["20260824-0825_2000"]["research_models"].startswith("l4-card=claude-opus-5;")
+    assert runs["20260824-0825_2000"]["model_cohort"] not in ("", ident["model_cohort"])
+    # 两样都没有:留空,不编。
+    assert runs["20260826-0827_2000"]["model_cohort"] == ""
+    assert runs["20260826-0827_2000"]["research_models"] == ""

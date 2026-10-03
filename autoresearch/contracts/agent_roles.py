@@ -1,6 +1,8 @@
 """Pure physical-agent/config vocabulary shared by scan and session adapters."""
 from __future__ import annotations
 
+from types import MappingProxyType
+
 # One registry owns physical definitions, config keys and logical task policy.
 # The two relay roles have no inference tasks but share the config closed set.
 PHYSICAL_AGENTS = {
@@ -74,3 +76,36 @@ _ROLES = {
 def dispatch_mapping() -> dict[str, tuple[str, str]]:
     return {key: (PHYSICAL_AGENTS[role["config_role"]][0], role["config_role"])
             for key, role in _ROLES.items() if role["config_role"] is not None}
+
+
+# ── 轮数上限(2026-10-03 B8 从 session_agent.executors.headless_claude 下沉)───────────────
+# headless 拼 `--max-turns`;mailbox 派发经 agent 定义 frontmatter `maxTurns` 镜像
+# (`scan.agent_frontmatter`)。两条路径同一个数,所以真身放在两层共用的契约层。
+#: ``--max-turns`` per role.  Longest real subagent runs over the 30 days before
+#: 2026-09-26 (unique assistant messages): macro-brief 25, sector-brief 14, l3-rank 32,
+#: l4-intel 34, l4-card 35.  Caps sit ~2x above them: the wall clock is the real guard,
+#: the turn cap only stops a runaway loop (``--max-budget-usd`` is unverified under a
+#: subscription, probe doc "待办").
+MAX_TURNS = MappingProxyType({
+    "macro.brief": 50,
+    "sector.brief": 30,
+    "scan.l3": 64,
+    "scan.l3.repair": 30,
+    "scan.l4.intel": 64,
+    "scan.l4.card": 80,
+    "scan.l4.review": 80,
+})
+#: Fallback for roles outside ``MAX_TURNS``: scan_config ``agents.<role>.tier``.
+TIER_MAX_TURNS = MappingProxyType({
+    "critical": 80, "analytical": 40, "repair": 30, "relay": 20,
+})
+DEFAULT_MAX_TURNS = 60
+
+
+def role_max_turns(role: str, tier: str | None, *, overrides=None, tier_overrides=None,
+                   default: int = DEFAULT_MAX_TURNS) -> int:
+    """`overrides`(配置 `session.max_turns`,已与 `MAX_TURNS` 合并或单独给)→ 档位 → `default`。"""
+    table = {**MAX_TURNS, **dict(overrides or {})}
+    if role in table:
+        return int(table[role])
+    return int({**TIER_MAX_TURNS, **dict(tier_overrides or {})}.get(tier or "", default))

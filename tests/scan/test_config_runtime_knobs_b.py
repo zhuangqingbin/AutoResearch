@@ -32,8 +32,11 @@ def test_session_cfg_follows_config(tmp_path, monkeypatch):
     assert s["timeouts"]["headless"] == dict(headless_claude.HEADLESS_TIMEOUTS) and s["timeouts"]["fallback_s"] == 7
     assert s["max_turns"]["scan.l3"] == 3 and s["max_turns"]["scan.l4.card"] == 80
     assert s["tier_max_turns"]["relay"] == 2 and s["default_max_turns"] == 9
-    assert s["mailbox"] == {"never_taken_factor": 2.0, "wait_s": 90.0, "dead_heartbeats": 1}
-    assert s["max_attempts"] == 4 and s["runner"] == {"poll_seconds": 1.5, "max_rounds": 20000, "timeout_multiplier": 1.0}
+    # 2026-10-03 B8:by_reference(按引用派发)与 fanout_warmup_s(扇出预热)两个开关,缺省关。
+    assert s["mailbox"] == {"never_taken_factor": 2.0, "wait_s": 90.0, "dead_heartbeats": 1,
+                            "by_reference": False}
+    assert s["max_attempts"] == 4 and s["runner"] == {"poll_seconds": 1.5, "max_rounds": 20000,
+                                                      "timeout_multiplier": 1.0, "fanout_warmup_s": 0.0}
     _nocfg(tmp_path, monkeypatch)
     s = sc.session_cfg()
     assert s["timeouts"]["mailbox"] == dict(base.DEFAULT_TIMEOUTS) and s["timeouts"]["fallback_s"] == base.FALLBACK_TIMEOUT

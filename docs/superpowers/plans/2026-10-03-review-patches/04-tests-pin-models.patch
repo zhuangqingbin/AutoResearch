@@ -1,0 +1,420 @@
+--- /dev/null
++++ b/tests/scan/test_agent_frontmatter.py
+@@ -0,0 +1,163 @@
++"""agent 定义 frontmatter 的 model / effort 与 scan_config 同源(2026-10-03 钉版)。
++
++背景:mailbox 执行器由宿主的 Agent 工具派发,模型与 effort 取自 `.claude/agents/<x>.md` 的
++frontmatter(Agent 工具的 `model` 入参只接受别名);headless 执行器取自 `scan_config` 解析值。
++两处各写一遍又没有任何东西比对它们,2026-09-22 `opus` 别名换代时就是从这条缝漏过去的。
++"""
++from __future__ import annotations
++
++import copy
++import shutil
++from pathlib import Path
++
++import pytest
++
++from autoresearch.scan import agent_frontmatter as af
++from autoresearch.scan import user_config as uc
++from autoresearch.trace.pricing import KNOWN_MODEL_IDS
++
++ROOT = Path(__file__).resolve().parents[2]
++PROD = ROOT / ".claude" / "skills" / "scan-market" / "scan_config.jsonc"
++AGENTS = ROOT / ".claude" / "agents"
++RELAY = {"gp_shell", "gp_shell_json"}
++
++
++def _prod() -> dict:
++    return uc.load_user_config(PROD)
++
++
++def _copy_agents(tmp_path: Path) -> Path:
++    target = tmp_path / "agents"
++    shutil.copytree(AGENTS, target)
++    return target
++
++
++def _edit(path: Path, old: str, new: str) -> None:
++    text = path.read_text(encoding="utf-8")
++    assert old in text, f"{path.name}: 夹具前提不成立,frontmatter 里没有 {old!r}"
++    path.write_text(text.replace(old, new, 1), encoding="utf-8")
++
++
++def test_production_frontmatter_is_in_sync_with_scan_config():
++    assert af.check(_prod(), agents_dir=AGENTS) == []
++
++
++def test_every_claude_inference_role_is_pinned_to_a_priced_full_id():
++    resolved = uc.resolve_agent_config(_prod(), engine="claude")
++    for role, spec in sorted(resolved.items()):
++        if role in RELAY:
++            continue
++        assert spec.get("model") in KNOWN_MODEL_IDS, (
++            f"{role}: model={spec.get('model')!r} 不是价表认识的全 ID —— 别名由 Claude Code "
++            "客户端解析,会随自动升级移动")
++
++
++def test_every_agent_definition_is_owned_by_a_configured_role():
++    assert {p.stem for p in AGENTS.glob("*.md")} == set(af.expected(_prod()))
++
++
++def test_intel_roles_stay_on_sonnet_and_judgement_roles_on_opus():
++    want = af.expected(_prod())
++    assert want["l4-card"] == {"model": "claude-opus-5-5", "effort": "max",
++                               "roles": ["l4_card", "ens_review"]}
++    assert want["l4-intel"]["model"] == "claude-sonnet-5-5"
++    assert want["sector-brief"] == {"model": "claude-opus-5-5", "effort": "xhigh",
++                                    "roles": ["sector_brief"]}
++    assert want["l3-repair"]["effort"] == "medium"
++
++
++def test_alias_in_frontmatter_is_a_violation(tmp_path):
++    agents = _copy_agents(tmp_path)
++    _edit(agents / "l4-card.md", "model: claude-opus-5-5", "model: opus")
++    assert af.check(_prod(), agents_dir=agents) == [
++        "l4-card.md: model 是 'opus',scan_config 解析为 'claude-opus-5-5'(role l4_card)"]
++
++
++def test_effort_drift_is_a_violation(tmp_path):
++    agents = _copy_agents(tmp_path)
++    _edit(agents / "l4-intel.md", "effort: max", "effort: high")
++    assert af.check(_prod(), agents_dir=agents) == [
++        "l4-intel.md: effort 是 'high',scan_config 解析为 'max'(role l4_intel)"]
++
++
++def test_roles_sharing_one_definition_must_resolve_identically():
++    cfg = copy.deepcopy(_prod())
++    cfg["agent_engines"]["claude"]["role_overrides"]["ens_review"] = {"effort": "xhigh"}
++    violations = af.check(cfg, agents_dir=AGENTS)
++    assert violations == [
++        "l4-card.md: 共用该定义的 role 解析结果不同(l4_card={'model': 'claude-opus-5-5', "
++        "'effort': 'max'} / ens_review={'model': 'claude-opus-5-5', 'effort': 'xhigh'});"
++        "mailbox 执行器只读 frontmatter,分不开"]
++
++
++def test_role_without_a_pinned_model_is_a_violation():
++    cfg = copy.deepcopy(_prod())
++    del cfg["agent_engines"]["claude"]["tiers"]["repair"]["model"]
++    assert af.check(cfg, agents_dir=AGENTS) == [
++        "l3-repair.md: scan_config 没有给 role l3_repair 钉模型(agent_engines.claude)"]
++
++
++def test_orphan_agent_definition_is_a_violation(tmp_path):
++    agents = _copy_agents(tmp_path)
++    shutil.copy(agents / "l4-card.md", agents / "rogue.md")
++    assert af.check(_prod(), agents_dir=agents) == [
++        "rogue.md: 没有任何已登记 role 使用该 agent 定义(contracts.agent_roles.PHYSICAL_AGENTS)"]
++
++
++def test_missing_agent_definition_is_a_violation(tmp_path):
++    agents = _copy_agents(tmp_path)
++    (agents / "l3-repair.md").unlink()
++    assert af.check(_prod(), agents_dir=agents) == ["l3-repair.md: agent 定义缺失"]
++
++
++def test_write_rewrites_only_the_two_frontmatter_lines(tmp_path):
++    agents = _copy_agents(tmp_path)
++    original = (agents / "l4-card.md").read_text(encoding="utf-8")
++    _edit(agents / "l4-card.md", "model: claude-opus-5-5", "model: opus")
++    _edit(agents / "l4-card.md", "effort: max", "effort: low")
++
++    changed = af.write(_prod(), agents_dir=agents)
++
++    assert changed == ["l4-card.md"]
++    assert (agents / "l4-card.md").read_text(encoding="utf-8") == original
++    assert af.check(_prod(), agents_dir=agents) == []
++    assert af.write(_prod(), agents_dir=agents) == []          # 幂等
++
++
++def test_write_never_touches_a_model_line_in_the_body(tmp_path):
++    agents = _copy_agents(tmp_path)
++    path = agents / "l3-repair.md"
++    path.write_text(path.read_text(encoding="utf-8") + "\nmodel: opus\neffort: low\n",
++                    encoding="utf-8")
++    _edit(path, "model: claude-opus-5-5", "model: opus")
++
++    af.write(_prod(), agents_dir=agents)
++
++    text = path.read_text(encoding="utf-8")
++    assert text.endswith("\nmodel: opus\neffort: low\n")       # 正文原样
++    assert text.split("---", 2)[1].count("model: claude-opus-5-5") == 1
++
++
++@pytest.mark.parametrize("bad", ["claude-opus-9", "claude-opus-5-6", "gpt-5.6-sol", "Opus", ""])
++def test_unknown_claude_model_is_rejected_at_config_load(bad):
++    cfg = copy.deepcopy(_prod())
++    cfg["agent_engines"]["claude"]["tiers"]["critical"]["model"] = bad
++    with pytest.raises(ValueError, match="model"):
++        uc.validate_user_config(cfg)
++
++
++def test_alias_is_still_a_legal_config_value_for_non_production_fixtures():
++    """别名在**语法上**仍合法(旧夹具、局部编排用);生产配置的钉版由上面两条测试锁。"""
++    cfg = copy.deepcopy(_prod())
++    cfg["agent_engines"]["claude"]["tiers"]["critical"]["model"] = "opus"
++    uc.validate_user_config(cfg)
++
++
++def test_cli_check_reports_and_exits_nonzero_on_drift(tmp_path, capsys):
++    agents = _copy_agents(tmp_path)
++    assert af.main(["--check", "--config", str(PROD), "--agents-dir", str(agents)]) == 0
++    _edit(agents / "macro-brief.md", "effort: max", "effort: medium")
++    assert af.main(["--check", "--config", str(PROD), "--agents-dir", str(agents)]) == 1
++    assert "macro-brief.md: effort 是 'medium'" in capsys.readouterr().out
++    assert af.main(["--write", "--config", str(PROD), "--agents-dir", str(agents)]) == 0
++    assert af.main(["--check", "--config", str(PROD), "--agents-dir", str(agents)]) == 0
+--- a/tests/test_agent_defs.py
++++ b/tests/test_agent_defs.py
+@@ -24,15 +24,24 @@
+     return p.read_text(encoding="utf-8")
+ 
+ 
++def _pinned_model(name: str) -> str:
++    """frontmatter 的 model —— 钉版后是全 ID;具体是哪一代由 scan_config 定,
++    两边是否一致由 `tests/scan/test_agent_frontmatter.py` 锁,这里只看家族。"""
++    from autoresearch.scan import agent_frontmatter as af
++
++    return af.read(AGENTS / f"{name}.md").get("model", "")
++
++
+ def test_agent_files_exist_with_frontmatter():
+-    """叶子 agent 定义在位:frontmatter 有 name/description/model: opus(全 Opus 设计)。"""
++    """叶子 agent 定义在位:frontmatter 有 name/description/Opus 家族的钉版 model(全 Opus 设计)。"""
+     for name in _NAMES:
+         text = _agent_text(name)
+         assert text.startswith("---"), f"{name}: 缺 frontmatter"
+         head = text.split("---", 2)[1]
+         assert f"name: {name}" in head, f"{name}: frontmatter name 不符"
+         assert "description:" in head, f"{name}: 缺 description"
+-        assert "model: opus" in head, f"{name}: 应为 model: opus(scan 全 Opus 设计)"
++        assert _pinned_model(name).startswith("claude-opus-"), (
++            f"{name}: 应为钉版的 Opus 全 ID(scan 全 Opus 设计),实际 {_pinned_model(name)!r}")
+ 
+ 
+ def test_l4_card_contract_anchors_synced():
+@@ -188,7 +197,7 @@
+     """
+     text = _agent_text("l4-intel")
+     head = text.split("---", 2)[1]
+-    assert "model: sonnet" in head and "effort: max" in head
++    assert _pinned_model("l4-intel").startswith("claude-sonnet-") and "effort: max" in head
+     assert "WebSearch" in head and "WebFetch" in head and "Write" in head
+     for banned in ("Read", "Grep", "Glob"):
+         assert banned not in head, f"结构性盲:不得有 {banned}(可读/探索仓库)"
+@@ -278,7 +287,8 @@
+ def test_dossier_init_agent_def():
+     p = ROOT / ".claude" / "agents" / "dossier-init.md"
+     text = p.read_text(encoding="utf-8")
+-    for a in ("model: opus", "三情景", "证伪触发点", "断言分级", "不改确定性节"):
++    assert _pinned_model("dossier-init").startswith("claude-opus-")
++    for a in ("三情景", "证伪触发点", "断言分级", "不改确定性节"):
+         assert a in text, f"dossier-init.md 缺契约锚「{a}」"
+ 
+ 
+--- a/tests/scan/test_user_config_roles.py
++++ b/tests/scan/test_user_config_roles.py
+@@ -240,23 +240,32 @@
+ 
+ 
+ def test_claude_roles_resolve_exactly_as_before_the_tier_migration():
+-    """双引擎改造不许动 Claude 侧一个字:十个 role 的解析结果必须与迁移前逐字段相同。
++    """双引擎改造不许动 Claude 侧的 effort:十个 role 的 effort 必须与迁移前逐字段相同。
+ 
+     这些值直接决定每个 agent 跑在什么 effort 上 —— 判断类 role 悄悄从 max 掉到 xhigh,
+     产物照样长得像回事,账单也照样出得来,没有任何门会喊。
++
++    2026-10-03 钉版之后,判断类 role 另带 `model`(价表认识的全 ID):别名由 Claude Code
++    客户端解析,2026-09-22 / 09-28 随自动升级换过代。`model` 那一半由下面的断言单独锁。
+     """
+     from pathlib import Path as _Path
++    from autoresearch.trace.pricing import KNOWN_MODEL_IDS
+     prod = (_Path(__file__).resolve().parents[2]
+             / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
+     resolved = uc.resolve_agent_config(uc.load_user_config(prod))
+-    assert {key: resolved[key] for key in _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION} == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
++    relay = {"gp_shell", "gp_shell_json"}
++    efforts = {role: (spec if role in relay else {k: v for k, v in spec.items() if k != "model"})
++               for role, spec in resolved.items()}
++    assert {key: efforts[key] for key in _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION} == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
+     new_roles = {"stock_full", "macro_full", "sector_full", "company_intel", "us_intel", "sector_intel", "global_intel"}
+     assert set(resolved) == set(_CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION) | new_roles
+-    assert all(resolved[key] == {"effort": "max"} for key in new_roles)
+-    # 判断类 role **不得**出现 model 键:那是 agent def frontmatter 的地盘(opus/sonnet),
+-    # 配置里写死会把 frontmatter 压掉 —— 同族前科见 test_resolved_model_key_absent...
+-    for role in ("l3_rank", "l4_card", "l4_intel", "strategist"):
+-        assert "model" not in resolved[role]
++    assert all(efforts[key] == {"effort": "max"} for key in new_roles)
++    intel = {"l4_intel", "company_intel", "us_intel", "sector_intel", "global_intel"}
++    for role in set(resolved) - relay:
++        model = resolved[role]["model"]
++        assert model in KNOWN_MODEL_IDS, f"{role}: {model!r} 不是钉版全 ID"
++        family = "claude-sonnet-" if role in intel else "claude-opus-"
++        assert model.startswith(family), f"{role}: {model!r} 换了家族"
+ 
+ 
+ def _dual():
+--- a/tests/trace/test_usage_reconcile.py
++++ b/tests/trace/test_usage_reconcile.py
+@@ -23,9 +23,9 @@
+ # 配的 ECHO 不完整——`test_clean_run_ok` 的原始 2 行版本经实测确会失败,见 task-9-report.md)。
+ # 补一行 l4-intel(与 frontmatter+echo 期望一致、不引入新 mismatch)让"干净跑"名副其实。
+ ROWS = [
+-    {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"},
+-    {"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5", "effort": "low", "status": "SUCCEEDED"},
+-    {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5", "effort": "max", "status": "SUCCEEDED"},
++    {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"},
++    {"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5-5", "effort": "low", "status": "SUCCEEDED"},
++    {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5", "effort": "max", "status": "SUCCEEDED"},
+ ]
+ 
+ 
+@@ -61,12 +61,13 @@
+ 
+ 
+ def test_model_mismatch_caught(tmp_path):
+-    """model 字段同样受检——不是只查 effort(frontmatter model=opus,实测混入 sonnet)。"""
+-    rows = [dict(ROWS[0], model="claude-sonnet-5")] + ROWS[1:]
++    """model 字段同样受检——不是只查 effort(frontmatter 钉 claude-opus-5-5,实测混入 Sonnet)。"""
++    rows = [dict(ROWS[0], model="claude-sonnet-5-5")] + ROWS[1:]
+     r = _run(tmp_path, ECHO, rows)
+     assert not r["ok"]
+     hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "model"]
+-    assert hit and hit[0]["expected"] == "opus" and hit[0]["actual"] == "sonnet"
++    assert hit and hit[0]["expected"] == "claude-opus-5-5"
++    assert hit[0]["actual"] == "claude-sonnet-5-5"
+ 
+ 
+ def test_echo_override_wins_over_frontmatter_default(tmp_path):
+@@ -81,7 +82,7 @@
+     """role 完全没在 echo 里配(既没有 l4_intel 键)→ 期望值全部落回 frontmatter 缺省。"""
+     echo = {"agents": {"l4_card": {"effort": "max"}}}       # 不含 l4_intel
+     rows = [ROWS[0],
+-            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5",
++            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5",
+              "effort": "medium", "status": "SUCCEEDED"}]    # frontmatter 缺省 effort=max,实测 medium
+     r = _run(tmp_path, echo, rows)
+     hit = [m for m in r["mismatches"] if m["agent"] == "l4-intel" and m["field"] == "effort"]
+@@ -110,12 +111,12 @@
+     """
+     echo = {"agents": {}}
+     ok_rows = [{"role": "subagent", "agent": "general-purpose",
+-               "model": "claude-sonnet-5", "effort": "low", "status": "SUCCEEDED"}]
++               "model": "claude-sonnet-5-5", "effort": "low", "status": "SUCCEEDED"}]
+     r_ok = _run(tmp_path, echo, ok_rows, date="2026-08-01")
+     assert not any(m["agent"] == "general-purpose" for m in r_ok["mismatches"])
+ 
+     bad_rows = [{"role": "subagent", "agent": "general-purpose",
+-                "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"}]
++                "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"}]
+     r_bad = _run(tmp_path, echo, bad_rows, date="2026-08-02")
+     assert any(m["agent"] == "general-purpose" for m in r_bad["mismatches"])
+ 
+@@ -129,7 +130,7 @@
+     并且让 `ok` 翻假(与 `wire_breaks` 的"配置写了没人接"对称:这边是"来了个不认识的")。
+     """
+     rows = ROWS + [{"role": "subagent", "agent": "some-new-agent-type",
+-                    "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"}]
++                    "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"}]
+     r = _run(tmp_path, ECHO, rows)
+     assert r["unknown_agent_types"] == ["some-new-agent-type"]
+     assert r["ok"] is False
+@@ -139,7 +140,7 @@
+ 
+ def test_unknown_agent_types_deduped_across_rows(tmp_path):
+     """同一个未知 agentType 出现多行,只报一次(与 `wire_breaks` 按 role 去重的粒度一致)。"""
+-    rows = [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5",
++    rows = [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5-5",
+             "effort": "max", "status": "SUCCEEDED"} for _ in range(3)]
+     r = _run(tmp_path, ECHO, rows)
+     assert r["unknown_agent_types"] == ["mystery-agent"]
+@@ -160,7 +161,7 @@
+     `checked` 只数真正进了比对循环的行(2026-08-06 review Minor 1)—— role=main 那行虽然
+     在 rows 里,但从未被比对过,不该被算进"实测行 N 条"。
+     """
+-    rows = [{"role": "main", "agent": "(主会话)", "model": "claude-opus-5",
++    rows = [{"role": "main", "agent": "(主会话)", "model": "claude-opus-5-5",
+             "effort": "max", "status": "FAILED"}]
+     r = _run(tmp_path, ECHO, rows)
+     assert r["checked"] == 0
+@@ -175,7 +176,7 @@
+ 
+ 
+ def _l4card_row(effort):
+-    return {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
++    return {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5",
+             "effort": effort, "status": "SUCCEEDED"}
+ 
+ 
+@@ -250,7 +251,7 @@
+     echo = {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}
+ 
+     def _rows(*efforts):
+-        return [{"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
++        return [{"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5-5",
+                  "effort": e, "status": "SUCCEEDED"} for e in efforts]
+ 
+     # 各按各的档跑 → 干净(老实现会把 medium 那行当成 l3_rank 违规)
+@@ -420,7 +421,7 @@
+     `test_clean_run_ok` 之所以能通过的隐性前提(model=opus 未被 echo 覆盖,effort 被覆盖)。
+     """
+     fm = ur._frontmatter("l4-card")
+-    assert fm.get("model") == "opus"
++    assert fm.get("model") == "claude-opus-5-5"
+     assert fm.get("effort") == "max"   # 2026-09-27 Q6:frontmatter effort 对齐 config 档位(l4_card=critical=max)
+ 
+ 
+@@ -459,7 +460,7 @@
+ 
+ 
+ def test_render_lists_unknown_agent_types(tmp_path):
+-    rows = ROWS + [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5",
++    rows = ROWS + [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5-5",
+                     "effort": "max", "status": "SUCCEEDED"}]
+     r = _run(tmp_path, ECHO, rows)
+     md = ur.render(r)
+@@ -636,7 +637,7 @@
+     """精度边界:只有 model **和** effort 都是 unmeasured 才豁免——只缺一个字段的行仍是
+     真实信号(比如 effort 请求参数确实没打上),不能被这个兜底连带放过。
+     """
+-    rows = [{"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
++    rows = [{"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5",
+             "effort": "—", "status": "SUCCEEDED"}] + ROWS[1:]
+     r = _run(tmp_path, ECHO, rows)
+     hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "effort"]
+@@ -728,7 +729,7 @@
+     # 会额外触发 wire_breaks,把本条要看的信号混进去。
+     resolved = {"l4_card": {"effort": "max"}}
+     rows = [_l4card_row("max"),
+-            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5",
++            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5",
+              "effort": "max", "status": "SUCCEEDED"}]
+     r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
+     assert r["mismatches"] == [] and not r["wire_breaks"]
+@@ -739,7 +740,7 @@
+ def test_missing_resolved_role_covers_shell_roles():
+     """`general-purpose` 分不清是哪个壳 → 两个壳 role 都必须在 resolved 里。"""
+     resolved = {"gp_shell": {"model": "sonnet", "effort": "low"}}
+-    rows = [{"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5",
++    rows = [{"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5-5",
+              "effort": "low", "status": "SUCCEEDED"}]
+     r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
+     assert r["missing_resolved_roles"] == ["gp_shell_json"] and r["ok"] is False
+@@ -773,7 +774,7 @@
+     r = ur._reconcile_core({"resolved_agents": {"l4_card": {"effort": "max"}}},
+                            [_l4card_row("max"),
+                             {"role": "subagent", "agent": "l4-intel",
+-                             "model": "claude-sonnet-5", "effort": "max"}],
++                             "model": "claude-sonnet-5-5", "effort": "max"}],
+                            date="2026-08-09")
+     md = ur.render(r)
+     assert "missing_resolved_roles" in md and "l4_intel" in md
+@@ -806,7 +807,7 @@
+     (d / "user_config_echo.json").write_text(json.dumps(
+         {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}))
+     (d / "_token_usage.json").write_text(json.dumps({"rows": [
+-        {"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
++        {"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5-5",
+          "effort": "max", "status": "SUCCEEDED"}]}))
+     (d / "_l3_repair_prompt.md").write_text(
+         '```json\n{"codes": [], "rows": []}\n```\n', encoding="utf-8")

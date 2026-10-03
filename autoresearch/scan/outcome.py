@@ -1516,6 +1516,73 @@ def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | No
 MIN_LEDGER_N = 20
 
 
+def exec_band(row: dict, cfg: dict | None = None, *, knobs: dict | None = None) -> str | None:
+    """执行线三档(B7,2026-10-03,只记账):`out` 线外 / `floor` 线内但 T+1 大跌或收在区间最低一成 /
+    `in` 线内其余;`exec_ok` 未知 → None(不知道 ≠ 线外)。
+
+    由已在账本里的 `exec_ok / t1_pct_chg / t1_pos_in_range` 读时现算 —— 老行同样适用,不改账本列。
+    缘起:两笔成熟的 R 级 BUY 都赚了,而两只票 T+1 都是 −2.4% / −3.6%、收在区间下 8% / 19%;
+    线内弱收盘是不是另一种票,先攒样本再说。逐行调用时传 `knobs`(已解析的观测阈值),
+    免得每行重读一遍配置(复审 M-3:真实账本 1005 行 11 秒)。
+    """
+    ok = str(row.get("exec_ok")).strip().lower()
+    if ok not in {"true", "false"}:
+        return None
+    if ok == "false":
+        return "out"
+    if knobs is None:
+        from autoresearch.scan.observability import observability_cfg
+
+        knobs = observability_cfg(cfg)
+    pct, pos = _num(row.get("t1_pct_chg")), _num(row.get("t1_pos_in_range"))
+    if (pct is not None and pct <= knobs["exec_floor_pct_1d"]) or \
+            (pos is not None and pos <= knobs["exec_floor_pos_in_range"]):
+        return "floor"
+    return "in"
+
+
+def _exec_band_text(rows: list[dict], min_n: int) -> str:
+    """finalist(剔 📌 与席位)按执行线三档的主尺毛均值;不足 `min_n` 的档只印 n。"""
+    from autoresearch.scan.observability import observability_cfg
+
+    knobs = observability_cfg(None)
+    bands: dict[str, list[float]] = {"floor": [], "in": [], "out": []}
+    for r in rows:
+        if str(r.get("role")) != "finalist" or str(r.get("outcome_status") or "") != MATURE \
+                or str(r.get("calendar_quality") or "") != TRADE_CAL_QUALITY \
+                or str(r.get("actionability") or "") != "ACTIONABLE":
+            continue
+        band, gap = exec_band(r, knobs=knobs), _num(r.get(MAIN))
+        if band is not None and gap is not None:
+            bands[band].append(gap)
+    if not any(bands.values()):
+        return ""
+
+    def cell(label: str, values: list[float]) -> str:
+        if len(values) < min_n:
+            return f"{label} n={len(values)}"
+        return f"{label} n={len(values)} {100 * float(np.mean(values)):+.2f}pp"
+
+    return (" · 执行线三档(finalist·主尺毛):" + cell("下沿", bands["floor"]) + " / "
+            + cell("线内其余", bands["in"]) + " / " + cell("线外", bands["out"]))
+
+
+def _stage_ruler_all(reports_root: Path | None, metric: str) -> dict | None:
+    """`views/stage_rulers.csv` 里某个指标的 ALL 行(成熟且有值);缺文件 / 缺行 → None,不猜。"""
+    from autoresearch.scan.populations import stage_rulers_path
+
+    path = stage_rulers_path(reports_root)
+    if not path.is_file():
+        return None
+    with contextlib.suppress(OSError, csv.Error, ValueError), \
+            path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("metric") == metric and row.get("session") == "ALL" \
+                    and row.get("status") == MATURE and row.get("value"):
+                return {"value": float(row["value"]), "n_days": int(row.get("n_days") or 0)}
+    return None
+
+
 def ledger_line(reports_root: Path | None = None) -> str:
     """汇总屏一行 —— **仅人看,不喂任何 agent、不进 brief**(同 l4_rejection 日读的边界)。
 
@@ -1550,27 +1617,38 @@ def ledger_line(reports_root: Path | None = None) -> str:
                and str(r.get("calendar_quality") or "") == TRADE_CAL_QUALITY]
     unverified_n = len(buys) - len(verified)
     scored = [r for r in verified if _num(r.get(MAIN)) is not None]
-    if len(scored) < __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["min_ledger_n"]:
+    min_n = __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["min_ledger_n"]
+    bands_txt = _exec_band_text(rows, min_n)
+    if len(scored) < min_n:
         return (f"结果账本:{len(rows)} 行 · active BUY {len(all_buys)} 笔"
                 f"(可执行 {len(buys)}·已成熟 {len(scored)})"
                 + (f" · 另 shadow 期 {shadow_n} 笔不计" if shadow_n else "")
                 + (f" · 迟到 {late_n} 笔不计" if late_n else "")
                 + (f" · 锚未知 {unknown_n} 笔不计" if unknown_n else "")
                 + (f" · 日历未验证 {unverified_n} 笔不计" if unverified_n else "")
-                + f" · 攒样本 {len(scored)}/{__import__('autoresearch.scan.observability', fromlist=['x']).observability_cfg()['min_ledger_n']},不印均值")
+                + f" · 攒样本 {len(scored)}/{min_n},不印均值" + bands_txt)
     gaps = [_num(r.get(MAIN)) for r in scored]
     rel = [_num(r.get(_ruler.REL_MARKET)) for r in scored
            if _num(r.get(_ruler.REL_MARKET)) is not None]
     ok = [r for r in scored if str(r.get("exec_ok")).lower() == "true"]
     ok_gaps = [_num(r.get(MAIN)) for r in ok]
-    txt = (f"结果账本:BUY {len(scored)} 笔 · 毛 gap {100 * float(np.mean(gaps)):+.2f}pp"
-           f" · 相对市场 {100 * float(np.mean(rel)):+.2f}pp" if rel else
-           f"结果账本:BUY {len(scored)} 笔 · 毛 gap {100 * float(np.mean(gaps)):+.2f}pp")
+    # A9(2026-10-03):毛均值旁并列「扣成本估算后」—— 隔夜一笔的边只有几个 bp,不扣成本的均值
+    # 天然偏乐观。成本是配置里的**估算**(observability.round_trip_cost_bp),不是成交回单。
+    cost_bp = __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["round_trip_cost_bp"]
+    mean_gap = float(np.mean(gaps))
+    txt = (f"结果账本:BUY {len(scored)} 笔 · 毛 gap {100 * mean_gap:+.2f}pp"
+           f" · 扣成本估算 {cost_bp:g}bp 后 {100 * mean_gap - cost_bp / 100:+.2f}pp")
+    if rel:
+        txt += f" · 相对市场 {100 * float(np.mean(rel)):+.2f}pp"
+    pool = _stage_ruler_all(reports_root, "e6_buy_minus_l2_pool")
+    if pool is not None:
+        txt += f" · 对同日 L2 池 {100 * pool['value']:+.2f}pp({pool['n_days']} 日)"
     if ok_gaps:
         txt += (f" · 执行线内 {len(ok_gaps)} 笔 {100 * float(np.mean(ok_gaps)):+.2f}pp")
     if late_n or unknown_n or unverified_n:
         txt += f" · 排除迟到 {late_n}/锚未知 {unknown_n}/日历未验证 {unverified_n} 笔"
-    return txt + f" · 主尺 {MAIN}(推荐毛收益·可执行口径;只记不学;仅人看;未接 broker,非实际成交)"
+    return (txt + bands_txt
+            + f" · 主尺 {MAIN}(推荐毛收益·可执行口径;只记不学;仅人看;未接 broker,非实际成交)")
 
 
 def main(argv: list[str] | None = None) -> int:

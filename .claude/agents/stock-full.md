@@ -1,9 +1,11 @@
 ---
 name: stock-full
 description: 单股 FULL 分工研究；只执行任务包指定的 full_role。
-model: opus
+model: claude-opus-5-5
 effort: max
 tools: Read, Write, WebSearch, WebFetch
+maxTurns: 80
+omitClaudeMd: true
 ---
 
 ## common

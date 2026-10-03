@@ -143,3 +143,21 @@ uv run --no-sync python -m autoresearch.research.stage_value \
 6. 可支持的结论、不能支持的结论、尚缺证据及是否提出后续开发。
 
 交付报告如来自 session_v1，仍须对 finish 返回的 canonical 报告执行 `verify-report --level full`，仅引用其 VerificationResult。该报告绑定门与投资效果评价各自承担自己的职责。
+
+## 8. 附:研究层验收口径(2026-10-03 用户按复盘稿 Q4 裁定)
+
+> 本节是追加,不改上文;已冻结的前向观察 `QUALITY_FORWARD_20261008_V1` 按它自己绑定的协议哈希执行,不受本节影响。
+> 来源:[`2026-10-03-research-drift-token-review-brainstorm.md`](2026-10-03-research-drift-token-review-brainstorm.md) §3、§7 A8/B5、§8 Q4。
+
+1. **主证据 = 截面尺**,不是 BUY 盈亏。每天自动进 `_ledger/views/stage_rulers.csv`(`populations.stage_rulers`):
+   `l1_composite_ic`(菜单排序对主尺的逐日秩相关)、`l1_n_channels_ic`、`l3_conviction_ic`、
+   `l3_finalist_minus_l2_rest`(L3 对「L2 其余」,剔 📌 与席位)、`l2_pool_minus_market`、
+   `e6_buy_minus_l2_pool`、`e6_buy_minus_market`;每项并列 10 日尺(`_fwd10`,block=10)与影子腿
+   `c1→c2`(`_c1c2`,只在人口表上有,Q2 裁定:不换主尺)。旧的 `l3_finalist_minus_bench` 保留,
+   但它只比 L3 自己挑剩下的那一小撮,读 0 的同时对 L2 其余是 −0.26pp/日 —— 不能单独用它说「L3 有选择力」。
+2. **第二证据 = 卡片预测计分**(复盘稿 B5):卡上机读的兑现机制三态、入场条件谓词、三档情景,在主尺上逐张计分。
+   机读字段上线前这一项写「未计量」,不拿自然语言卡面代填。
+3. **BUY 盈亏只作旁证**:≤1 笔/日的样本要 1–7 年才有功效。账本 `ledger_line` 照旧印毛均值,并列「扣成本估算后」
+   (`observability.round_trip_cost_bp`)与「对同日 L2 池」,但单独拿它验收或否决研究层不成立。
+4. **cohort 分层**:任何跨日读数先按 `runs.csv` 的 `model_cohort`(实际模型 + effort)分层;跨 cohort 混算必须明写。
+   cohort 一变(模型换代、改档位),上一 cohort 的读数不外推到新 cohort。

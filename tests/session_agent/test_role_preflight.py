@@ -215,3 +215,164 @@ def test_preflight_rejects_unknown_output_contract_before_launch(tmp_path):
     task = inf("bad.contract", role="macro.research", contract="invented.output.v1")
     with pytest.raises(RuntimeError, match="output contract"):
         preflight_plan(_handle(tmp_path), {"tasks": [task]}, profile())
+
+
+# --- 2026-10-03 钉版:mailbox 宿主装载的 agent 定义必须与冻结配置同源 ------------------
+
+
+def _production_handle(tmp_path, engine):
+    from autoresearch.scan import user_config
+
+    cfg = user_config.load_user_config(user_config._PRODUCTION_DEFAULT_PATH)
+    return SimpleNamespace(engine=engine, staging=tmp_path, analysis_date="2026-09-30",
+                           contract=SimpleNamespace(user_config=cfg))
+
+
+def _rewrite(monkeypatch, target: Path, old: str, new: str) -> None:
+    original_read_text = Path.read_text
+
+    def changed(path, *args, **kwargs):
+        text = original_read_text(path, *args, **kwargs)
+        return text.replace(old, new, 1) if Path(path) == target else text
+
+    monkeypatch.setattr(Path, "read_text", changed)
+
+
+def _definition_reasons(report) -> list[str]:
+    return [reason for row in report["roles"] for reason in row["reasons"]
+            if "agent definition" in reason]
+
+
+@pytest.mark.parametrize("engine", ["claude", "codex"])
+def test_mailbox_preflight_accepts_definitions_in_sync_with_the_frozen_config(tmp_path, engine):
+    from autoresearch.session_agent.preflight import preflight_roles
+
+    host = profile(engine=engine, independent_context=True, web_search=True, web_fetch=True)
+    report = preflight_roles(_production_handle(tmp_path, engine),
+                             ["scan.l3", "scan.l4.card", "scan.l4.intel", "sector.brief"], host)
+
+    assert _definition_reasons(report) == []
+
+
+def test_mailbox_preflight_rejects_a_claude_definition_that_drifted_back_to_an_alias(
+        tmp_path, monkeypatch):
+    """mailbox 下真正生效的是 frontmatter;它回到 `opus` 别名 = 钉版失效,必须在取数前拦下。"""
+    from autoresearch.session_agent.preflight import preflight_roles
+
+    _rewrite(monkeypatch, Path(".claude/agents/l4-card.md"),
+             "model: claude-opus-5-5", "model: opus")
+    host = profile(engine="claude", independent_context=True, web_search=True, web_fetch=True)
+
+    report = preflight_roles(_production_handle(tmp_path, "claude"), ["scan.l4.card"], host)
+
+    assert not report["ok"]
+    assert _definition_reasons(report) == [
+        "agent definition model='opus' ≠ frozen config 'claude-opus-5-5' "
+        "(mailbox host loads the definition; sync: "
+        "uv run --no-sync python -m autoresearch.scan.agent_frontmatter --write; "
+        "roles sharing one definition with different settings need "
+        "begin/run --executor headless)"]
+
+
+def test_mailbox_preflight_rejects_a_codex_effort_that_drifted_from_the_config(
+        tmp_path, monkeypatch):
+    from autoresearch.session_agent.preflight import preflight_roles
+
+    _rewrite(monkeypatch, Path(".codex/agents/l4_card.toml"),
+             'model_reasoning_effort = "xhigh"', 'model_reasoning_effort = "high"')
+    host = profile(engine="codex", independent_context=True, web_search=True, web_fetch=True)
+
+    report = preflight_roles(_production_handle(tmp_path, "codex"), ["scan.l4.card"], host)
+
+    assert not report["ok"]
+    assert any("reasoning_effort='high'" in reason and "'xhigh'" in reason
+               for reason in _definition_reasons(report))
+
+
+def test_headless_passes_model_and_effort_explicitly_so_the_definition_may_differ(
+        tmp_path, monkeypatch):
+    from autoresearch.session_agent.preflight import preflight_roles
+
+    _rewrite(monkeypatch, Path(".claude/agents/l4-card.md"),
+             "model: claude-opus-5-5", "model: opus")
+    host = profile(engine="claude", independent_context=True, web_search=True, web_fetch=True)
+
+    report = preflight_roles(_production_handle(tmp_path, "claude"), ["scan.l4.card"], host,
+                             executor="headless")
+
+    assert _definition_reasons(report) == []
+
+
+# --- 复审 I-1:执行器在 begin 声明,扩展沿用;headless 的 begin 不套 mailbox 的定义核对 ----------
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_begin_preflights_with_the_declared_executor_and_freezes_it(tmp_path, monkeypatch):
+    from autoresearch.session_agent import preflight, service
+
+    from ._runner_support import begin_synthetic_run, inf
+
+    seen = []
+
+    def stub(handle, plan, host, **kw):
+        seen.append(kw.get("executor"))
+        return {"schema_version": 1, "engine": handle.engine, "executor": kw.get("executor"),
+                "ok": True, "roles": []}
+
+    monkeypatch.setattr(preflight, "preflight_plan", stub)
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("card")], executor="headless")
+
+    assert seen == ["headless"]
+    assert service._begin_executor(run.handle) == "headless"
+
+
+def test_expansions_reuse_the_begin_executor_and_old_runs_read_as_mailbox(tmp_path, monkeypatch):
+    """在飞的 headless run 在运维改了定义之后扩展,不能被 mailbox 的定义核对拦下。"""
+    from autoresearch.session_agent import preflight, service
+
+    from ._runner_support import profile
+
+    capsule = tmp_path / "capsule"
+    handle = SimpleNamespace(capsule=capsule)
+    assert service._begin_executor(handle) == "mailbox"            # 老 run 没有冻结记录
+    (capsule / "identity/session").mkdir(parents=True)
+    (capsule / "identity/session/role_support.json").write_text(
+        '{"executor": "headless"}', encoding="utf-8")
+    seen = []
+
+    def stub(handle, plan, host, **kw):
+        seen.append(kw.get("executor"))
+        raise _Stop
+
+    monkeypatch.setattr(preflight, "preflight_plan", stub)
+    with pytest.raises(_Stop):
+        service._sync_expansion(handle, {"host_profile": profile()},
+                                {"expansion_id": "x", "tasks": []})
+    assert seen == ["headless"]
+
+
+def test_begin_cli_and_entry_forward_the_executor(tmp_path, monkeypatch):
+    import json
+
+    from autoresearch.session_agent import __main__ as cli, origin, service
+
+    monkeypatch.setenv("AUTORESEARCH_ENGINE", "claude")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    forwarded = {}
+    monkeypatch.setattr(service, "begin", lambda request, **kw: forwarded.update(kw) or {})
+    origin.begin_via_entry({}, orchestration="session_v1", executor="headless")
+    assert forwarded == {"executor": "headless"}
+
+    seen = {}
+    monkeypatch.setattr(origin, "begin_via_entry",
+                        lambda request, **kw: seen.update(kw) or {"state": "READY"})
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({"kind": "stock-research", "analysis_date": "2026-09-28"}),
+                       encoding="utf-8")
+    assert cli.main(["begin", "--request-file", str(request), "--executor", "headless"]) == 0
+    assert seen["executor"] == "headless"
+    assert cli.main(["begin", "--request-file", str(request)]) == 0
+    assert seen["executor"] == "mailbox"

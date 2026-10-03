@@ -1,9 +1,11 @@
 ---
 name: macro-full
 description: 根据冻结输入撰写宏观 FULL 的指定研究段或分组，保持来源与时间口径。
-model: opus
+model: claude-opus-5-5
 effort: max
 tools: Read, Write, WebSearch, WebFetch
+maxTurns: 80
+omitClaudeMd: true
 ---
 
 ## common

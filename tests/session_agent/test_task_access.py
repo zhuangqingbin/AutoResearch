@@ -364,3 +364,113 @@ def test_runner_activates_only_live_declared_deep_on_dispatch(tmp_path, monkeypa
     else:
         assert result['finished'], result
         assert executor.calls == [('judge', 1)]
+
+
+@pytest.mark.parametrize('policy,expected', [
+    ('READ_WRITE', '本任务可用工具:Read、Grep(只限上列输入)· Write(只限上列输出);'
+                   '其余工具(含 Glob、WebSearch、WebFetch)会被宿主拒绝,不要尝试。'),
+    ('READ_WEB_WRITE', '本任务可用工具:Read、Grep(只限上列输入)· Write(只限上列输出)· WebSearch、WebFetch;'
+                       '其余工具(含 Glob)会被宿主拒绝,不要尝试。'),
+    ('WEB_WRITE', '本任务可用工具:Write(只限上列输出)· WebSearch、WebFetch;'
+                  '其余工具(含 Read、Grep、Glob)会被宿主拒绝,不要尝试。'),
+])
+def test_tool_allowance_states_exactly_what_the_boundary_hook_permits(policy, expected):
+    """A11(2026-10-03):10-02 首跑 macro-brief / l4-card 的 WebSearch、sector-brief 的 Glob 全部被拒 ——
+    agent 定义里有、任务没登记。网查权限归 E5 待裁;这里只把「这次能用什么」写进派发,省掉白跑的轮次。"""
+    from autoresearch.session_agent.task_access import tool_allowance
+
+    assert tool_allowance(policy) == expected
+
+
+@pytest.mark.parametrize('policy,expected', [
+    ('READ_WRITE', '本任务的文件读写只经宿主绑定的 task_file_broker 命令(读只限上列输入、写只限上列输出);'
+                   '不联网;普通 shell / 解释器调用会被宿主拒绝,不要尝试。'),
+    ('WEB_WRITE', '本任务的文件读写只经宿主绑定的 task_file_broker 命令(写只限上列输出);'
+                  '可以联网检索;普通 shell / 解释器调用会被宿主拒绝,不要尝试。'),
+])
+def test_codex_dispatch_names_the_broker_not_claude_tools(policy, expected):
+    """复审 I-4:Codex 没有 Read / Grep / Write,文件读写只经 task_file_broker(toml 与 access-boundary
+    同口径);照抄 Claude 那句会叫它别读输入、别写输出。"""
+    from autoresearch.session_agent.task_access import tool_allowance
+
+    assert tool_allowance(policy, 'codex') == expected
+    assert 'Read' not in expected and 'Write' not in expected
+
+
+def test_actual_claim_prompt_carries_the_engines_tool_allowance(tmp_path, monkeypatch):
+    from autoresearch.session_agent import service
+
+    from ._runner_support import ENGINE, begin_synthetic_run, inf
+    assert ENGINE == 'codex'
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf('judge')])
+    result = service.claim(run.run_id, 'judge', 1, handle_loader=lambda _: run.handle,
+                           event_recorder=lambda *args, **kwargs: None)['result']
+    prompt = result['dispatch_request']['prompt']
+    assert '本任务的文件读写只经宿主绑定的 task_file_broker 命令' in prompt
+    assert '本任务可用工具:' not in prompt
+
+
+def test_a_blind_role_is_not_told_to_read_its_provenance_inputs():
+    """A11:l4-intel(WEB_WRITE,无 Read)登记的输入是卡任务包(只作溯源)—— 派发不该叫它去读,
+    更不该把含 L3 论点的任务包路径摆在它面前(它被设计成盲于 L3)。"""
+    from autoresearch.session_agent.dispatch import artifact_scope
+
+    inputs = {'scan.l4.600519.a1.prompt': '/s/_l4_prompt_600519.md'}
+    outputs = {'scan.l4.600519.a1.intel': '/s/out/intel.md'}
+    blind = artifact_scope('WEB_WRITE', inputs, outputs)
+    assert '_l4_prompt_600519' not in blind and '/s/out/intel.md' in blind
+    assert blind.startswith('本任务不读任何文件')
+    reader = artifact_scope('READ_WRITE', inputs, outputs)
+    assert '_l4_prompt_600519' in reader and reader.startswith('本次只读取以下 artifact 输入')
+
+
+# ── B8(2026-10-03):按引用派发(opt-in,`session.mailbox.by_reference`,缺省关)──────────
+# 10-02 首跑:主会话把 44 份派发 prompt 逐字复述进 Agent 工具入参,共 23.3 万字符,约占主会话
+# 输出四成。开启后宿主只传一行指针,全文冻结成文件、登记进该任务的授权读取。
+
+
+def _claim(tmp_path, monkeypatch, *, by_reference: bool):
+    from autoresearch.session_agent import service
+
+    from ._runner_support import begin_synthetic_run, inf
+    cfg = {"session": {"mailbox": {"by_reference": by_reference}}}
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf('judge')], user_config=cfg)
+    result = service.claim(run.run_id, 'judge', 1, handle_loader=lambda _: run.handle,
+                           event_recorder=lambda *args, **kwargs: None)['result']
+    return run, result
+
+
+def test_by_reference_freezes_the_full_prompt_and_hands_the_host_a_pointer(tmp_path, monkeypatch):
+    import json
+
+    from autoresearch.session_agent import task_access as access
+
+    run, result = _claim(tmp_path, monkeypatch, by_reference=True)
+    dispatch = result['dispatch_request']
+    prompt_file = Path(dispatch['instruction_refs'][-1])
+    assert prompt_file.name == 'judge-a1.prompt.md'
+    assert prompt_file.read_text(encoding='utf-8') == dispatch['prompt']
+    assert str(prompt_file) in dispatch['host_prompt'] and len(dispatch['host_prompt']) < 300
+    manifest = json.loads(access.manifest_path(
+        run.handle.workspace / 'session/dispatch/judge-a1.json').read_text())
+    assert str(prompt_file.resolve()) in {row['path'] for row in manifest['reads']}
+
+
+def test_by_reference_is_off_by_default(tmp_path, monkeypatch):
+    _run, result = _claim(tmp_path, monkeypatch, by_reference=False)
+    dispatch = result['dispatch_request']
+    assert dispatch['host_prompt'] is None
+    assert not dispatch['instruction_refs'][-1].endswith('.prompt.md')
+
+
+def test_the_mailbox_hands_out_host_prompt_falling_back_to_the_full_prompt(tmp_path):
+    from autoresearch.session_agent.executors import mailbox
+
+    base = request(tmp_path)
+    mailbox.issue_request(tmp_path, base)
+    doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+    assert doc['host_prompt'] == base.prompt
+    pointed = replace(base, task_id='judge2', host_prompt='先 Read /x/judge2-a1.prompt.md')
+    mailbox.issue_request(tmp_path, pointed)
+    doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+    assert doc['host_prompt'] == '先 Read /x/judge2-a1.prompt.md'

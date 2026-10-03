@@ -831,3 +831,126 @@ def test_candidate_map_alone_cannot_define_sector_benchmark():
     assert result['rel_gap_sector'].isna().all()
     assert result['rel_gap_market'].notna().all()
     assert result.attrs['sector_benchmark']['expected_count'] == 3
+
+
+def _mature_buys(root, gap: float, n: int) -> None:
+    rows = {}
+    for i in range(n):
+        code = f"{i:06d}"
+        rows[code] = {"code": code, "name": f"测试{i}", "sector": "测试行业", "role": "BUY",
+                      "e6_buy": True, "buyable_c1": True, "t1_close": 10.1, "t1_pct_chg": 1.0,
+                      "t1_pos_in_range": 0.4, "exec_ok": True, "t2_open": 10.3,
+                      outcome.MAIN: gap, "rel_gap_market": 0.01}
+    doc = {
+        "schema_version": outcome.OUTCOME_SCHEMA_VERSION, "run_id": "20260825_2149",
+        "contract_run_id": "x", "analysis_date": "2026-08-25", "ruler": outcome.MAIN,
+        "outcome_status": outcome.MATURE, "reason": "",
+        "calendar_quality": outcome.TRADE_CAL_QUALITY, "calendar_digest": "d",
+        "t1": "20260826", "t2": "20260827",
+        "decision_mode": "active", "rule_version": "e6.v2.0", "read_from_shared_staging": False,
+        "complete": True, "n_rows": len(rows), "n_scored": len(rows),
+        "exec_line": {"max_pct_1d": 3.0, "max_pos_in_range": 0.7},
+        "execution": {"first_available_session": "2026-08-26", "exec_lag": 0,
+                      "actionability_status": "ACTIONABLE"},
+        "rows": rows,
+    }
+    outcome.write_outcome(doc, root)
+    outcome.upsert_ledger(doc, root)
+
+
+def test_ledger_line_prints_a_cost_adjusted_estimate_next_to_the_gross_mean(tmp_path, monkeypatch):
+    """A9(2026-10-03):毛均值旁并列「扣估算成本后」—— 隔夜一笔的边只有几个 bp,不扣成本的
+    均值天然偏乐观。仍然不许自称净收益或实际成交(C14)。"""
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    _mature_buys(root, 0.0020, outcome.MIN_LEDGER_N)
+
+    line = outcome.ledger_line(root)
+
+    assert "毛 gap +0.20pp" in line
+    assert "扣成本估算 12bp 后 +0.08pp" in line
+    assert "净收益" not in line
+
+
+def test_ledger_line_reads_the_same_day_l2_pool_comparison_from_stage_rulers(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    _mature_buys(root, 0.0020, outcome.MIN_LEDGER_N)
+    views = root / "_ledger" / "views"
+    views.mkdir(parents=True, exist_ok=True)
+    (views / "stage_rulers.csv").write_text(
+        "session,stage,metric,value,n_days,n_names,coverage,ci_low,ci_high,status,"
+        "metric_definition_version\n"
+        "ALL,E6,e6_buy_minus_l2_pool,-0.0031,6,20,,-0.007,0.001,MATURE,g3.v1\n",
+        encoding="utf-8")
+
+    line = outcome.ledger_line(root)
+
+    assert "对同日 L2 池 -0.31pp(6 日)" in line
+
+
+def _finalist_rows(root, specs) -> None:
+    """specs: [(n, t1_pct_chg, t1_pos_in_range, exec_ok, gap)] → 一份 MATURE 的 finalist 结果。"""
+    rows, i = {}, 0
+    for n, pct, pos, ok, gap in specs:
+        for _ in range(n):
+            code = f"{i:06d}"
+            i += 1
+            rows[code] = {"code": code, "name": f"测试{i}", "sector": "测试行业",
+                          "role": "finalist", "e6_buy": False, "buyable_c1": True,
+                          "t1_close": 10.0, "t1_pct_chg": pct, "t1_pos_in_range": pos,
+                          "exec_ok": ok, "t2_open": 10.0, outcome.MAIN: gap,
+                          "rel_gap_market": 0.0}
+    doc = {
+        "schema_version": outcome.OUTCOME_SCHEMA_VERSION, "run_id": "20260825_2149",
+        "contract_run_id": "x", "analysis_date": "2026-08-25", "ruler": outcome.MAIN,
+        "outcome_status": outcome.MATURE, "reason": "",
+        "calendar_quality": outcome.TRADE_CAL_QUALITY, "calendar_digest": "d",
+        "t1": "20260826", "t2": "20260827",
+        "decision_mode": "active", "rule_version": "e6.v2.0", "read_from_shared_staging": False,
+        "complete": True, "n_rows": len(rows), "n_scored": len(rows),
+        "exec_line": {"max_pct_1d": 3.0, "max_pos_in_range": 0.7},
+        "execution": {"first_available_session": "2026-08-26", "exec_lag": 0,
+                      "actionability_status": "ACTIONABLE"},
+        "rows": rows,
+    }
+    outcome.write_outcome(doc, root)
+    outcome.upsert_ledger(doc, root)
+
+
+@pytest.mark.parametrize("row,band", [
+    ({"exec_ok": "False", "t1_pct_chg": "5", "t1_pos_in_range": "0.9"}, "out"),
+    ({"exec_ok": "True", "t1_pct_chg": "-3.5", "t1_pos_in_range": "0.5"}, "floor"),   # 当日大跌
+    ({"exec_ok": "True", "t1_pct_chg": "0.5", "t1_pos_in_range": "0.05"}, "floor"),   # 收在最低一成
+    ({"exec_ok": "True", "t1_pct_chg": "0.5", "t1_pos_in_range": "0.4"}, "in"),
+    ({"exec_ok": "", "t1_pct_chg": "0.5", "t1_pos_in_range": "0.4"}, None),           # 不知道 ≠ 线外
+])
+def test_exec_band_splits_the_line_into_out_floor_and_in(row, band):
+    """B7(2026-10-03,只记账):执行线内再分出下沿 —— T+1 当日大跌或收在区间最低一成。"""
+    assert outcome.exec_band(row) == band
+
+
+def test_the_band_readout_resolves_the_config_once_not_per_row(tmp_path, monkeypatch):
+    """复审 M-3:`exec_band` 逐行重读配置,真实账本 1005 行要 11 秒(每屏 prelude 摘要都跑)。"""
+    from autoresearch.scan import observability
+
+    calls = []
+    real = observability.observability_cfg
+    monkeypatch.setattr(observability, "observability_cfg",
+                        lambda cfg=None: calls.append(cfg) or real(cfg))
+    rows = [{"role": "finalist", "outcome_status": outcome.MATURE, "exec_ok": "True",
+             "calendar_quality": outcome.TRADE_CAL_QUALITY, "actionability": "ACTIONABLE",
+             "t1_pct_chg": "0.5", "t1_pos_in_range": "0.4", outcome.MAIN: "0.001"}] * 50
+    assert "线内其余 n=50" in outcome._exec_band_text(rows, 5)
+    assert len(calls) == 1
+
+
+def test_ledger_line_reports_the_three_execution_bands_for_finalists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    _finalist_rows(root, [(20, -4.0, 0.5, True, 0.005), (20, 1.0, 0.4, True, 0.001),
+                          (7, 5.0, 0.9, False, -0.003)])
+
+    line = outcome.ledger_line(root)
+
+    assert "执行线三档(finalist·主尺毛):下沿 n=20 +0.50pp / 线内其余 n=20 +0.10pp / 线外 n=7" in line

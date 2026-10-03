@@ -780,3 +780,39 @@ def test_cli_wait_default_stays_under_the_host_bash_timeout():
 
     args = cli._parser().parse_args(["mailbox", "wait", "--run-id", "x"])
     assert args.timeout <= 100
+
+
+# --- 2026-10-03 钉版:交给宿主的 Agent 工具参数 ---------------------------------
+
+
+def _claude_request(tmp_path, model):
+    base = _request(tmp_path)
+    return DispatchRequest(**{**base.to_json(), "engine": "claude", "model": model,
+                              "instruction_refs": tuple(base.instruction_refs)})
+
+
+@pytest.mark.parametrize("model,expected", [
+    ("claude-opus-5-5", {"subagent_type": "l4-card"}),          # 全 ID:定义已钉,不传
+    ("sonnet", {"subagent_type": "l4-card", "model": "sonnet"}),  # 别名:照传
+    (None, {"subagent_type": "l4-card"}),                         # 没解析出模型:定义决定
+])
+def test_claude_request_hands_the_host_agent_tool_safe_arguments(tmp_path, model, expected):
+    """Claude Code 的 Agent 工具 `model` 只收别名;全 ID 传进去会被参数校验拒掉。
+
+    全 ID 由 agent 定义 frontmatter 钉住(preflight 核对两边一致),所以宿主不传 model;
+    请求里的 `model` 字段照旧记全 ID,headless 用它拼 `--model`。
+    """
+    mailbox.issue_request(tmp_path, _claude_request(tmp_path, model))
+
+    doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+
+    assert doc["agent_tool"] == expected
+    assert doc["model"] == model
+
+
+def test_codex_request_hands_the_host_the_agent_name(tmp_path):
+    mailbox.issue_request(tmp_path, _request(tmp_path))
+
+    doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+
+    assert doc["agent_tool"] == {"agent_name": "l4-card"}

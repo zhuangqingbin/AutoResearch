@@ -59,16 +59,31 @@ SKIP_DIRS = frozenset({"_sem", "__pycache__", ".omc"})
 SKIP_SUFFIXES = (".lock", ".tmp")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 
+#: scan 在 `scan.*` 之外还会派发的研究角色(Stage 0 策略师、Stage 1 行业简报、档案首覆)。
+_SCAN_SIDE_ROLE_IDS = ("macro.brief", "sector.brief", "dossier.init")
+
+
+def _scan_agent_contracts() -> tuple[str, ...]:
+    """scan 用到的每个研究角色在两个引擎下的契约文件,从角色注册表派生。
+
+    手写清单时代(到 2026-10-03)只有 6 份 `.claude/agents/*.md`:`l3-repair.md` 漏了,
+    `.codex/agents/*.toml` 一份没有 —— Codex 的 run 记的是 Claude 契约的哈希。Codex 角色定义
+    自己只是一层壳,契约照读对应的 `.claude/agents/*.md`,所以两份都要记。
+    """
+    from autoresearch.contracts.agent_roles import PHYSICAL_AGENTS, dispatch_mapping
+
+    roles = sorted({config for role_id, (_, config) in dispatch_mapping().items()
+                    if role_id.startswith("scan.") or role_id in _SCAN_SIDE_ROLE_IDS})
+    claude = sorted({f".claude/agents/{PHYSICAL_AGENTS[role][0]}.md" for role in roles
+                     if PHYSICAL_AGENTS[role][0]})
+    return (*claude, *(f".codex/agents/{role}.toml" for role in roles))
+
+
 #: prompt 本体 —— 它们才是 agent 真正执行的指令,run 里原先只有一个 `git_sha` 代表它们。
-#: 仓内相对路径;缺文件静默跳过(不同引擎/精简 checkout 下可能不全)。
-#: **加新 agent def 要同步加这里**,否则它的规则在 run 里没有留痕。
+#: 仓内相对路径;缺文件静默跳过(不同引擎/精简 checkout 下可能不全)。agent 契约从角色注册表
+#: 派生(`_scan_agent_contracts`);skill 文档与配置仍手写在下面。
 PROMPT_SOURCES = (
-    ".claude/agents/l3-rank.md",
-    ".claude/agents/l4-card.md",
-    ".claude/agents/l4-intel.md",
-    ".claude/agents/macro-brief.md",
-    ".claude/agents/sector-brief.md",
-    ".claude/agents/dossier-init.md",
+    *_scan_agent_contracts(),
     ".claude/skills/stock-research/lite-playbook.md",
     ".claude/skills/scan-market/SKILL.md",
     ".claude/skills/scan-market/STAGES.md",
@@ -200,7 +215,12 @@ def snapshot_inputs(scan_dir: Path | str, run_dir: Path | str) -> dict:
         if not p.is_file():
             continue
         prompt_dir.mkdir(parents=True, exist_ok=True)
-        flat = "__".join(p.parts[1:]) if p.parts and p.parts[0] == ".claude" else p.name
+        if p.parts and p.parts[0] == ".claude":
+            flat = "__".join(p.parts[1:])
+        elif p.parts and p.parts[0] == ".codex":
+            flat = "codex__" + "__".join(p.parts[1:])
+        else:
+            flat = p.name
         shutil.copy2(p, prompt_dir / flat)
         out["prompts"] += 1
 

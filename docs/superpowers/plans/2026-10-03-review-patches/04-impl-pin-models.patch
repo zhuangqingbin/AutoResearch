@@ -1,0 +1,402 @@
+--- /dev/null
++++ b/autoresearch/scan/agent_frontmatter.py
+@@ -0,0 +1,165 @@
++#!/usr/bin/env python3
++"""agent 定义 frontmatter 的 `model` / `effort` 与 `scan_config.jsonc` 同源检查(Claude 引擎)。
++
++为什么要有这一层:两种执行器从**不同的地方**取模型与 effort ——
++
++- headless(`claude -p --agent <x> --model … --effort …`)取 `scan_config` 的解析值;
++- mailbox(宿主会话用 Agent 工具派发)取 `.claude/agents/<x>.md` 的 frontmatter,
++  因为 Agent 工具的 `model` 入参只接受别名,传不了全 ID。
++
++唯一事实源是 `scan_config.jsonc` 的 `agent_engines.claude`;frontmatter 是它的镜像。本模块
++只做两件事:`check()` 报出两边不一致的地方,`write()` 把 frontmatter 的这两行改成配置的值。
++别名(`opus` / `sonnet`)由 Claude Code 客户端解析、随自动升级移动,所以生产配置里推理角色
++必须是价表认识的全 ID(`trace.pricing.KNOWN_MODEL_IDS`)。
++
++CLI:
++  uv run --no-sync python -m autoresearch.scan.agent_frontmatter --check
++  uv run --no-sync python -m autoresearch.scan.agent_frontmatter --write
++"""
++from __future__ import annotations
++
++import argparse
++import re
++from pathlib import Path
++
++from autoresearch.contracts.agent_roles import configured_agents
++from autoresearch.scan import user_config
++
++AGENTS_DIR = Path(".claude") / "agents"
++_FIELDS = ("model", "effort")
++
++
++def expected(cfg: dict) -> dict[str, dict]:
++    """`{agent 文件名(无扩展名): {"model", "effort", "roles": [...]}}`,取共用该文件的首个 role。
++
++    没有物理 agent 的 role(命令壳)不在表里。`model` / `effort` 缺席时对应键不出现,
++    由 `check()` 报成违规,而不是在这里补缺省。
++    """
++    resolved = user_config.resolve_agent_config(cfg, engine="claude")
++    out: dict[str, dict] = {}
++    for role, spec in configured_agents().items():
++        agent = spec["claude_agent"]
++        if agent is None or role not in resolved:
++            continue
++        entry = out.setdefault(agent, {"roles": []})
++        if not entry["roles"]:
++            entry.update({key: resolved[role][key] for key in _FIELDS if key in resolved[role]})
++        entry["roles"].append(role)
++    return {agent: {**{k: v for k, v in entry.items() if k != "roles"}, "roles": entry["roles"]}
++            for agent, entry in out.items()}
++
++
++def _split(text: str) -> tuple[str, str, str] | None:
++    """`---\\n<frontmatter>\\n---<rest>` → (开头, frontmatter, 其余);不是这个形状 → None。"""
++    if not text.startswith("---"):
++        return None
++    end = text.find("\n---", 3)
++    if end == -1:
++        return None
++    return text[:3], text[3:end], text[end:]
++
++
++def read(path: Path) -> dict[str, str]:
++    """读 frontmatter 的 `model:` / `effort:`;缺文件或没有 frontmatter → `{}`。"""
++    try:
++        parts = _split(path.read_text(encoding="utf-8"))
++    except OSError:
++        return {}
++    if parts is None:
++        return {}
++    found: dict[str, str] = {}
++    for line in parts[1].splitlines():
++        for key in _FIELDS:
++            if line.startswith(f"{key}:"):
++                found[key] = line[len(key) + 1:].strip()
++    return found
++
++
++def check(cfg: dict, *, agents_dir: Path | str = AGENTS_DIR) -> list[str]:
++    """返回违规清单(空 = 同源)。只报事实,不改文件。"""
++    agents = Path(agents_dir)
++    want = expected(cfg)
++    resolved = user_config.resolve_agent_config(cfg, engine="claude")
++    violations: list[str] = []
++    for agent in sorted(want):
++        entry = want[agent]
++        name = f"{agent}.md"
++        primary = entry["roles"][0]
++        if not (agents / name).is_file():
++            violations.append(f"{name}: agent 定义缺失")
++            continue
++        if "model" not in entry:
++            violations.append(
++                f"{name}: scan_config 没有给 role {primary} 钉模型(agent_engines.claude)")
++            continue
++        specs = {role: {key: resolved[role].get(key) for key in _FIELDS}
++                 for role in entry["roles"]}
++        if len({tuple(spec.items()) for spec in specs.values()}) > 1:
++            shown = " / ".join(f"{role}={spec}" for role, spec in specs.items())
++            violations.append(
++                f"{name}: 共用该定义的 role 解析结果不同({shown});"
++                "mailbox 执行器只读 frontmatter,分不开")
++            continue
++        have = read(agents / name)
++        for key in _FIELDS:
++            if key in entry and have.get(key) != entry[key]:
++                violations.append(
++                    f"{name}: {key} 是 {have.get(key)!r},scan_config 解析为 "
++                    f"{entry[key]!r}(role {primary})")
++    for path in sorted(agents.glob("*.md")):
++        if path.stem not in want:
++            violations.append(
++                f"{path.name}: 没有任何已登记 role 使用该 agent 定义"
++                "(contracts.agent_roles.PHYSICAL_AGENTS)")
++    return violations
++
++
++def write(cfg: dict, *, agents_dir: Path | str = AGENTS_DIR) -> list[str]:
++    """把 frontmatter 的 `model:` / `effort:` 改成配置解析值;返回改动过的文件名(幂等)。
++
++    只动 frontmatter 块里的这两行;正文里即使有 `model:` 开头的行也不碰。缺文件、缺 frontmatter、
++    共用 role 不一致等结构性问题留给 `check()` 报,本函数不猜。
++    """
++    agents = Path(agents_dir)
++    changed: list[str] = []
++    for agent, entry in sorted(expected(cfg).items()):
++        path = agents / f"{agent}.md"
++        try:
++            parts = _split(path.read_text(encoding="utf-8"))
++        except OSError:
++            continue
++        if parts is None:
++            continue
++        head, front, rest = parts
++        updated = front
++        for key in _FIELDS:
++            if key in entry:
++                updated = re.sub(rf"(?m)^{key}:.*$", f"{key}: {entry[key]}", updated, count=1)
++        if updated != front:
++            path.write_text(head + updated + rest, encoding="utf-8")
++            changed.append(path.name)
++    return changed
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
++    mode = parser.add_mutually_exclusive_group(required=True)
++    mode.add_argument("--check", action="store_true", help="只检查;有违规退出码 1")
++    mode.add_argument("--write", action="store_true", help="按 scan_config 改写 frontmatter")
++    parser.add_argument("--config", default=None, help="scan_config.jsonc 路径(缺省 = 生产文件)")
++    parser.add_argument("--agents-dir", default=str(AGENTS_DIR))
++    args = parser.parse_args(argv)
++    cfg = user_config.load_user_config(args.config or user_config._PRODUCTION_DEFAULT_PATH)
++    if args.write:
++        for name in write(cfg, agents_dir=args.agents_dir):
++            print(f"[agent_frontmatter] 已改写 {name}")
++    violations = check(cfg, agents_dir=args.agents_dir)
++    for line in violations:
++        print(f"[agent_frontmatter] {line}")
++    if not violations:
++        print("[agent_frontmatter] frontmatter 与 scan_config 同源")
++    return 1 if violations else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- a/autoresearch/scan/user_config.py
++++ b/autoresearch/scan/user_config.py
+@@ -97,6 +97,17 @@
+ _AGENT_ROLES = set(configured_agents())
+ _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+ _MODELS = {"haiku", "sonnet", "opus"}
++
++
++def _claude_model_ok(value) -> bool:
++    """别名(`_MODELS`)或价表认识的全 ID(`trace.pricing.KNOWN_MODEL_IDS`)。
++
++    全 ID 才是钉版:别名由 Claude Code 客户端解析,随自动升级移动。闭集取自价表,所以
++    钉一个价表不认识的 ID 在加载配置时就失败,而不是等成本读数变成 UNKNOWN 才发现。
++    """
++    from autoresearch.trace.pricing import KNOWN_MODEL_IDS
++
++    return isinstance(value, str) and (value in _MODELS or value in KNOWN_MODEL_IDS)
+ _CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+ _ENGINES = {"claude", "codex"}
+ _WEB_SEARCH_MODES = {"disabled", "cached", "live"}
+@@ -148,9 +159,9 @@
+         if "effort" in spec and (not isinstance(spec["effort"], str)
+                                  or spec["effort"] not in _EFFORTS):
+             raise ValueError(f"{where}.effort={spec.get('effort')!r} 非法")
+-        if "model" in spec and (not isinstance(spec["model"], str)
+-                                or spec["model"] not in _MODELS):
+-            raise ValueError(f"{where}.model={spec.get('model')!r} 非法")
++        if "model" in spec and not _claude_model_ok(spec["model"]):
++            raise ValueError(f"{where}.model={spec.get('model')!r} 非法"
++                             "(别名 haiku/sonnet/opus 或价表认识的全 ID)")
+     else:
+         if "reasoning_effort" in spec and (
+                 not isinstance(spec["reasoning_effort"], str)
+@@ -178,9 +189,8 @@
+         if "effort" in spec and (not isinstance(spec["effort"], str)
+                                  or spec["effort"] not in _EFFORTS):
+             raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
+-        if "model" in spec and (not isinstance(spec["model"], str)
+-                                or spec["model"] not in _MODELS):
+-            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
++        if "model" in spec and not _claude_model_ok(spec["model"]):
++            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)} 或全 ID)")
+ 
+ 
+ def _validate_dual_agents(cfg: dict, agents: dict) -> None:
+@@ -434,8 +444,8 @@
+             raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
+         if "effort" in spec and spec["effort"] not in _EFFORTS:
+             raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
+-        if "model" in spec and spec["model"] not in _MODELS:
+-            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
++        if "model" in spec and not _claude_model_ok(spec["model"]):
++            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)} 或全 ID)")
+         resolved[role] = {**_ROLE_FALLBACK.get(role, {}), **spec}
+ 
+     if require_all:
+--- a/.claude/skills/scan-market/scan_config.jsonc
++++ b/.claude/skills/scan-market/scan_config.jsonc
+@@ -300,10 +300,17 @@
+   "agent_engines": {
+     "claude": {
+       "tiers": {
+-        "critical":   { "effort": "max" },                    // 判断类(模型落 agent 定义文件)
+-        "analytical": { "effort": "xhigh" },                  // 描述类
+-        "repair":     { "effort": "medium" },                 // 修复类
+-        "relay":      { "model": "sonnet", "effort": "low" }  // 命令壳
++        "critical":   { "model": "claude-opus-5-5", "effort": "max" },     // 判断类
++        "analytical": { "model": "claude-opus-5-5", "effort": "xhigh" },   // 描述类
++        "repair":     { "model": "claude-opus-5-5", "effort": "medium" },  // 修复类
++        "relay":      { "model": "sonnet", "effort": "low" }               // 命令壳
++      },
++      "role_overrides": {
++        "l4_intel":      { "model": "claude-sonnet-5-5" },
++        "company_intel": { "model": "claude-sonnet-5-5" },
++        "us_intel":      { "model": "claude-sonnet-5-5" },
++        "sector_intel":  { "model": "claude-sonnet-5-5" },
++        "global_intel":  { "model": "claude-sonnet-5-5" }             // 情报员跑 Sonnet
+       }
+     },
+     "codex": {
+--- a/.claude/agents/company-intel.md
++++ b/.claude/agents/company-intel.md
+@@ -1,7 +1,7 @@
+ ---
+ name: company-intel
+ description: stock-research **full 档 · A 股票**前置活体情报员(sonnet·max)。一只 A 股的六面实时情报盲搜(官方公告与互动口径/行业价格订单排产/政策监管/机构观点与预期变化/负面诉讼事故/海外客户供应商同业财报指引),写 `_company_intel.md` 机器契约供 full 报告的催化与风险节读。第⑥面只查 `readthrough_map.yaml` 的有效映射,无映射写「不适用」。盲于报告论点,防确认偏误查询;**不复用 L4 决策卡、不输出评级**。
+-model: sonnet
++model: claude-sonnet-5-5
+ effort: max
+ tools: Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/dossier-init.md
++++ b/.claude/agents/dossier-init.md
+@@ -1,7 +1,7 @@
+ ---
+ name: dossier-init
+ description: 常备覆盖档案首覆研究员(券商 initiation 单人版)。读确定性骨架+prefetch+slim/deep,填档案四个 LLM 节(业务模型叙事/盈利驱动三情景/风险矩阵/摘要叙事)。由 dossier-init workflow 派发,一票一 context。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Grep, Glob, Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/global-intel.md
++++ b/.claude/agents/global-intel.md
+@@ -1,7 +1,7 @@
+ ---
+ name: global-intel
+ description: macro-research full 档全球情报员(sonnet)。六面实时情报盲搜(央行/数据发布/地缘关税制裁/美股龙头财报与指引/中国政策/资金与仓位报道),写 $CTX/macro/<date>/_global_intel.md 机器契约供 us.md/china.md/global.md/calendar.md/variant.md 读。盲于上游结论(输入只有分析日/输出路径),防确认偏误查询;只事实采集,不给方向、不给配置建议。由 macro-research full 流程与 harvest 并行派发。
+-model: sonnet
++model: claude-sonnet-5-5
+ effort: max
+ tools: Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/l3-rank.md
++++ b/.claude/agents/l3-rank.md
+@@ -1,7 +1,7 @@
+ ---
+ name: l3-rank
+ description: scan-market L3 比较式精排。通读本 run 候选表与地形，输出 finalist/bench 判断至 _l3_judged.json。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Write, Grep, Glob
+ ---
+--- a/.claude/agents/l3-repair.md
++++ b/.claude/agents/l3-repair.md
+@@ -1,7 +1,7 @@
+ ---
+ name: l3-repair
+ description: 只修复 L3 repair pack 点名的结构或数字错误。
+-model: opus
++model: claude-opus-5-5
+ effort: medium
+ tools: Read, Write
+ ---
+--- a/.claude/agents/l4-card.md
++++ b/.claude/agents/l4-card.md
+@@ -1,7 +1,7 @@
+ ---
+ name: l4-card
+ description: scan-market L4 / stock-research LITE 决策卡研究员；逐票读 slim、渐进 DD、写五档卡，可早停。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Grep, Glob, Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/l4-intel.md
++++ b/.claude/agents/l4-intel.md
+@@ -1,7 +1,7 @@
+ ---
+ name: l4-intel
+ description: scan-market L4 前置活体情报员(sonnet·max)。一只 finalist 的六面实时情报盲搜(公告正文/突发新闻/题材梯队/机构动向/互动易/负面增量),写 _l4_intel_<code>.md 机器契约供 l4-card P3/P4 读。盲于 L3 论点(输入只有代码/名称/行业/日期 + 可选的档案已知底摘要),防确认偏误查询。由 scan-market 步骤 4 与 slim 预取并行派发。
+-model: sonnet
++model: claude-sonnet-5-5
+ effort: max
+ tools: Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/macro-brief.md
++++ b/.claude/agents/macro-brief.md
+@@ -1,7 +1,7 @@
+ ---
+ name: macro-brief
+ description: macro-research lite 档市场研判写手(首席策略师)。scan-market Stage 0(prelude 并行)派一个:读确定性 strategist_pack(market_pack 的单向投影,+ presence-gated macro_state)写 market_view.md 六小节(前3描述性地形喂 L3/L4、后2规范性仅 L5)。数字全出自 pack,不编。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/macro-full.md
++++ b/.claude/agents/macro-full.md
+@@ -1,7 +1,7 @@
+ ---
+ name: macro-full
+ description: 根据冻结输入撰写宏观 FULL 的指定研究段或分组，保持来源与时间口径。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/sector-brief.md
++++ b/.claude/agents/sector-brief.md
+@@ -1,7 +1,7 @@
+ ---
+ name: sector-brief
+ description: sector-research lite 档行业 brief 写手。scan-market Stage 1(或 L4 前补漏)每行业派一个:读确定性 pack JSON 写单段机器契约 brief(地形段喂 L3/L4)。结构数字出自 pack(可发有界实时网查补头条,条数以派发 prompt 给出为准)。
+-model: opus
++model: claude-opus-5-5
+ effort: xhigh
+ tools: Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/sector-full.md
++++ b/.claude/agents/sector-full.md
+@@ -1,7 +1,7 @@
+ ---
+ name: sector-full
+ description: 撰写单个申万一级行业的 FULL 六节报告，使用冻结 pack 与行业活体情报。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/sector-intel.md
++++ b/.claude/agents/sector-intel.md
+@@ -1,7 +1,7 @@
+ ---
+ name: sector-intel
+ description: sector-research **full 深研**前置活体情报员(sonnet·max)。一个申万一级行业的四面实时情报盲搜(产业价格排产订单/海外同业财报指引/政策监管/龙头事件),写 `_sector_intel_<行业>.md` 机器契约供 full 深研 §1–§3 读。盲于深研论点(输入只有行业名/分析日/pack 路径/输出路径 + 可选的映射名单),防确认偏误查询。**lite 行业 brief 不派本 agent**(lite 仍是 ≤2 条有界网查,写手是 sector-brief)。
+-model: sonnet
++model: claude-sonnet-5-5
+ effort: max
+ tools: Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/stock-full.md
++++ b/.claude/agents/stock-full.md
+@@ -1,7 +1,7 @@
+ ---
+ name: stock-full
+ description: 单股 FULL 分工研究；只执行任务包指定的 full_role。
+-model: opus
++model: claude-opus-5-5
+ effort: max
+ tools: Read, Write, WebSearch, WebFetch
+ ---
+--- a/.claude/agents/us-intel.md
++++ b/.claude/agents/us-intel.md
+@@ -1,7 +1,7 @@
+ ---
+ name: us-intel
+ description: stock-research **full 档 · 美股票**前置活体情报员(sonnet·max)。一只美股的六面实时情报盲搜(财报电话会要点/分析师行动背后的论点/监管诉讼政策/产品供应链大客户/内部人与大股东/负面增量),写 `_us_intel.md` 机器契约供 full 报告的催化剂&定位、风险、多空辩论读。盲于报告论点(输入只有 TICKER/公司名/分析日/输出路径),防确认偏误查询。**lite 决策卡不派本 agent**。
+-model: sonnet
++model: claude-sonnet-5-5
+ effort: max
+ tools: Write, WebSearch, WebFetch
+ ---

@@ -277,6 +277,9 @@ ARTIFACTS: tuple[Artifact, ...] = (
              required_when="post_run observe 跑过"),
     Artifact("relative_buy_decision", "_relative_buy_decision.json", "staging", "observe", "relative_buy", "json", "always"),
     Artifact("buyability", "_buyability.json", "staging", "observe", "buyability", "json", "always"),
+    # 2026-10-03 B5:L4 卡三条影子机读行的逐卡解析(只记账,不进门)。
+    Artifact("card_shadow_fields", "_card_shadow_fields.json", "staging", "observe",
+             "card_shadow_fields", "json", "always"),
     Artifact("outbox_events", "outbox/events.json", "staging", "observe", "post_run", "json", "always"),
     Artifact("consumer_state", "outbox/consumer_state.json", "staging", "observe", "post_run", "json", "always"),
     # ---- 账本(跨 run,run 目录之外)------------------------------------------
@@ -735,7 +738,17 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     # session scratchpad),不是仓内任何固定路径,连"reports_<engine>/research/..."这样的
     # 可预测前缀都没有——工具本身对生产 staging 只读、只写 `--out`,不进 context_*/、
     # reports_*/、lake/,天然不可能是任何一次扫描的期望证据。
-    "menu_replay.csv", "menu_replay.md", "weights_doc.json",
+    "menu_replay.csv", "menu_replay.md", "weights_doc.json", "b2_gate.json",
+    # 2026-10-03 B3:`research/e6_ablation.py` 离线重放的输出(只落 --out,同上)。
+    "e6_ablation.csv", "e6_ablation.md",
+    # 2026-10-03 B4:`scan/l3/rule_flags.py` 离线读数(只落 --out)。
+    "l3_rule_flags.csv", "l3_rule_flags.md",
+    # 2026-10-03 B5:`research/card_shadow_scoring.py` 离线读数(只落 --out)。
+    "card_shadow_scoring.csv", "card_shadow_scoring.md",
+    # 2026-10-03 B6:`research/intel_tiering.py` 离线读数(只落 --out)。
+    "intel_tiering.csv", "intel_tiering.md",
+    # 2026-10-03 B1:`research/noise_floor.py` 离线读数(只落 --out)。
+    "noise_floor.json",
     # Codex harness 自己的模型能力缓存(`~/.codex/models_cache.json`)——**我们只读不产**。
     # runtime capability 那一层事实的来源,不在本仓任何产物根下。读不到 = UNKNOWN,
     # 不是缺产物(`user_config.load_codex_capabilities` 返回 None,不编造支持度)。

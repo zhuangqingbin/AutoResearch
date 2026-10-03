@@ -24,7 +24,7 @@ import json
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -414,6 +414,24 @@ class CodexTranscriptAdapter:
                 effort = str(candidate_effort)
         return model or "—", effort or "—"
 
+    def _identity(self, all_rows: list[dict], segment: list[dict]) -> tuple[tuple[str, ...], str]:
+        """实际身份(2026-10-03):段内出现过的全部模型(按首次出现)+ 会话的 CLI 版本。
+
+        `_context` 只留最后一个 `turn_context.model`;档位 fallback(sol → terra)发生在段内时,
+        那个值说不出「这一段有一部分跑在备用模型上」。版本住在整份文件的 `session_meta`
+        (通常是第 0 行,不在任何角色段里),所以从全量行里找;找不到写 "—",不猜。
+        """
+        models: list[str] = []
+        for row in segment:
+            if row.get("type") != "turn_context":
+                continue
+            candidate = self._payload(row).get("model")
+            if candidate and str(candidate) not in models:
+                models.append(str(candidate))
+        version = next((self._payload(row).get("cli_version") for row in all_rows
+                        if row.get("type") == "session_meta"), None)
+        return tuple(models), str(version) if version else "—"
+
     def _snapshots(self, rows: list[dict]) -> list[dict]:
         snapshots = []
         for row in rows:
@@ -601,6 +619,8 @@ class CodexTranscriptAdapter:
 
         normalized = self._normalize_segment(segment, ref, model, effort, lifecycle)
         usage_record = self._usage_from_rows(all_rows, segment, ref, model, effort, lifecycle)
+        models, host_version = self._identity(all_rows, segment)
+        usage_record = replace(usage_record, models=models, host_version=host_version)
         started_at, ended_at = self._timestamp_bounds(segment)
         # fix round 2: a redacted (e.g. "[REDACTED]") input_tokens value must
         # not crash context_tokens -- omit that sample from the series

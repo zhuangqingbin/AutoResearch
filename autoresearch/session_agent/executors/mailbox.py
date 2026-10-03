@@ -254,6 +254,26 @@ def pending_requests(staging, *, include_taken: bool = False) -> list[dict]:
     return rows
 
 
+#: Claude Code `Agent` 工具的 `model` 入参只收这几个别名;全模型 ID 由 agent 定义 frontmatter 钉住。
+AGENT_TOOL_MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable", "inherit"})
+
+
+def agent_tool_args(doc: dict) -> dict:
+    """交给宿主的派发参数(2026-10-03 钉版):宿主**原样**用它们调 Agent / spawn_agent。
+
+    Claude:`{"subagent_type"}`,只有请求模型是别名时才带 `model` —— 全 ID 传进 Agent 工具会被
+    参数校验拒掉,而它已经钉在 agent 定义里(`agent_frontmatter` 与 preflight 都核对两边一致)。
+    请求本身的 `model` 字段不动:它是解析结果的记录,headless 用它拼 `--model`。
+    Codex:`{"agent_name"}` = `.codex/agents/*.toml` 的 `name`,模型由 toml 钉住。
+    """
+    if doc.get("engine") == "codex":
+        return {"agent_name": doc.get("agent_type")}
+    args = {"subagent_type": doc.get("agent_type")}
+    if doc.get("model") in AGENT_TOOL_MODEL_ALIASES:
+        args["model"] = doc["model"]
+    return args
+
+
 def _unanswered(staging) -> list[str]:
     return [
         Path(item["request_path"]).name.removesuffix(".request.json")
@@ -372,7 +392,9 @@ def wait_request(
                     "unanswered": _unanswered(staging)}
         for doc in pending_requests(staging, include_taken=include_taken):
             if include_taken or _take(staging, doc, wall=wall):
-                return {"kind": "REQUEST", **doc}
+                # 宿主传给 Agent 工具的 prompt:按引用派发时是一行指针,否则就是全文。
+                return {"kind": "REQUEST", **doc, "agent_tool": agent_tool_args(doc),
+                        "host_prompt": doc.get("host_prompt") or doc.get("prompt")}
         if clock() >= deadline:
             return {
                 "kind": "IDLE",

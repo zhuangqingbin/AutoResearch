@@ -34,7 +34,7 @@ for lab,(d,x) in {
  "L3 judged conviction": (P[P.l3_judged==True],"l3_conviction"),
  "L1池 n_channels": (P[P.in_l1==True],"n_channels"),
 }.items():
-    for y in ["gap_c1_o2","rel_gap_sector","fwd_10_oc","fwd_2_oc"]:
+    for y in ["gap_c1_o2","rel_gap_sector","fwd_10_oc","fwd_2_oc"]:  # 主尺 gap_c1_o2;fwd_2_oc 只作参考尺
         if y not in d: continue
         dd=d[d["status_"+y]=="MATURE"] if "status_"+y in d else d
         r=daily_ic(dd,x,y)

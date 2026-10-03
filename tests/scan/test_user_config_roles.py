@@ -240,23 +240,33 @@ _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION = {
 
 
 def test_claude_roles_resolve_exactly_as_before_the_tier_migration():
-    """双引擎改造不许动 Claude 侧一个字:十个 role 的解析结果必须与迁移前逐字段相同。
+    """双引擎改造不许动 Claude 侧的 effort:十个 role 的 effort 必须与迁移前逐字段相同。
 
     这些值直接决定每个 agent 跑在什么 effort 上 —— 判断类 role 悄悄从 max 掉到 xhigh,
     产物照样长得像回事,账单也照样出得来,没有任何门会喊。
+
+    2026-10-03 钉版之后,判断类 role 另带 `model`(价表认识的全 ID):别名由 Claude Code
+    客户端解析,2026-09-22 / 09-28 随自动升级换过代。`model` 那一半由下面的断言单独锁。
     """
     from pathlib import Path as _Path
+
+    from autoresearch.trace.pricing import KNOWN_MODEL_IDS
     prod = (_Path(__file__).resolve().parents[2]
             / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
     resolved = uc.resolve_agent_config(uc.load_user_config(prod))
-    assert {key: resolved[key] for key in _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION} == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
+    relay = {"gp_shell", "gp_shell_json"}
+    efforts = {role: (spec if role in relay else {k: v for k, v in spec.items() if k != "model"})
+               for role, spec in resolved.items()}
+    assert {key: efforts[key] for key in _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION} == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
     new_roles = {"stock_full", "macro_full", "sector_full", "company_intel", "us_intel", "sector_intel", "global_intel"}
     assert set(resolved) == set(_CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION) | new_roles
-    assert all(resolved[key] == {"effort": "max"} for key in new_roles)
-    # 判断类 role **不得**出现 model 键:那是 agent def frontmatter 的地盘(opus/sonnet),
-    # 配置里写死会把 frontmatter 压掉 —— 同族前科见 test_resolved_model_key_absent...
-    for role in ("l3_rank", "l4_card", "l4_intel", "strategist"):
-        assert "model" not in resolved[role]
+    assert all(efforts[key] == {"effort": "max"} for key in new_roles)
+    intel = {"l4_intel", "company_intel", "us_intel", "sector_intel", "global_intel"}
+    for role in set(resolved) - relay:
+        model = resolved[role]["model"]
+        assert model in KNOWN_MODEL_IDS, f"{role}: {model!r} 不是钉版全 ID"
+        family = "claude-sonnet-" if role in intel else "claude-opus-"
+        assert model.startswith(family), f"{role}: {model!r} 换了家族"
 
 
 def _dual():

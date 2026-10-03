@@ -279,8 +279,14 @@ def begin(
     planner: Callable[[dict, object], dict] | None = None,
     predecessor_loader=None,
     artifact_registrar=None,
+    executor: str = "mailbox",
 ) -> dict:
-    """Validate and freeze a request before exposing its first ready task."""
+    """Validate and freeze a request before exposing its first ready task.
+
+    ``executor`` declares who will dispatch the inference tasks (``mailbox`` = the host's
+    native agent tool, the default; ``headless`` = ``claude -p`` with explicit model/effort).
+    It is frozen in ``role_support.json`` and reused by later expansions.
+    """
     validate_begin_request(request, expected_engine=ws.ENGINE)
     from autoresearch.session_agent.origin import (
         freeze_session_origin,
@@ -308,7 +314,7 @@ def begin(
     frozen_plan = (planner or _default_planner)(request, handle)
     from autoresearch.session_agent.preflight import preflight_plan
 
-    role_support = preflight_plan(handle, frozen_plan, request["host_profile"])
+    role_support = preflight_plan(handle, frozen_plan, request["host_profile"], executor=executor)
     _freeze_json(Path(handle.capsule) / "identity/session/role_support.json", role_support)
     plan_service.freeze_plan(_plan_path(handle), frozen_plan)
     _freeze_json(Path(handle.capsule) / "identity" / "session" / "plan.json", frozen_plan)
@@ -333,11 +339,20 @@ def begin(
     return status(handle.run_id, handle_loader=lambda unused: handle, command="begin")
 
 
+def _begin_executor(handle) -> str:
+    """The executor declared at ``begin`` (frozen in role_support.json); older runs = mailbox."""
+    try:
+        frozen = _read_json(Path(handle.capsule) / "identity/session/role_support.json")
+    except (OSError, ValueError, RuntimeError):
+        return "mailbox"
+    return str(frozen.get("executor") or "mailbox")
+
+
 def _sync_expansion(handle, request: dict, expansion: dict) -> None:
     from autoresearch.session_agent.preflight import preflight_plan
     from autoresearch.session_agent.workflows import register_expansion_artifacts
 
-    preflight_plan(handle, expansion, request["host_profile"])
+    preflight_plan(handle, expansion, request["host_profile"], executor=_begin_executor(handle))
     register_expansion_artifacts(request, handle, expansion)
     _freeze_json(
         Path(handle.capsule)

@@ -1,9 +1,11 @@
 ---
 name: l3-repair
 description: 只修复 L3 repair pack 点名的结构或数字错误。
-model: opus
+model: claude-opus-5-5
 effort: medium
 tools: Read, Write
+maxTurns: 30
+omitClaudeMd: true
 ---
 
 只读派发的 repair pack；不读全量 L3 输入/输出、源码、技能手册或其它 run。

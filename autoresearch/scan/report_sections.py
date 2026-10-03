@@ -1049,7 +1049,7 @@ def _buy_constraint(scan_dir: Path, genuine_rows: list[dict]) -> tuple[str, list
 
 
 def _review_extras(scan_dir: Path) -> list[dict]:
-    """六条**不纯**附加 lint(读 details/ 与 staging)→ prepare 阶段跑一次,冻进 review_ctx。
+    """七条**不纯**附加 lint(读 details/ 与 staging)→ prepare 阶段跑一次,冻进 review_ctx。
 
     渲染层只做 `self_review.review(ctx)` 这一步纯计算,不再回头读盘。
     """
@@ -1065,6 +1065,8 @@ def _review_extras(scan_dir: Path) -> list[dict]:
         lambda: self_review.channel_liveness_lint(scan_dir, scan_dir.name),
         lambda: self_review.usage_reconcile_lint(
             scan_dir.parent, ledger_path=scan_dir.parent.parent / "learning" / "usage_reconcile.jsonl"),
+        # B9(2026-10-03):📌 评级翻转却没引用新事实 → warn(只观测,不改评级)。
+        lambda: self_review.pinned_flip_lint(scan_dir),
     )
     for probe in probes:
         with contextlib.suppress(Exception):

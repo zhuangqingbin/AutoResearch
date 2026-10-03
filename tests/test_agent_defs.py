@@ -24,15 +24,24 @@ def _agent_text(name: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _pinned_model(name: str) -> str:
+    """frontmatter 的 model —— 钉版后是全 ID;具体是哪一代由 scan_config 定,
+    两边是否一致由 `tests/scan/test_agent_frontmatter.py` 锁,这里只看家族。"""
+    from autoresearch.scan import agent_frontmatter as af
+
+    return af.read(AGENTS / f"{name}.md").get("model", "")
+
+
 def test_agent_files_exist_with_frontmatter():
-    """叶子 agent 定义在位:frontmatter 有 name/description/model: opus(全 Opus 设计)。"""
+    """叶子 agent 定义在位:frontmatter 有 name/description/Opus 家族的钉版 model(全 Opus 设计)。"""
     for name in _NAMES:
         text = _agent_text(name)
         assert text.startswith("---"), f"{name}: 缺 frontmatter"
         head = text.split("---", 2)[1]
         assert f"name: {name}" in head, f"{name}: frontmatter name 不符"
         assert "description:" in head, f"{name}: 缺 description"
-        assert "model: opus" in head, f"{name}: 应为 model: opus(scan 全 Opus 设计)"
+        assert _pinned_model(name).startswith("claude-opus-"), (
+            f"{name}: 应为钉版的 Opus 全 ID(scan 全 Opus 设计),实际 {_pinned_model(name)!r}")
 
 
 def test_l4_card_contract_anchors_synced():
@@ -188,7 +197,7 @@ def test_l4_intel_def():
     """
     text = _agent_text("l4-intel")
     head = text.split("---", 2)[1]
-    assert "model: sonnet" in head and "effort: max" in head
+    assert _pinned_model("l4-intel").startswith("claude-sonnet-") and "effort: max" in head
     assert "WebSearch" in head and "WebFetch" in head and "Write" in head
     for banned in ("Read", "Grep", "Glob"):
         assert banned not in head, f"结构性盲:不得有 {banned}(可读/探索仓库)"
@@ -278,7 +287,8 @@ def test_dossier_init_workflow_anchors():
 def test_dossier_init_agent_def():
     p = ROOT / ".claude" / "agents" / "dossier-init.md"
     text = p.read_text(encoding="utf-8")
-    for a in ("model: opus", "三情景", "证伪触发点", "断言分级", "不改确定性节"):
+    assert _pinned_model("dossier-init").startswith("claude-opus-")
+    for a in ("三情景", "证伪触发点", "断言分级", "不改确定性节"):
         assert a in text, f"dossier-init.md 缺契约锚「{a}」"
 
 

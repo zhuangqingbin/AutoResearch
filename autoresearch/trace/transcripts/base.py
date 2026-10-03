@@ -179,6 +179,11 @@ class UsageRecord:
     retry_count: int
     discarded: bool
     reasoning_output: int = 0
+    #: 实际身份(2026-10-03):本 transcript 里出现过的全部模型 ID(按首次出现排序,
+    #: `<synthetic>` 不算)与宿主 CLI 版本。`model` 仍是首个模型(兼容面不变);
+    #: 取不到的版本是 "—",不猜。两个字段都带缺省,既有构造点无需改动。
+    models: tuple[str, ...] = ()
+    host_version: str = "—"
 
 
 @dataclass(frozen=True)

@@ -2194,6 +2194,10 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None, claim_sources=
     write_status(scan_dir, status)
     _copy_attempt_status(scan_dir, code6, attempt)
     intel_path = scan_dir / f"_l4_intel_{code6}.md"
+    # A11(2026-10-03):守卫后的正文按 attempt 冻结一份给卡读(`intel_doc`)。canonical 工作副本会被
+    # 后续 attempt 改写,卡的输入哈希不能跟着变;被拒(REJECTED)时工作副本已移走,写空文件说明「没有可读的情报」。
+    _write_if_changed(_retry_dir(scan_dir, code6, attempt) / "intel_doc.md",
+                      intel_path.read_bytes() if intel_path.is_file() else b"")
     bundle_path = (
         _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
         if attempt > 1

@@ -67,6 +67,7 @@ def run_command(args) -> tuple[dict, int]:
         poll_seconds=args.poll_seconds,
         max_rounds=args.max_rounds,
         timeout_multiplier=args.timeout_multiplier,
+        fanout_warmup_s=args.fanout_warmup_s,
         **options,
     )
     return outcome, 0 if outcome.get("finished") else EXIT_NOT_FINISHED
@@ -157,6 +158,8 @@ def add_parsers(subparsers) -> None:
     run.add_argument("--poll-seconds", type=float, default=_rn["poll_seconds"])
     run.add_argument("--timeout-multiplier", type=float, default=_rn["timeout_multiplier"])
     run.add_argument("--max-rounds", type=int, default=_rn["max_rounds"])
+    run.add_argument("--fanout-warmup-s", type=float, default=_rn["fanout_warmup_s"],
+                     help="同一角色第一份派发后,其余等多少秒再发(prompt 缓存预热;0 = 关)")
     box = subparsers.add_parser("mailbox")
     commands = box.add_subparsers(dest="mailbox_command", required=True)
     wait = commands.add_parser("wait")

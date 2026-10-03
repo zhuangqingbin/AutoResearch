@@ -1,0 +1,71 @@
+--- a/tests/trace/test_usage_reconcile.py
++++ b/tests/trace/test_usage_reconcile.py
+@@ -914,3 +914,68 @@
+         date='2026-09-30', census={}, resolved_agent_config={'l4_card': {'model': 'gpt-6', 'effort': 'high'}})
+     assert result['checked'] == 1
+     assert any(row['field'] == 'effort' for row in result['mismatches'])
++
++
++# ───────────────── 2026-10-03:钉版后的逐 ID 对账(别名换代不再静默通过)─────────────────
++
++PINNED = {"agents": {"l4_card": {"model": "claude-opus-5-5", "effort": "max"},
++                     "l4_intel": {"model": "claude-sonnet-5-5", "effort": "max"},
++                     "gp_shell": {"model": "sonnet", "effort": "low"},
++                     "gp_shell_json": {"model": "sonnet", "effort": "low"}}}
++PINNED_ROWS = [
++    {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5-5", "effort": "max", "status": "SUCCEEDED"},
++    {"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5-5", "effort": "low", "status": "SUCCEEDED"},
++    {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5-5", "effort": "max", "status": "SUCCEEDED"},
++]
++
++
++def test_pinned_id_is_satisfied_only_by_that_exact_model(tmp_path):
++    r = _run(tmp_path, PINNED, PINNED_ROWS)
++    assert r["ok"] and r["mismatches"] == []
++    assert "l4_card" not in r["unpinned_roles"] and "l4_intel" not in r["unpinned_roles"]
++
++
++def test_generation_swap_within_one_family_is_a_mismatch_once_pinned(tmp_path):
++    """2026-09-22 的真实形状:配置与 agent 定义一字未改,实测模型在同一家族内换了代。
++
++    旧实现把两边都归一成 `opus`,对账通过。钉了全 ID 之后必须逐 ID 比,并把两个 ID 都印出来。
++    """
++    rows = [dict(PINNED_ROWS[0], model="claude-opus-5")] + PINNED_ROWS[1:]
++    r = _run(tmp_path, PINNED, rows)
++    assert not r["ok"]
++    hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "model"]
++    assert hit == [{"agent": "l4-card", "role": "l4_card", "field": "model",
++                    "expected": "claude-opus-5-5", "actual": "claude-opus-5"}]
++
++
++def test_context_suffix_and_snapshot_date_are_the_same_model(tmp_path):
++    rows = [dict(PINNED_ROWS[0], model="claude-opus-5-5[1m]")] + PINNED_ROWS[1:]
++    assert _run(tmp_path, PINNED, rows)["ok"]
++
++
++def test_alias_expectation_keeps_family_comparison_and_is_reported_as_unpinned(tmp_path):
++    """没钉的 role(期望是别名)照旧按家族比 —— 但要列进 `unpinned_roles`:这一行换代看不见。"""
++    echo = {"agents": {**PINNED["agents"], "l4_card": {"model": "opus", "effort": "max"}}}
++    for model in ("claude-opus-5", "claude-opus-5-5"):
++        r = ur._reconcile_core(echo, [dict(PINNED_ROWS[0], model=model)] + PINNED_ROWS[1:],
++                               date="2026-10-03")
++        assert r["mismatches"] == [], model
++        assert r["unpinned_roles"] == ["gp_shell", "gp_shell_json", "l4_card"]
++
++
++def test_unpinned_roles_only_lists_roles_that_actually_ran(tmp_path):
++    r = ur._reconcile_core(PINNED, PINNED_ROWS[:1], date="2026-10-03")
++    assert r["unpinned_roles"] == []            # 壳今天没跑 → 不点名
++
++
++def test_multi_role_agent_type_reports_the_exact_wrong_id(tmp_path):
++    """同 agentType 多 role(l4_card + ens_review)下,错的那一行归谁由既有贪心算法定;
++    这里只钉本波的不变量:model mismatch 印的是两个全 ID,不是家族名。"""
++    echo = {"agents": {**PINNED["agents"],
++                       "ens_review": {"model": "claude-opus-5-5", "effort": "xhigh"}}}
++    rows = [dict(PINNED_ROWS[0]), dict(PINNED_ROWS[0], model="claude-opus-5", effort="xhigh")]
++    r = ur._reconcile_core(echo, rows, date="2026-10-03", census={"ens_review": 1})
++    wrong = [m for m in r["mismatches"] if m["field"] == "model"]
++    assert wrong, "同家族换代必须至少产出一条 model mismatch"
++    assert {m["actual"] for m in wrong} == {"claude-opus-5"}
++    assert {m["expected"] for m in wrong} == {"claude-opus-5-5"}

@@ -83,6 +83,8 @@ class ClaudeTranscriptAdapter:
     ) -> dict:
         latest: dict[str, dict] = {}
         agent = effort = model = None
+        models: list[str] = []
+        host_version = None
         speed = "standard"
         failures: list[int] = []
         terminals: list[int] = []
@@ -98,9 +100,12 @@ class ClaudeTranscriptAdapter:
                 failures.append(idx)
             agent = agent or row.get("attributionAgent")
             effort = effort or row.get("effort")
+            host_version = host_version or row.get("version")
             candidate_model = msg.get("model")
             if candidate_model and candidate_model != "<synthetic>":
                 model = model or candidate_model
+                if candidate_model not in models:
+                    models.append(str(candidate_model))
             usage = msg.get("usage")
             if isinstance(usage, dict) and msg.get("id"):
                 latest[str(msg["id"])] = usage
@@ -131,6 +136,8 @@ class ClaudeTranscriptAdapter:
             "agent": resolved_agent,
             "effort": effort or "—",
             "model": model or "—",
+            "models": tuple(models),
+            "host_version": str(host_version) if host_version else "—",
             "speed": speed,
             "status": status,
             "failure_count": failure_count,
@@ -450,6 +457,8 @@ class ClaudeTranscriptAdapter:
             failure_count=summary["failure_count"],
             retry_count=summary["retry_count"],
             discarded=summary["status"] == "FAILED",
+            models=summary["models"],
+            host_version=summary["host_version"],
         )
 
         started_at, ended_at = self._timestamp_bounds(rows)

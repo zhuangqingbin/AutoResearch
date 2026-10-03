@@ -192,9 +192,17 @@ class Runner:
         heartbeat_seconds: float = _HEARTBEAT_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], str] = _now,
+        fanout_warmup_s: float = 0.0,
     ):
         if type(max_parallel) is not int or max_parallel < 1:
             raise ValueError("max_parallel must be a positive integer")
+        if not fanout_warmup_s >= 0:
+            raise ValueError("fanout_warmup_s must be >= 0")
+        # B8(2026-10-03):并行扇出预热。同一角色第一份派发之后,其余等它领先这么多秒再发 ——
+        # 并发请求读不到彼此的 prompt 缓存,同时发 N 份就是 N 次写同一个前缀。0 = 关。
+        self.fanout_warmup_s = float(fanout_warmup_s)
+        self._monotonic = monotonic
+        self._role_first_start: dict[str, float] = {}
         if not heartbeat_seconds > 0:
             raise ValueError("heartbeat_seconds must be positive")
         self.heartbeat_seconds = float(heartbeat_seconds)
@@ -415,7 +423,8 @@ class Runner:
                         break
                 launched = self._launch(state["tasks"] if status == "READY" else [], retries)
                 progressed |= launched
-                if status == "READY" and not launched and not self._inflight:
+                if (status == "READY" and not launched and not self._inflight
+                        and not self._warming(state["tasks"])):
                     outcome = self._outcome(state, rounds, "STALLED")
                     break
                 self._beat()
@@ -560,7 +569,19 @@ class Runner:
     def _can_start(self, task: dict) -> bool:
         if task["kind"] == "DETERMINISTIC":
             return not self._det_busy()
-        return self._inference_count() < self.max_parallel
+        return self._inference_count() < self.max_parallel and self._warmed(task)
+
+    def _warming(self, tasks: list[dict]) -> bool:
+        """有推理任务只因扇出预热还没发 —— 这是在等,不是卡死(STALLED)。"""
+        return any(task.get("kind") == "INFERENCE" and task.get("owner") == "SESSION"
+                   and not self._warmed(task) for task in tasks)
+
+    def _warmed(self, task: dict) -> bool:
+        """预热关、或本角色还没人发、或第一份已领先 `fanout_warmup_s` → 可以发。"""
+        if self.fanout_warmup_s <= 0:
+            return True
+        first = self._role_first_start.get(str(task.get("role")))
+        return first is None or self._monotonic() - first >= self.fanout_warmup_s
 
     def _claim_ticket(self, task: dict) -> bool:
         match = re.fullmatch(r"l4\.\d{6}\.a(\d+)", task["task_id"])
@@ -673,6 +694,7 @@ class Runner:
         return True
 
     def _dispatch(self, task: dict, attempt: int, request: DispatchRequest, claim: dict) -> None:
+        self._role_first_start.setdefault(str(task.get("role")), self._monotonic())
         self.metrics.started(task, attempt)
         future = self._inference_pool.submit(self.executor.dispatch, request)
         self._inflight[task["task_id"]] = _Flight(

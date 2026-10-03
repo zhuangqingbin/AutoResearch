@@ -544,7 +544,7 @@ def _e6_realized_stats(reports_root: Path | None = None) -> dict:
         rows = []
 
     def _stat(pred) -> dict:
-        vals = []
+        vals, rel = [], []
         for r in rows:
             if not pred(r):
                 continue
@@ -554,11 +554,15 @@ def _e6_realized_stats(reports_root: Path | None = None) -> dict:
                 vals.append(float(r.get("gap_c1_o2")))
             except (TypeError, ValueError):
                 continue
+            with contextlib.suppress(TypeError, ValueError):
+                rel.append(float(r.get("rel_gap_market")))
         n = len(vals)
         if n < __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["realized_min_n"]:
             return {"n": n, "mean_pp": None, "win": None}
+        # A9(2026-10-03):对同日市场只在每一行都带 rel_gap_market 时给 —— 缺一行就是另一个人口。
         return {"n": n, "mean_pp": round(100 * sum(vals) / n, 2),
-                "win": round(sum(1 for v in vals if v > 0) / n, 2)}
+                "win": round(sum(1 for v in vals if v > 0) / n, 2),
+                "rel_pp": round(100 * sum(rel) / n, 2) if len(rel) == n else None}
 
     return {
         "buy": _stat(lambda r: str(r.get("e6_buy")).lower() == "true" and str(r.get("mode")) == "active"),
@@ -570,7 +574,13 @@ def _realized_text(stat: dict, label: str) -> str:
     """n<20:只给 n;为负 → 固定 `弱市相对最优`(语义纪律②)。"""
     if stat.get("mean_pp") is None:
         return f"账本 {label} 实测 n={stat.get('n', 0)},不足 {__import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["realized_min_n"]} 不给区间"
-    body = f"账本 {label} 实测 {stat['mean_pp']:+.2f}pp(n={stat['n']},胜率 {stat['win']:.0%},未扣成本)"
+    # A9(2026-10-03):毛均值旁并列「扣成本估算后」与「对同日市场」(都是账本事实 + 配置的成本估算)。
+    cost_bp = __import__("autoresearch.scan.observability", fromlist=["x"]).observability_cfg()["round_trip_cost_bp"]
+    extra = f";扣 {cost_bp:g}bp 后 {stat['mean_pp'] - cost_bp / 100:+.2f}pp"
+    if stat.get("rel_pp") is not None:
+        extra += f";对同日市场 {stat['rel_pp']:+.2f}pp"
+    body = (f"账本 {label} 实测 {stat['mean_pp']:+.2f}pp(n={stat['n']},胜率 {stat['win']:.0%},"
+            f"未扣成本{extra})")
     if stat["mean_pp"] < 0:
         body += f" → **{WEAK_MARKET_PHRASE}**(相对 BUY 从不承诺绝对收益为正)"
     return body

@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.contracts.scan_config import DEFAULT_INTEL_MAX_QUERIES
@@ -374,6 +375,110 @@ def card_contract_lint(scan_dir) -> list[dict]:
                                 "detail": f"{code} 有个股档案但卡片无『变化项(vs 档案)』节(增量研究契约)"})
             except Exception:  # noqa: BLE001 — 档案层可选
                 pass
+    return out
+
+
+#: B9(2026-10-03):📌 卡增量节里算作「引用了新事实」的标记 —— 当日情报引用、当日事实
+#: (真实卡常写「今日 -1.10% 收 119.18」而不带日期串)与第一次读到的证据。
+_PINNED_INTEL_MARKS = ("intel", "情报", "T0", "24h", "今日", "今天", "本日", "当日", "首次")
+_PINNED_DATE_RES = (
+    re.compile(r"(?P<y>20\d\d)[-/.年](?P<m>\d{1,2})[-/.月](?P<d>\d{1,2})"),
+    re.compile(r"(?<![\d.])(?P<m>\d{1,2})月(?P<d>\d{1,2})日"),
+    re.compile(r"(?<![\d./-])(?P<m>\d{1,2})[-/](?P<d>\d{1,2})(?![\d./-])"),
+)
+
+
+def _previous_pinned_ratings(scan_dir) -> tuple[str | None, dict[str, str]]:
+    """上一场已发布 run 的分析日与终评级(复用 brief ⑥「昨日 delta」的同一个读点)。"""
+    from autoresearch.scan import brief as _brief
+
+    if not _brief._is_live_scan(Path(scan_dir)):
+        return None, {}
+    prev_date, ratings, _codes = _brief._prev_published(Path(scan_dir).name)
+    return prev_date, ratings
+
+
+#: 卡里写增量的两种形状:粗体标签行(`**变化项(vs 档案)**:…` / `**翻覆增量证据(vs …)**`)与标题节
+#: (`## vs 昨卡(…)增量证据` / `## 昨卡回声对账(…)`)—— 四个真实写法都见过。
+_CHANGE_MARKS = ("变化项", "档案对账", "昨卡", "增量证据")
+
+
+def _change_section(text: str) -> str | None:
+    """卡里写增量的那一节;没有 → None。
+
+    标题节到下一个标题为止;粗体标签行到下一个粗体标签行或标题为止。
+    """
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith(("#", "**")) and any(m in line for m in _CHANGE_MARKS)), None)
+    if start is None:
+        return None
+    stops = ("#",) if lines[start].startswith("#") else ("**", "#")
+    body = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.startswith(stops):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def _cites_new_fact(section: str, prev_date: str, today: str) -> bool:
+    """节里有一个**晚于上一场、不晚于今天**的日期(已发生的新事实),或一条当日情报引用。"""
+    if any(mark in section for mark in _PINNED_INTEL_MARKS):
+        return True
+    prev, now = prev_date.replace("-", ""), today.replace("-", "")
+    for pattern in _PINNED_DATE_RES:
+        for m in pattern.finditer(section):
+            year = m.groupdict().get("y") or now[:4]
+            try:
+                stamp = f"{int(year):04d}{int(m['m']):02d}{int(m['d']):02d}"
+            except ValueError:
+                continue
+            if prev < stamp <= now:
+                return True
+    return False
+
+
+def pinned_flip_lint(scan_dir, *, previous: tuple[str | None, dict[str, str]] | None = None
+                     ) -> list[dict]:
+    """📌 卡评级与上一场已发布 run 不同,却没在「变化项 / 档案对账」节引用新事实 → warn(B9,只观测)。
+
+    📌 持仓每天满卡重评,连续两场评级翻转率 38%(复盘稿 §3.8)。有新事实就该翻;没有新事实的
+    翻转是判断噪声。只标出来:不改评级、不改决策、不复用旧卡(07-29「不要任何复用」裁定不动)。
+    「新事实」= 一个晚于上一场分析日、不晚于本场分析日的日期,或一条当日情报引用;计划里的未来
+    日期(如「T+2=10/8」)与上一场当天的日期都不算。
+    """
+    import csv as _csv
+
+    from autoresearch.scan.decision_read_model import read_final_ratings
+
+    scan = Path(scan_dir)
+    path = scan / "finalists.csv"
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as fh:
+        pinned = {str(r.get("code") or "").zfill(6) for r in _csv.DictReader(fh)
+                  if str(r.get("lane") or "") == "pinned"}
+    if not pinned:
+        return []
+    prev_date, prev_ratings = previous if previous is not None else _previous_pinned_ratings(scan)
+    if not prev_date or not prev_ratings:
+        return []
+    ratings = {str(code).zfill(6): str(rating) for code, rating in read_final_ratings(scan).items()}
+    out: list[dict] = []
+    for code in sorted(pinned):
+        before, after = prev_ratings.get(code), ratings.get(code)
+        if not before or not after or before == after:
+            continue
+        card = scan / "details" / f"{code}.md"
+        section = _change_section(card.read_text(encoding="utf-8")) if card.is_file() else None
+        if section is not None and _cites_new_fact(section, prev_date, scan.name):
+            continue
+        where = "卡里没有「变化项 / 档案对账」节" if section is None else \
+            f"「变化项 / 档案对账」节没有晚于 {prev_date} 的日期或当日情报引用"
+        out.append({"check": "持仓卡·评级翻转无新事实", "severity": "warn", "code": code,
+                    "detail": f"{code} 评级 {before} → {after}(上一场 {prev_date}),但{where}"
+                              "—— 疑似判断噪声(只观测,不改评级)"})
     return out
 
 

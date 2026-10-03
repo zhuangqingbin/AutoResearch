@@ -38,6 +38,14 @@ from pathlib import Path
 from types import MappingProxyType
 
 from autoresearch.common.atomic import atomic_write_json, sha256_bytes
+
+# 轮数上限表与解析搬到 `contracts.agent_roles`(scan 层的 agent 定义镜像也要读它,不能反向依赖本层);
+# 这里保留原名,既有调用点与测试不动。
+from autoresearch.contracts.agent_roles import (
+    DEFAULT_MAX_TURNS,
+    MAX_TURNS,
+    TIER_MAX_TURNS,
+)
 from autoresearch.session_agent.executors.base import (
     DISPATCH_DIR,
     DispatchRequest,
@@ -63,25 +71,16 @@ HEADLESS_TIMEOUTS: Mapping[str, float] = MappingProxyType({
     "scan.l4.review": 1500.0,
 })
 
-#: ``--max-turns`` per role.  Longest real subagent runs over the 30 days before
-#: 2026-09-26 (unique assistant messages): macro-brief 25, sector-brief 14, l3-rank 32,
-#: l4-intel 34, l4-card 35.  Caps sit ~2x above them: the wall clock is the real guard,
-#: the turn cap only stops a runaway loop (``--max-budget-usd`` is unverified under a
-#: subscription, probe doc "待办").
-MAX_TURNS: Mapping[str, int] = MappingProxyType({
-    "macro.brief": 50,
-    "sector.brief": 30,
-    "scan.l3": 64,
-    "scan.l3.repair": 30,
-    "scan.l4.intel": 64,
-    "scan.l4.card": 80,
-    "scan.l4.review": 80,
-})
-#: Fallback for roles outside ``MAX_TURNS``: scan_config ``agents.<role>.tier``.
-TIER_MAX_TURNS: Mapping[str, int] = MappingProxyType({
-    "critical": 80, "analytical": 40, "repair": 30, "relay": 20,
-})
-DEFAULT_MAX_TURNS = 60
+def role_max_turns(role: str, tier: str | None, cfg: dict | None = None) -> int:
+    """一个 session 角色的轮数上限(按 `session.*` 配置覆盖解析);真身在 `contracts.agent_roles`。"""
+    from autoresearch.contracts.agent_roles import role_max_turns as _resolve
+    from autoresearch.session_agent.config import session_cfg
+
+    sc = session_cfg(cfg)
+    return _resolve(role, tier, overrides=sc["max_turns"], tier_overrides=sc["tier_max_turns"],
+                    default=sc["default_max_turns"])
+
+
 EXCERPT_CHARS = 500
 
 #: Environment never handed to ``claude -p`` (review I2).  The project rule is zero paid

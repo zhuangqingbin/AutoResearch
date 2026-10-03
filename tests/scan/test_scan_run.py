@@ -562,7 +562,8 @@ def test_default_begin_and_run_call_the_session_agent_cli(roots, monkeypatch):
     assert begin_argv[:3] == [sys.executable, "-m", "autoresearch.session_agent"]
     # scan_run holds the scan lock itself, so its own begin must pass the explicit override
     assert begin_argv[3:] == ["begin", "--orchestration", "session_v1", "--request-file",
-                              str(roots / "req.json"), "--ignore-scan-lock"]
+                              str(roots / "req.json"), "--ignore-scan-lock",
+                              "--executor", "headless"]    # 与 run 同一个执行器(复审 I-1)
     assert "AUTORESEARCH_RUN_ID" not in begin_env and begin_env["AUTORESEARCH_ENGINE"] == "claude"
     assert run_argv[3:] == ["run", "--run-id", RUN_ID, "--executor", "headless",
                             "--claude-bin", "/opt/claude", "--max-parallel", "6"]

@@ -213,6 +213,38 @@ def _identity(request) -> dict:
             'session_id': request.host_session_ref}
 
 
+def tool_allowance(tool_policy: str, engine: str = 'claude') -> str:
+    """派发 prompt 里的一行:这个任务真正能用哪些工具(`scripts/hooks/agent_input_boundary.py` 的放行规则
+    与 agent 定义所给工具的交集)。
+
+    Claude:READ → Read / Grep(只限冻结输入);WRITE → Write(只限冻结输出);WEB → WebSearch /
+    WebFetch;其余一律拒(含 Glob)。Codex 没有这几样结构化工具,文件读写只经宿主绑定的
+    task_file_broker 命令 —— 给它写「Read / Write 之外都会被拒」等于叫它别读别写(复审 I-4)。
+    agent 定义里多出来的工具在这里一次说清,省掉白跑的轮次(10-02 首跑:WebSearch / Glob 被拒后
+    agent 还在重试)。网查权限本身归 E5 待裁。
+    """
+    parts = set(str(tool_policy).split('_'))
+    if engine == 'codex':
+        scope = [text for flag, text in (('READ', '读只限上列输入'), ('WRITE', '写只限上列输出'))
+                 if flag in parts]
+        web = '可以联网检索' if 'WEB' in parts else '不联网'
+        return (f"本任务的文件读写只经宿主绑定的 task_file_broker 命令({'、'.join(scope)});{web};"
+                "普通 shell / 解释器调用会被宿主拒绝,不要尝试。")
+    allowed, denied = [], ['Glob']
+    if 'READ' in parts:
+        allowed.append('Read、Grep(只限上列输入)')
+    else:
+        denied[:0] = ['Read', 'Grep']
+    if 'WRITE' in parts:
+        allowed.append('Write(只限上列输出)')
+    if 'WEB' in parts:
+        allowed.append('WebSearch、WebFetch')
+    else:
+        denied += ['WebSearch', 'WebFetch']
+    return (f"本任务可用工具:{'· '.join(allowed)};"
+            f"其余工具(含 {'、'.join(denied)})会被宿主拒绝,不要尝试。")
+
+
 def _read_file(path: str) -> dict:
     target = Path(path).resolve(strict=True)
     if not target.is_file():

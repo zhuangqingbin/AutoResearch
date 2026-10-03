@@ -729,7 +729,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l4.intel.status": {
         "params": _NO_PARAMS,
         "side_effects": "guards, normalizes, and records one web-intel result",
-        "outputs": ["scan.l4.*.intel_status", "scan.l4.*.intel_bundle"],
+        "outputs": ["scan.l4.*.intel_status", "scan.l4.*.intel_bundle", "scan.l4.*.intel_doc"],
         "callers": ["l4.*.intel_status"],
         "errors": ["INTEL_CONTRACT"],
         "limits": "frozen runtime cap and original hard cap",

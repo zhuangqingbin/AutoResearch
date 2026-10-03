@@ -113,6 +113,11 @@ RUNS_COLUMNS = (
     "n_finalist", "n_buy", "n_buy_a", "wall", "identity_quality", "ready_quality",
     # 2026-09-26 §5 B1:10 日尺(`ruler.SWING_RULER`)已成熟且有值的行数;见 `_n_mature_10`。
     "n_mature_10",
+    # 2026-10-03 A7:cohort 键(`scan.run_drift.identity`)。读数跨 cohort 混算前先按这两列分层:
+    #  - `model_cohort` = 引擎 + 研究 agent 的实际模型与 effort(模型换代 / 改档位就换);
+    #  - `cohort_key`   = 再加在场研究 agent 的契约哈希(改 prompt 也换)。
+    # 空 = 这个 run 没有可读的用量账本,身份没量到(不是「与上一场相同」)。
+    "model_cohort", "cohort_key", "host_version", "research_models",
 )
 
 SESSION_COLUMNS = (
@@ -286,6 +291,28 @@ def _wall_of(run_dir: Path) -> str | None:
     return str(doc.get("wall")) if isinstance(doc, dict) and doc.get("wall") else None
 
 
+def _identity_of(run_dir: Path) -> dict:
+    """已发布 run 的实际身份四列:观测里的 `identity` 块;老 run 从发布物的用量账本 + 契约现算。"""
+    from autoresearch.scan import run_drift
+
+    ident = _read_json(run_dir / "trace" / "_budget_observation.json").get("identity")
+    if not isinstance(ident, dict):
+        usage = _read_json(run_dir / "trace" / "staging" / "_token_usage.json")
+        if not usage:
+            return {}
+        contract = _read_json(run_dir / "trace" / "run_contract.json")
+        ident = run_drift.identity(usage, engine=contract.get("engine") or ws.ENGINE,
+                                   **run_drift.contract_facts(contract))
+    agents = ident.get("agents") or {}
+    return {
+        "model_cohort": ident.get("model_cohort"),
+        "cohort_key": ident.get("cohort_key"),
+        "host_version": " / ".join(ident.get("host_versions") or []) or None,
+        "research_models": ";".join(f"{name}={'/'.join(spec.get('models') or [])}"
+                                    for name, spec in sorted(agents.items())) or None,
+    }
+
+
 def _run_mode_of(run_dir: Path) -> str:
     """`run_mode.json` 的四态。**缺文件 = 不知道**,不是 FULL(`run_mode.load` 的既定语义)。"""
     from autoresearch.scan.run_mode import load as _load_mode
@@ -352,6 +379,7 @@ def collect_runs(reports_root: Path | None = None) -> list[dict]:
                                  else "shared_capsule_id" if shared_with != run.name
                                  else "capsule"),
             "ready_quality": str(execution.get("ready_quality") or ""),
+            **_identity_of(run),
         }
 
     # capsule 账本按 `capsule_run_id` 记,而本表按报告目录记 —— 两者是**一对多**

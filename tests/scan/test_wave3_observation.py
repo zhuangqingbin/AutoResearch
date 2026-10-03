@@ -243,6 +243,8 @@ def test_markerless_report_is_unchanged_and_degrades_observation(tmp_path):
         "truncated", "measurement_status", "weighted_input_proxy", "budget_band",
         "estimated_usd", "interactive_wall_s", "cache_hit_rate",
         "maturity_status", "denominators",
+        # 2026-10-03 A3/A5/A6:跨 run 身份漂移、相对预算带、行为指纹(三个只读标签,不拥有门)。
+        "identity_drift", "relative_band", "behavior",
     }
     assert stage["metrics"]["measurement_status"] == got["measurement_status"]
     assert stage["metrics"]["maturity_status"] == got["maturity"]["status"]

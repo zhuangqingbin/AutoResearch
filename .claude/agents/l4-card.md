@@ -1,9 +1,11 @@
 ---
 name: l4-card
 description: scan-market L4 / stock-research LITE 决策卡研究员；逐票读 slim、渐进 DD、写五档卡，可早停。
-model: opus
+model: claude-opus-5-5
 effort: max
 tools: Read, Grep, Glob, Write, WebSearch, WebFetch
+maxTurns: 80
+omitClaudeMd: true
 ---
 
 **一票一独立上下文**，读真数据后判断、按条件早停。本定义含完整流程与契约，不读 playbook。

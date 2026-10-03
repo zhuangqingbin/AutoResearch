@@ -15,6 +15,9 @@ def observability_cfg(cfg: dict | None = None) -> dict:
             "menu_knife_tolerance": float(k("observability", "menu_knife_tolerance", None, 0.06, cfg)),
             "price_claim_tol_pp": float(k("observability", "price_claim_tol_pp", None, 1.5, cfg)),
             "unknown_rate_tolerance": float(k("observability", "unknown_rate_tolerance", None, 0.05, cfg)),
+            "round_trip_cost_bp": float(k("observability", "round_trip_cost_bp", None, 12, cfg)),
+            "exec_floor_pct_1d": float(k("observability", "exec_floor_pct_1d", None, -3.0, cfg)),
+            "exec_floor_pos_in_range": float(k("observability", "exec_floor_pos_in_range", None, 0.1, cfg)),
             "nan_warn": float(k("observability", "nan_warn", None, 0.30, cfg))}
 
 

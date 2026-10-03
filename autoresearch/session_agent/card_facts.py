@@ -227,7 +227,8 @@ def validate_changes_output(handle, task: dict, text: str) -> None:
         raise ValueError("changed_fields differs from the actual initial/final delta")
     references = {source["evidence_id"] for source in manifest["sources"]}
     for artifact_id in task["input_artifact_ids"]:
-        if artifact_id.endswith((".slim", ".deep", ".intel", ".intel_status", ".intel_bundle")):
+        if artifact_id.endswith((".slim", ".deep", ".intel", ".intel_status", ".intel_bundle",
+                                 ".intel_doc")):
             artifacts.snapshot_artifact(handle, artifact_id)
             references.add(artifact_id)
     if not set(changes["new_evidence_refs"]) <= references:

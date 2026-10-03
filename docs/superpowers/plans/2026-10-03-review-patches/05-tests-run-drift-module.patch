@@ -1,0 +1,329 @@
+--- /dev/null
++++ b/tests/scan/test_run_drift.py
+@@ -0,0 +1,326 @@
++"""跨 run 的身份漂移与相对预算带(2026-10-03)。
++
++真实前科:2026-09-22 `opus` 别名改指 Opus 5.5,同样的 `effort: max` 下每张卡的输出 token 中位数
++1.9 万 → 5.1 万,整场成本 +61%。当时的预算带是绝对阈值、每场都 RED,对账按家族比,没有任何东西
++把「这一场和上一场不是同一个东西」说出来。
++"""
++from __future__ import annotations
++
++import json
++
++import pytest
++
++from autoresearch.scan import run_drift as rd
++from autoresearch.trace import usage_harvest as U
++
++PROMPTS = {
++    ".claude/agents/l4-card.md": "a" * 64,
++    ".claude/agents/l4-intel.md": "b" * 64,
++    ".claude/skills/scan-market/pinned.jsonc": "c" * 64,
++    ".claude/skills/scan-market/scan_config.jsonc": "d" * 64,
++}
++POLICY = {"window": 10, "min_runs": 3, "warn_ratio": 1.5, "alarm_ratio": 2.0}
++
++
++def _row(agent, model, *, effort="max", output=20_000, role="subagent", version="2.1.283",
++         messages=6, weighted=100_000):
++    return {
++        "role": role, "agent": agent, "model": model, "models": [model], "effort": effort,
++        "host_version": version, "status": "SUCCEEDED", "messages": messages, "input": 10,
++        "output": output, "cache_read": 1000, "cache_create": 100, "cache_create_5m": 100,
++        "cache_create_1h": 0, "weighted_in": weighted, "failure_count": 0, "retry_count": 0,
++        "discarded": False, "estimated_usd": 1.0, "discarded_usd": 0.0,
++    }
++
++
++def _ledger(*, card="claude-opus-5", intel="claude-sonnet-5", card_out=(18_000, 19_000, 21_000),
++            intel_out=(25_000, 26_000), version="2.1.283", effort="max", shells=2):
++    rows = [_row("(主会话)", "claude-opus-5", role="main", version=version, output=60_000)]
++    rows += [_row("l4-card", card, output=o, version=version, effort=effort) for o in card_out]
++    rows += [_row("l4-intel", intel, output=o, version=version) for o in intel_out]
++    rows += [_row("general-purpose", "claude-sonnet-5", effort="low", output=600, version=version,
++                  messages=2) for _ in range(shells)]
++    return U.build_ledger(rows, source="fixture")
++
++
++def _identity(ledger, prompts=PROMPTS, config_hash="cfg-1", engine="claude"):
++    return rd.identity(ledger, prompt_hashes=prompts, config_hash=config_hash, engine=engine)
++
++
++# ── identity / cohort ────────────────────────────────────────────────────────
++
++
++def test_identity_lists_research_agents_and_keeps_relay_and_main_out_of_the_cohort():
++    got = _identity(_ledger())
++    assert got["host_versions"] == ["2.1.283"]
++    assert got["main_models"] == ["claude-opus-5"]
++    assert got["agents"] == {
++        "l4-card": {"models": ["claude-opus-5"], "efforts": ["max"]},
++        "l4-intel": {"models": ["claude-sonnet-5"], "efforts": ["max"]},
++    }
++    assert got["relay_agents"] == {"general-purpose": {"models": ["claude-sonnet-5"], "efforts": ["low"]}}
++    assert got["agent_prompts"] == {
++        ".claude/agents/l4-card.md": "a" * 64, ".claude/agents/l4-intel.md": "b" * 64}
++    assert got["engine"] == "claude"
++    assert len(got["cohort_key"]) == 12
++
++
++def test_codex_identity_reads_its_own_agent_definitions_and_relays():
++    """Codex 的 agent 契约是 `.codex/agents/*.toml`,壳叫 gp-shell / trace-control。
++
++    拿 `.claude/agents/*.md` 的哈希给 Codex 的 run 定 cohort,等于用别人的指令证明自己没变。
++    """
++    prompts = {**PROMPTS, ".codex/agents/l4_card.toml": "9" * 64}
++    rows = [_row("l4-card", "gpt-5.6-sol", effort="xhigh", version="0.159.3"),
++            _row("gp-shell", "gpt-5.6-luna", effort="low", version="0.159.3"),
++            _row("trace-control", "gpt-5.6-luna", effort="low", version="0.159.3")]
++    got = _identity(U.build_ledger(rows), prompts=prompts, engine="codex")
++
++    assert got["engine"] == "codex"
++    assert got["agent_prompts"] == {".codex/agents/l4_card.toml": "9" * 64}
++    assert sorted(got["relay_agents"]) == ["gp-shell", "trace-control"]
++    assert list(got["agents"]) == ["l4-card"]
++    # 同样的 agent 事实换一个引擎,不是同一个 cohort。
++    assert got["cohort_key"] != _identity(U.build_ledger(rows), prompts=prompts)["cohort_key"]
++
++
++def test_cohort_key_moves_with_model_effort_and_agent_prompts_only():
++    base = _identity(_ledger())["cohort_key"]
++    assert _identity(_ledger(card="claude-opus-5-5"))["cohort_key"] != base
++    assert _identity(_ledger(effort="high"))["cohort_key"] != base
++    edited = {**PROMPTS, ".claude/agents/l4-card.md": "e" * 64}
++    assert _identity(_ledger(), prompts=edited)["cohort_key"] != base
++    # 不该切 cohort 的:宿主版本、持仓清单 / 配置文件哈希、壳的数量、主会话模型、每张卡的 token 数
++    pinned = {**PROMPTS, ".claude/skills/scan-market/pinned.jsonc": "f" * 64}
++    assert _identity(_ledger(), prompts=pinned)["cohort_key"] == base
++    assert _identity(_ledger(), config_hash="cfg-2")["cohort_key"] == base
++    assert _identity(_ledger(version="2.1.287"))["cohort_key"] == base
++    assert _identity(_ledger(shells=0))["cohort_key"] == base
++    assert _identity(_ledger(card_out=(90_000, 91_000, 92_000)))["cohort_key"] == base
++
++
++def test_identity_of_an_unmeasured_ledger_claims_nothing():
++    got = rd.identity({}, prompt_hashes=None, config_hash=None)
++    assert got["agents"] == {} and got["cohort_key"] is None and got["host_versions"] == []
++
++
++def test_identity_is_derived_from_rows_when_an_old_ledger_has_no_identity_block():
++    ledger = _ledger()
++    old = {key: value for key, value in ledger.items() if key != "identity"}
++    for row in old["rows"]:
++        row.pop("models"), row.pop("host_version")
++    got = _identity(old)
++    assert got["agents"]["l4-card"] == {"models": ["claude-opus-5"], "efforts": ["max"]}
++    assert got["host_versions"] == []                      # 老账本没记版本:不猜
++
++
++# ── drift ────────────────────────────────────────────────────────────────────
++
++
++def test_no_previous_run_is_no_baseline_not_same():
++    assert rd.drift(None, _identity(_ledger())) == {
++        "status": "NO_BASELINE", "baseline_run": None, "changes": []}
++
++
++def test_identical_identity_is_same():
++    prev = {"run_id": "r1", "identity": _identity(_ledger())}
++    assert rd.drift(prev, _identity(_ledger())) == {
++        "status": "SAME", "baseline_run": "r1", "changes": []}
++
++
++def test_the_real_20260922_shape_is_reported_as_two_model_changes_and_a_host_change():
++    prev = {"run_id": "20260917T125201296461Z", "identity": _identity(_ledger())}
++    cur = _identity(_ledger(card="claude-opus-5-5", intel="claude-sonnet-5-5", version="2.1.284"))
++
++    got = rd.drift(prev, cur)
++
++    assert got["status"] == "CHANGED" and got["baseline_run"] == "20260917T125201296461Z"
++    assert got["changes"] == [
++        {"kind": "host", "scope": "宿主", "before": ["2.1.283"], "after": ["2.1.284"]},
++        {"kind": "model", "scope": "l4-card", "before": ["claude-opus-5"], "after": ["claude-opus-5-5"]},
++        {"kind": "model", "scope": "l4-intel", "before": ["claude-sonnet-5"], "after": ["claude-sonnet-5-5"]},
++    ]
++
++
++def test_a_previous_run_from_the_other_engine_is_not_a_baseline():
++    prev = {"run_id": "r-codex", "identity": _identity(_ledger(), engine="codex")}
++    assert rd.drift(prev, _identity(_ledger()))["status"] == "NO_BASELINE"
++
++
++def test_effort_prompt_config_and_agent_set_changes_are_each_named():
++    prev = {"run_id": "r1", "identity": _identity(_ledger())}
++    edited = {**PROMPTS, ".claude/agents/l4-card.md": "e" * 64}
++    cur = _identity(_ledger(effort="high", intel_out=()), prompts=edited, config_hash="cfg-2")
++
++    kinds = [(c["kind"], c["scope"]) for c in rd.drift(prev, cur)["changes"]]
++
++    assert kinds == [("agent_set", "l4-intel"), ("effort", "l4-card"),
++                     ("prompt", ".claude/agents/l4-card.md"), ("config", "scan_config")]
++
++
++def test_unknown_host_version_on_either_side_is_not_reported_as_a_change():
++    old = _ledger()
++    for row in old["rows"]:
++        row["host_version"] = "—"
++    prev = {"run_id": "r1", "identity": _identity(U.build_ledger(old["rows"]))}
++    assert rd.drift(prev, _identity(_ledger()))["status"] == "SAME"
++
++
++def test_unmeasured_current_run_is_unmeasured_never_same():
++    prev = {"run_id": "r1", "identity": _identity(_ledger())}
++    cur = rd.identity({}, prompt_hashes=PROMPTS, config_hash="cfg-1")
++    assert rd.drift(prev, cur)["status"] == "UNMEASURED"
++
++
++# ── usage_shape / relative ───────────────────────────────────────────────────
++
++
++def test_usage_shape_is_per_agent_medians_plus_totals():
++    shape = rd.usage_shape(_ledger())
++    assert shape["measured"] is True
++    assert shape["agents"]["l4-card"] == {"n": 3, "output_median": 19_000, "output_total": 58_000,
++                                          "messages_median": 6}
++    assert shape["agents"]["(主会话)"]["n"] == 1
++    assert shape["output_total"] == 60_000 + 58_000 + 51_000 + 1_200
++
++
++def test_usage_shape_of_an_unmeasured_ledger_is_not_zero():
++    assert rd.usage_shape({}) == {"schema_version": 1, "measured": False, "output_total": None,
++                                  "weighted_input": None, "agents": {}}
++
++
++def _obs(run, ledger, *, real=True):
++    return {"run_id": run, "analysis_date": "2026-09-01", "real_scan": real,
++            "usage_shape": rd.usage_shape(ledger)}
++
++
++def test_relative_needs_min_runs_before_it_says_anything():
++    history = [_obs("r1", _ledger()), _obs("r2", _ledger())]
++    got = rd.relative(rd.usage_shape(_ledger()), history, POLICY)
++    assert got["status"] == "NO_BASELINE" and got["n_baseline"] == 2
++
++
++def test_the_real_jump_is_a_spike_on_card_output_even_if_weighted_input_is_only_elevated():
++    history = [_obs(f"r{i}", _ledger()) for i in range(6)]
++    now = rd.usage_shape(_ledger(card="claude-opus-5-5", card_out=(46_000, 50_600, 61_000)))
++
++    got = rd.relative(now, history, POLICY)
++
++    assert got["status"] == "SPIKE"
++    assert got["worst"] == "output_median:l4-card"
++    assert got["metrics"]["output_median:l4-card"] == {
++        "value": 50_600, "baseline_median": 19_000, "ratio": 2.66}
++
++
++@pytest.mark.parametrize("card_out,status", [
++    ((19_000, 19_000, 19_000), "NORMAL"),
++    ((28_400, 28_400, 28_400), "NORMAL"),       # 1.49x
++    ((28_500, 28_500, 28_500), "ELEVATED"),     # 1.50x
++    ((37_900, 37_900, 37_900), "ELEVATED"),     # 1.99x
++    ((38_000, 38_000, 38_000), "SPIKE"),        # 2.00x
++])
++def test_relative_thresholds_are_inclusive_at_the_configured_ratio(card_out, status):
++    history = [_obs(f"r{i}", _ledger(card_out=(19_000, 19_000, 19_000))) for i in range(5)]
++    got = rd.relative(rd.usage_shape(_ledger(card_out=card_out)), history, POLICY)
++    assert got["metrics"]["output_median:l4-card"]["baseline_median"] == 19_000
++    assert got["status"] == status
++
++
++def test_relative_uses_only_the_last_window_of_measured_real_scans():
++    cheap = [_obs(f"old{i}", _ledger(card_out=(5_000, 5_000, 5_000))) for i in range(20)]
++    recent = [_obs(f"new{i}", _ledger()) for i in range(10)]
++    noise = [_obs("drill", _ledger(card_out=(1, 1, 1)), real=False),
++             {"run_id": "blind", "real_scan": True, "usage_shape": rd.usage_shape({})}]
++    got = rd.relative(rd.usage_shape(_ledger()), cheap + recent + noise, POLICY)
++    assert got["n_baseline"] == 10 and got["status"] == "NORMAL"
++
++
++def test_relative_ignores_agents_that_have_no_baseline_instead_of_dividing_by_nothing():
++    history = [_obs(f"r{i}", _ledger(intel_out=())) for i in range(4)]
++    got = rd.relative(rd.usage_shape(_ledger()), history, POLICY)
++    assert "output_median:l4-intel" not in got["metrics"]      # 历史里没有它:不造基线
++    # 总输出仍然照实比:多出一类 agent 让它从 119,200 升到 170,200。
++    assert got["metrics"]["output_total"] == {"value": 170_200, "baseline_median": 119_200,
++                                              "ratio": 1.43}
++    assert got["status"] == "NORMAL" and got["worst"] is None
++
++
++def test_unmeasured_current_run_has_no_relative_verdict():
++    history = [_obs(f"r{i}", _ledger()) for i in range(6)]
++    assert rd.relative(rd.usage_shape({}), history, POLICY)["status"] == "UNMEASURED"
++
++
++# ── history loader ───────────────────────────────────────────────────────────
++
++
++def _publish(root, rel, payload, usage=None):
++    path = root / rel / "trace" / "_budget_observation.json"
++    path.parent.mkdir(parents=True)
++    path.write_text(json.dumps(payload), encoding="utf-8")
++    if usage is not None:
++        (path.parent / "staging").mkdir()
++        (path.parent / "staging" / "_token_usage.json").write_text(json.dumps(usage), encoding="utf-8")
++
++
++def test_history_reads_both_publication_layouts_in_run_order(tmp_path):
++    _publish(tmp_path, "20260917-0917_2152",
++             {"run_id": "20260917T125201296461Z", "analysis_date": "2026-09-17", "real_scan": True})
++    _publish(tmp_path, "runs/20261008T130000000000Z/p1/report",
++             {"run_id": "20261008T130000000000Z", "analysis_date": "2026-10-08", "real_scan": True})
++    _publish(tmp_path, "20260911-0912_1248",
++             {"run_id": "20260912T035541989512Z", "analysis_date": "2026-09-11", "real_scan": True})
++    (tmp_path / "20260901-bad" / "trace").mkdir(parents=True)
++    (tmp_path / "20260901-bad" / "trace" / "_budget_observation.json").write_text("{not json")
++
++    rows, unreadable = rd.load_history(tmp_path, exclude_run_id="20261008T130000000000Z")
++
++    assert [row["run_id"] for row in rows] == ["20260912T035541989512Z", "20260917T125201296461Z"]
++    assert unreadable == 1
++
++
++def test_history_backfills_shape_and_identity_from_the_published_usage_ledger(tmp_path):
++    ledger = _ledger()
++    _publish(tmp_path, "20260917-0917_2152",
++             {"run_id": "r917", "analysis_date": "2026-09-17", "real_scan": True}, usage=ledger)
++
++    rows, _ = rd.load_history(tmp_path)
++
++    assert rows[0]["usage_shape"]["agents"]["l4-card"]["output_median"] == 19_000
++    assert rows[0]["identity"]["agents"]["l4-card"]["models"] == ["claude-opus-5"]
++    assert rows[0]["identity"]["agent_prompts"] == {}       # 老 run 没有契约哈希:留空,不编
++
++
++def test_history_of_a_missing_reports_root_is_empty_not_an_error(tmp_path):
++    assert rd.load_history(tmp_path / "nope") == ([], 0)
++
++
++# ── rendering ────────────────────────────────────────────────────────────────
++
++
++def test_summary_fragment_names_the_change_and_the_worst_metric():
++    drift = {"status": "CHANGED", "baseline_run": "r1", "changes": [
++        {"kind": "model", "scope": "l4-card", "before": ["claude-opus-5"], "after": ["claude-opus-5-5"]},
++        {"kind": "host", "scope": "宿主", "before": ["2.1.283"], "after": ["2.1.284"]}]}
++    relative = {"status": "SPIKE", "n_baseline": 6, "worst": "output_median:l4-card",
++                "metrics": {"output_median:l4-card": {"value": 50_600, "baseline_median": 19_000,
++                                                      "ratio": 2.66}}}
++    assert rd.summary_fragment({"drift": drift, "relative": relative}) == (
++        "身份:CHANGED(2 项:l4-card 模型、宿主 版本) · 相对:SPIKE ×2.66(l4-card 输出中位)")
++
++
++def test_summary_fragment_for_a_quiet_run_and_for_a_run_with_no_data():
++    quiet = {"drift": {"status": "SAME", "changes": []},
++             "relative": {"status": "NORMAL", "worst": None, "metrics": {}}}
++    assert rd.summary_fragment(quiet) == "身份:SAME · 相对:NORMAL"
++    assert rd.summary_fragment({}) == "身份:UNMEASURED · 相对:UNMEASURED"
++
++
++def test_detail_lines_print_before_and_after_for_every_change():
++    drift = {"status": "CHANGED", "baseline_run": "r1", "changes": [
++        {"kind": "model", "scope": "l4-card", "before": ["claude-opus-5"], "after": ["claude-opus-5-5"]}]}
++    lines = rd.detail_lines({"drift": drift, "relative": {"status": "NO_BASELINE", "n_baseline": 1,
++                                                         "metrics": {}, "worst": None},
++                             "identity": {"cohort_key": "abc123def456", "host_versions": ["2.1.284"]}})
++    assert lines[0] == "- 身份:CHANGED(对上一场 r1) · cohort `abc123def456` · 宿主 2.1.284"
++    assert "  - l4-card 模型:claude-opus-5 → claude-opus-5-5" in lines
++    assert lines[-1] == "- 相对预算带:NO_BASELINE(可比的已发布真实扫描 1 场)"

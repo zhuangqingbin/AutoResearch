@@ -540,3 +540,40 @@ def test_harvest_params_are_the_single_projection_of_the_request():
     stock.validate_stock_operation_params(request, task, params)
     with pytest.raises(ValueError, match="differ from frozen request"):
         stock.validate_stock_operation_params(request, task, {**params, "slim": True})
+
+
+# ── B8(2026-10-03):并行扇出预热 —— 同一角色的第一份先行,其余等它写好缓存 ─────────────
+# 并发请求互相读不到对方的 prompt 缓存;同一角色的 N 份同时发,就是 N 次写同一个前缀。
+
+
+def test_fanout_warmup_holds_siblings_until_the_first_of_the_role_has_a_head_start(
+        tmp_path, monkeypatch):
+    tasks = [det("synthetic.root")] + [
+        inf(f"synthetic.inference.{i}", deps=["synthetic.root"]) for i in range(4)
+    ]
+    run = begin_synthetic_run(tmp_path, monkeypatch, tasks)
+    ex = _FakeExecutor()
+    started = []
+    original = ex.dispatch
+
+    def dispatch(request):
+        started.append(time.monotonic())
+        return original(request)
+
+    ex.dispatch = dispatch
+    final = runner.run_loop(run.run_id, ex, max_parallel=4, poll_seconds=0.01, max_rounds=2000,
+                            hooks=run.hooks(), fanout_warmup_s=0.3)
+    assert final["finished"] is True and len(ex.calls) == 4
+    first, rest = started[0], started[1:]
+    assert all(t - first >= 0.3 for t in rest)          # 其余三份都在预热之后才发
+
+
+def test_fanout_warmup_is_off_by_default(tmp_path, monkeypatch):
+    tasks = [det("synthetic.root")] + [
+        inf(f"synthetic.inference.{i}", deps=["synthetic.root"]) for i in range(3)
+    ]
+    run = begin_synthetic_run(tmp_path, monkeypatch, tasks)
+    ex = _FakeExecutor(delay=0.2)
+    runner.run_loop(run.run_id, ex, max_parallel=3, poll_seconds=0.01, max_rounds=500,
+                    hooks=run.hooks())
+    assert ex.max_active == 3                            # 缺省不预热:三份同时在飞

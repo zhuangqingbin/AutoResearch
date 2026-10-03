@@ -1,7 +1,10 @@
 """menu_replay:用已落盘的 score_<group> 列复刻生产 composite(同一段数学),再重放 L1′/L2′ 形状。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 from autoresearch.common.scoring import _PRIOR_WEIGHTS, composite_score, falling_knife_mask
 from tests.scan._synth_universe import synth_universe
@@ -248,3 +251,69 @@ def test_sector_seats_cli_flag_honours_the_block_enabled_field():
     assert resolve_sector_seats_cfg(False, {"sector_seats": {"enabled": True}}) is None
     # 缺块(未配置)+ 旗标给了 → enabled 缺省 False(与 production 的 knob 默认口径一致)→ None。
     assert resolve_sector_seats_cfg(True, {}) is None
+
+
+# ── B2 / Q1-b(2026-10-03):偏好做资格门、门内按低热度排 —— 先离线影子,过门才动默认 ──────────
+# 4.5 年日线代理:热度是隔夜收益头号负因子(换手 IC −0.125,t=−32);09-25 换偏好权重后菜单
+# 在主尺上的 IC 由正翻负(回放 51 日 −0.092)。偏好(不要跌势票)当资格门,门内冷的排前。
+
+
+def test_heat_score_is_the_mean_percentile_of_the_four_heat_proxies():
+    from autoresearch.research.menu_replay import heat_score
+
+    frame = pd.DataFrame({"turnover": [1, 2, 3], "rsi6": [10, 20, 30],
+                          "winner_rate": [5, 50, 95], "pct_1d": [-1, 0, 1]})
+    heat = heat_score(frame)
+    assert list(heat.round(4)) == [round(1 / 3, 4), round(2 / 3, 4), 1.0]
+
+
+def test_lowheat_gate_ranks_eligible_names_cold_first_and_keeps_preference_as_the_gate():
+    from autoresearch.research.menu_replay import lowheat_gate_score
+
+    composite = pd.Series([90, 80, 70, 20, 10], dtype=float)
+    heat = pd.Series([0.9, 0.1, 0.5, 0.0, 0.0])
+    score = lowheat_gate_score(composite, heat, gate_q=0.4)
+    order = list(score.sort_values(ascending=False).index)
+    assert order[:3] == [1, 2, 0]             # 门内(composite 前 60%):冷的在前
+    assert set(order[3:]) == {3, 4}           # 门外再冷也排在门内之后(偏好仍是硬门)
+
+
+def _universe_labels(tmp_path, date, gaps: dict) -> Path:
+    root = tmp_path / "ledger"
+    path = root / "evaluations/outcome_labels.v2/universe" / f"{date}.parquet"
+    path.parent.mkdir(parents=True)
+    pd.DataFrame({"code": list(gaps), "gap_c1_o2": list(gaps.values()),
+                  "status_gap_c1_o2": "MATURE", "buyable_c1": True}).to_parquet(path, index=False)
+    return root
+
+
+def test_outcome_ic_reads_the_ledger_universe_labels(tmp_path):
+    from autoresearch.research.menu_replay import outcome_ic
+
+    codes = [f"{600000 + i:06d}" for i in range(20)]
+    root = _universe_labels(tmp_path, "2026-09-29", {c: 0.001 * i for i, c in enumerate(codes)})
+    score = pd.Series([-i for i in range(20)], index=codes, dtype=float)    # 与 gap 完全反向
+    assert outcome_ic(score, "2026-09-29", ledger_root=root) == pytest.approx(-1.0)
+    assert outcome_ic(score, "2026-09-30", ledger_root=root) is None       # 没有标签:不编
+
+
+def test_the_b2_gate_needs_non_negative_ic_and_no_menu_regression():
+    from autoresearch.research.menu_replay import b2_gate
+
+    base = {"IC_main_current": -0.09, "IC_main_variant": 0.02, "A4_l2_knife_new": 0.20,
+            "A4_l2_knife_variant": 0.18, "A5_l2_healthy_new": 0.10, "A5_l2_healthy_variant": 0.12}
+    assert b2_gate([base])["pass"] is True
+    assert b2_gate([{**base, "IC_main_variant": -0.01}])["pass"] is False      # IC 仍为负
+    assert b2_gate([{**base, "A4_l2_knife_variant": 0.25}])["pass"] is False   # 落刀变多
+    assert b2_gate([{**base, "A5_l2_healthy_variant": 0.05}])["pass"] is False # 健康占比退
+    assert b2_gate([{**base, "IC_main_variant": None}])["pass"] is None        # 没有成熟标签:不判
+
+
+def test_outcome_ic_survives_a_duplicated_code_row(tmp_path):
+    """tushare 盘后灌数窗口会给同一 code 多写一行(实测 20260826_2120)—— 对齐不能因此崩。"""
+    from autoresearch.research.menu_replay import outcome_ic
+
+    codes = [f"{600000 + i:06d}" for i in range(20)]
+    root = _universe_labels(tmp_path, "2026-09-29", {c: 0.001 * i for i, c in enumerate(codes)})
+    score = pd.Series([float(i) for i in range(20)] + [99.0], index=codes + [codes[3]])
+    assert outcome_ic(score, "2026-09-29", ledger_root=root) == pytest.approx(1.0)

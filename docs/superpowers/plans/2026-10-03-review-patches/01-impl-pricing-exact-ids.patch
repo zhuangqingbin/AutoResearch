@@ -1,0 +1,161 @@
+--- a/autoresearch/trace/pricing.py
++++ b/autoresearch/trace/pricing.py
+@@ -1,20 +1,26 @@
+ #!/usr/bin/env python3
+ """Claude transcript 的确定性估算价格表。
+ 
+-价格源（2026-07-28 快照）：
++价格源（2026-10-03 快照）：
+ https://platform.claude.com/docs/en/about-claude/pricing
+ 
+ 这里估的是 Claude API 标准全球路由的 token 标价，不冒充 Claude 订阅账单。未知模型、
+-未知速度档一律返回 UNKNOWN，禁止按家族猜价后伪装成精确成本。
++未知速度档一律返回 UNKNOWN，禁止按家族或前缀猜价后伪装成精确成本。
++
++**逐 ID 精确匹配**（2026-10-03）：旧实现用子串 ``"claude-opus-5" in model_id`` 定价，
++2026-09-22 `opus` 别名改指 Opus 5.5 后，新模型被静默按 Opus 5 的价格计（实际便宜 20%，
++cache 读便宜 60%），报表还写着「未定价 0 份」。新一代模型上线时本表必须显式加一行，
++否则该模型的行是 UNKNOWN —— 这正是想要的告警。
+ """
+ from __future__ import annotations
+ 
++import re
+ from dataclasses import asdict, dataclass
+ from datetime import date
+ 
+ PRICE_SCHEMA_VERSION = 1
+ PRICE_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
+-PRICE_SOURCE_EFFECTIVE_DATE = "2026-07-28"
++PRICE_SOURCE_EFFECTIVE_DATE = "2026-10-03"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -32,73 +38,85 @@
+         return asdict(self)
+ 
+ 
++_FABLE_51 = PriceProfile("fable51", 10.0, 12.5, 20.0, 0.25, 50.0)
+ _FABLE_5 = PriceProfile("fable5", 10.0, 12.5, 20.0, 1.0, 50.0)
++_OPUS_55 = PriceProfile("opus55", 4.0, 5.0, 8.0, 0.20, 20.0)
+ _OPUS_CURRENT = PriceProfile("opus_current", 5.0, 6.25, 10.0, 0.5, 25.0)
+ _OPUS_LEGACY = PriceProfile("opus_legacy", 15.0, 18.75, 30.0, 1.5, 75.0)
+-_SONNET_5_INTRO = PriceProfile("sonnet5_intro", 2.0, 2.5, 4.0, 0.2, 10.0)
+-_SONNET_CURRENT = PriceProfile("sonnet_current", 3.0, 3.75, 6.0, 0.3, 15.0)
++_SONNET_5 = PriceProfile("sonnet5", 2.0, 2.5, 4.0, 0.2, 10.0)
++_SONNET_4 = PriceProfile("sonnet_current", 3.0, 3.75, 6.0, 0.3, 15.0)
+ _HAIKU_45 = PriceProfile("haiku45", 1.0, 1.25, 2.0, 0.1, 5.0)
+ _HAIKU_35 = PriceProfile("haiku35", 0.8, 1.0, 1.6, 0.08, 4.0)
++# Fast mode（research preview）：官方只列 input/output；cache 倍率按「叠加在 fast 价之上」的
++# 同一组乘数（5m 写 1.25x、1h 写 2x、读 0.1x，Opus 5.5 读 0.05x）。
++_OPUS_55_FAST = PriceProfile("opus55_fast", 8.0, 10.0, 16.0, 0.4, 40.0)
+ _OPUS_FAST = PriceProfile("opus_fast", 10.0, 12.5, 20.0, 1.0, 50.0)
+ 
++#: 逐 ID 的标准价。键是 `canonical_model_id()` 的输出；表外 ID 一律 UNKNOWN。
++_STANDARD: dict[str, PriceProfile] = {
++    "claude-fable-5-1": _FABLE_51,
++    "claude-mythos-5-1": _FABLE_51,
++    "claude-fable-5": _FABLE_5,
++    "claude-mythos-5": _FABLE_5,
++    "claude-opus-5-5": _OPUS_55,
++    "claude-opus-5": _OPUS_CURRENT,
++    "claude-opus-4-8": _OPUS_CURRENT,
++    "claude-opus-4-7": _OPUS_CURRENT,
++    "claude-opus-4-6": _OPUS_CURRENT,
++    "claude-opus-4-5": _OPUS_CURRENT,
++    "claude-opus-4-1": _OPUS_LEGACY,
++    "claude-opus-4": _OPUS_LEGACY,
++    "claude-sonnet-5-5": _SONNET_5,
++    "claude-sonnet-5": _SONNET_5,
++    "claude-sonnet-4-6": _SONNET_4,
++    "claude-sonnet-4-5": _SONNET_4,
++    "claude-sonnet-4": _SONNET_4,
++    "claude-haiku-4-5": _HAIKU_45,
++    "claude-haiku-3-5": _HAIKU_35,
++}
++_FAST: dict[str, PriceProfile] = {
++    "claude-opus-5-5": _OPUS_55_FAST,
++    "claude-opus-5": _OPUS_FAST,
++    "claude-opus-4-8": _OPUS_FAST,
++}
+ 
+-def _as_date(value: str | date) -> date:
+-    if isinstance(value, date):
+-        return value
+-    return date.fromisoformat(str(value)[:10])
++#: 价表认识的全部模型 ID（闭集）。钉版校验（`scan.agent_frontmatter`）以它为准：
++#: 配置里钉一个价表不认识的 ID = 那个模型的成本读数会是 UNKNOWN，先红在这里。
++KNOWN_MODEL_IDS = frozenset(_STANDARD)
+ 
++_CONTEXT_SUFFIX = re.compile(r"\[[^\]]*\]$")   # `claude-opus-5-5[1m]`
++_SNAPSHOT_DATE = re.compile(r"-\d{8}$")         # `claude-haiku-4-5-20251001`
+ 
++
++def canonical_model_id(model: str | None) -> str:
++    """transcript / 配置里的模型串 → 价表键：去掉 `[1m]` 上下文后缀与 `-YYYYMMDD` 快照日期。
++
++    只做这两种**无歧义**的规整；不做前缀、子串或家族匹配。
++    """
++    value = _CONTEXT_SUFFIX.sub("", str(model or "").strip().lower())
++    return _SNAPSHOT_DATE.sub("", value)
++
++
+ def price_for_model(
+     model: str | None,
+     *,
+     as_of: str | date = PRICE_SOURCE_EFFECTIVE_DATE,
+     speed: str | None = "standard",
+ ) -> PriceProfile | None:
+-    """精确 model id → 当日价格；不认识就 None。
++    """精确 model id → 标价；表外 ID 返回 None（调用方据此报 UNKNOWN）。
+ 
+-    `claude-opus-5` 等 dateless id 在 Claude 4.6 起是固定版本，不是 evergreen alias，
+-    因此可以安全按完整版本模式定价。
++    `as_of` 保留为兼容形参：当前价表没有按日期分段的条目（Sonnet 5 的引入价已转为标准价）。
+     """
+-    model_id = str(model or "").lower()
++    del as_of
++    model_id = canonical_model_id(model)
+     speed_name = str(speed or "standard").lower()
+-    when = _as_date(as_of)
+-
+     if speed_name == "fast":
+-        if "claude-opus-5" in model_id or "claude-opus-4-8" in model_id:
+-            return _OPUS_FAST
+-        return None
++        return _FAST.get(model_id)
+     if speed_name not in {"standard", "normal", "—", ""}:
+         return None
++    return _STANDARD.get(model_id)
+ 
+-    if "claude-fable-5" in model_id or "claude-mythos-5" in model_id:
+-        return _FABLE_5
+-    if any(token in model_id for token in (
+-        "claude-opus-5",
+-        "claude-opus-4-8",
+-        "claude-opus-4-7",
+-        "claude-opus-4-6",
+-        "claude-opus-4-5",
+-    )):
+-        return _OPUS_CURRENT
+-    if "claude-opus-4-1" in model_id or model_id in {"claude-opus-4", "opus"}:
+-        return _OPUS_LEGACY
+-    if "claude-sonnet-5" in model_id:
+-        return _SONNET_5_INTRO if when <= date(2026, 8, 31) else _SONNET_CURRENT
+-    if any(token in model_id for token in (
+-        "claude-sonnet-4-6",
+-        "claude-sonnet-4-5",
+-        "claude-sonnet-4",
+-        "claude-sonnet-3-7",
+-        "claude-sonnet-3-5",
+-    )) or model_id == "sonnet":
+-        return _SONNET_CURRENT
+-    if "claude-haiku-4-5" in model_id:
+-        return _HAIKU_45
+-    if "claude-haiku-3-5" in model_id or model_id == "haiku":
+-        return _HAIKU_35
+-    return None
+ 
+-
+ def estimate_usd(
+     model: str | None,
+     usage: dict,

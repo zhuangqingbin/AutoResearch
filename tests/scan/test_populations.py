@@ -43,7 +43,7 @@ def trusted_calendar(monkeypatch):
 
 # ───────────────────────── 合成湖 ─────────────────────────
 
-def _lake(tmp_path, *, days=None, gaps=None, sealed=(), fwd5=None, fwd10=None):
+def _lake(tmp_path, *, days=None, gaps=None, sealed=(), fwd5=None, fwd10=None, closes2=None):
     """合成湖:默认全平(gap=0),`gaps` 指定某些票在 D+2 开盘相对 D+1 收盘的跳空。
 
     锚点固定在 `DAYS[0]` 作为分析日 D:D+1=`DAYS[1]`、D+2=`DAYS[2]`、D+5=`DAYS[5]`、
@@ -59,6 +59,10 @@ def _lake(tmp_path, *, days=None, gaps=None, sealed=(), fwd5=None, fwd10=None):
             if i == 2 and gaps and code in gaps:            # D+2 开盘 → gap_c1_o2
                 bar["open"] = 10.0 * (1 + gaps[code])
                 bar["high"] = max(bar["high"], bar["open"] * 1.01)
+            if i == 2 and closes2 and code in closes2:      # D+2 收盘 → ret_c1_c2(影子腿)
+                bar["close"] = 10.0 * (1 + closes2[code])
+                bar["high"] = max(bar["high"], bar["close"] * 1.01)
+                bar["low"] = min(bar["low"], bar["close"] * 0.99)
             if i == 5 and fwd5 and code in fwd5:            # D+5 收盘 → fwd_5_oc
                 bar["close"] = 10.0 * (1 + fwd5[code])
             if i == 10 and fwd10 and code in fwd10:         # D+10 收盘 → fwd_10_oc
@@ -83,7 +87,7 @@ def _write_csv(path, header, rows):
 def _run(tmp_path, run_id="20260803_2100", date="2026-08-03", *, base_rel="trace/staging",
          top1000=None, l2=None, kept=None, cut=None, judged=None, finalists=None,
          bench=None, pinned=(), seats=(), ratings=None, early=None, e6=None,
-         scored_full=True, dup_code=None, shared_e6=None):
+         scored_full=True, dup_code=None, shared_e6=None, channels=None, convictions=None):
     """一个最小的**已发布** run。`base_rel` 决定冻结副本落在哪一级。"""
     run = tmp_path / ws.reports_root() / "scan" / run_id
     run.mkdir(parents=True, exist_ok=True)
@@ -99,8 +103,12 @@ def _run(tmp_path, run_id="20260803_2100", date="2026-08-03", *, base_rel="trace
                    ["rank", "recalled", "code", "name", "industry", "composite"],
                    [[i + 1, c in recalled, c, f"名{c}", "钢铁" if i % 2 else "银行",
                      100 - i] for i, c in enumerate(CODES)])
+    def _recall(c):     # 人口表的 n_channels 由通道串现数(护照缺席时),所以夹具写真实的串
+        n = (channels or {}).get(c, 1)
+        return "|".join(["composite", "heat", "flow", "event", "sector"][:n]), n
+
     rows = [[c, f"名{c}", "钢铁" if CODES.index(c) % 2 else "银行", 90 - i,
-             "composite", 1, i + 1, c in pinned, ""]
+             *_recall(c), i + 1, c in pinned, ""]
             for i, c in enumerate(recalled)]
     if dup_code:
         rows.append(list(rows[[r[0] for r in rows].index(dup_code)]))
@@ -120,7 +128,8 @@ def _run(tmp_path, run_id="20260803_2100", date="2026-08-03", *, base_rel="trace
     if judged is not None:
         _write_csv(base / "L3_judged_full.csv",
                    ["code", "name", "sector", "conviction", "lane", "finalist"],
-                   [[c, f"名{c}", "钢铁", 70, "pinned" if c in pinned else "healthy",
+                   [[c, f"名{c}", "钢铁", (convictions or {}).get(c, 70),
+                     "pinned" if c in pinned else "healthy",
                      c in (finalists or ())] for c in judged])
     if finalists is not None:
         _write_csv(base / "L3_fine_finalists.csv",
@@ -846,3 +855,87 @@ def test_dispatched_orphan_without_card_is_retained_as_unknown(tmp_path, monkeyp
     assert bool(row['l4_dispatched']) and pd.isna(row['l4_rejected'])
     assert row['research_rating'] is None
     assert meta['counts']['orphans']==1
+
+
+# ───────── 2026-10-03 A8 截面尺 + Q2 影子腿 c1→c2 ─────────
+#
+# 现行 L3 尺拿 finalist 对 bench,读数 0;对「L2 其余」剔 📌 后是 −0.24pp(t=−3.3)。菜单在主尺上
+# 的 IC 自偏好档上线由正翻负。这些都只能在探针里算 —— 下面把它们变成每天自动出的行。
+
+RAMP = {code: 0.001 * i for i, code in enumerate(CODES)}       # 代码越靠后 gap 越大
+
+
+def test_menu_composite_ic_reads_the_whole_eligible_universe(tmp_path, monkeypatch):
+    """`L1_scored_full` 的 composite 按代码顺序递减,gap 按代码顺序递增 → 秩相关恰好 −1。"""
+    monkeypatch.chdir(tmp_path)
+    got = _rulers_for(tmp_path, _lake(tmp_path, gaps=RAMP), {})
+    assert got.loc["l1_composite_ic", "value"] == pytest.approx(-1.0)
+    assert got.loc["l1_composite_ic", "n_names"] == len(CODES)
+
+
+def test_n_channels_and_conviction_ic_follow_the_signal_not_the_family(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    top = CODES[:40]
+    got = _rulers_for(tmp_path, _lake(tmp_path, gaps=RAMP), {
+        "channels": {c: 1 + i // 10 for i, c in enumerate(top)},       # 越靠后通道越多
+        "convictions": {c: 90 - i for i, c in enumerate(top[:8])}})    # 越靠后 conviction 越低
+    assert got.loc["l1_n_channels_ic", "value"] > 0.9
+    assert got.loc["l3_conviction_ic", "value"] == pytest.approx(-1.0)
+
+
+def test_l3_is_also_read_against_the_rest_of_l2_not_only_the_bench(tmp_path, monkeypatch):
+    """finalist = 前 4 只,L2 其余 = 第 5–20 只:gap 均值差 0.0015 − 0.0115 = −0.01。"""
+    monkeypatch.chdir(tmp_path)
+    got = _rulers_for(tmp_path, _lake(tmp_path, gaps=RAMP), {})
+    assert got.loc["l3_finalist_minus_l2_rest", "value"] == pytest.approx(-0.01)
+    assert got.loc["l3_finalist_minus_bench", "value"] == pytest.approx(-0.004)
+
+
+def test_menu_pool_is_read_against_the_market(tmp_path, monkeypatch):
+    """L2 池(前 20 只)均值 0.0095 vs 全市场(80 只)0.0395。"""
+    monkeypatch.chdir(tmp_path)
+    got = _rulers_for(tmp_path, _lake(tmp_path, gaps=RAMP), {})
+    assert got.loc["l2_pool_minus_market", "value"] == pytest.approx(-0.03)
+
+
+def test_every_new_cross_sectional_ruler_has_a_ten_day_twin(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    got = _rulers_for(tmp_path, _lake(tmp_path, fwd10=RAMP), {
+        "channels": {c: 1 + i // 10 for i, c in enumerate(CODES[:40])},
+        "convictions": {c: 90 - i for i, c in enumerate(CODES[:8])}})
+    for metric in ("l1_composite_ic", "l1_n_channels_ic", "l3_conviction_ic",
+                   "l3_finalist_minus_l2_rest", "l2_pool_minus_market"):
+        assert got.loc[f"{metric}_fwd10", "status"] == P.MATURE, metric
+        assert got.loc[f"{metric}_fwd10", "metric_definition_version"] == "g3.v1+block10"
+    assert got.loc["l2_pool_minus_market_fwd10", "value"] == pytest.approx(-0.03)
+
+
+def test_shadow_leg_c1c2_is_reported_beside_the_main_ruler(tmp_path, monkeypatch):
+    """Q2 影子腿:同一批家族,卖点换成 T+2 收盘。主尺读数一字不变。"""
+    monkeypatch.chdir(tmp_path)
+    top = CODES[:40]
+    lake = _lake(tmp_path, gaps=dict.fromkeys(top[:4], 0.01),
+                 closes2=dict.fromkeys(top[:4], 0.02))
+    got = _rulers_for(tmp_path, lake, {})
+    assert got.loc["l3_finalist_minus_bench", "value"] == pytest.approx(0.01)       # 主尺
+    assert got.loc["l3_finalist_minus_bench_c1c2", "value"] == pytest.approx(0.02)  # 影子腿
+    for metric in ("l3_finalist_minus_l2_rest_c1c2", "l4_reject_value_c1c2",
+                   "e6_buy_minus_pool_c1c2", "l1_n_channels_ic_c1c2", "l3_conviction_ic_c1c2"):
+        assert metric in got.index, metric
+
+
+def test_ic_needs_a_cross_section_and_a_spread(tmp_path, monkeypatch):
+    """全平(gap 全 0)或信号无差异的日子不出 IC 读数 —— 不拿 NaN 冒充 0。"""
+    monkeypatch.chdir(tmp_path)
+    got = _rulers_for(tmp_path, _lake(tmp_path), {})          # gap 全 0
+    assert got.loc["l1_composite_ic", "status"] == P.UNAVAILABLE
+    assert pd.isna(got.loc["l1_composite_ic", "value"])
+    assert got.loc["l3_conviction_ic", "status"] == P.UNAVAILABLE   # conviction 全 70
+
+
+def test_buy_is_also_read_against_the_same_day_l2_pool_and_market(tmp_path, monkeypatch):
+    """A9:BUY = top[0](gap 0);L2 其余 = 第 2–20 只均值 0.010;全市场 80 只均值 0.0395。"""
+    monkeypatch.chdir(tmp_path)
+    got = _rulers_for(tmp_path, _lake(tmp_path, gaps=RAMP), {})
+    assert got.loc["e6_buy_minus_l2_pool", "value"] == pytest.approx(-0.010)
+    assert got.loc["e6_buy_minus_market", "value"] == pytest.approx(-0.0395)

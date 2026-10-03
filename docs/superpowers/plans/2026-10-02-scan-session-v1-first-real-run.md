@@ -650,7 +650,7 @@ uv run --no-sync python -m autoresearch.session_agent mailbox wait --run-id "$RU
 
 | `kind` | 做什么 |
 |---|---|
-| `REQUEST` | 用返回里的 `agent_type` 和 `prompt` 原样后台派 `Agent(subagent_type=<agent_type>, prompt=<prompt>)`;`model` 非空时一并传(`claude-opus-*` → `opus`,`claude-sonnet-*` → `sonnet`)。拿到 agentId **立刻**执行 `mailbox bind-access --run-id "$RUN_ID" --task-id <task_id> --attempt <attempt> --context-ref <agentId>`,然后继续 `wait` |
+| `REQUEST` | 用返回里的 `agent_tool` 和 `host_prompt` 原样后台派 `Agent(**<agent_tool>, prompt=<host_prompt>)`(`by_reference` 关着时 `host_prompt` 就是 `prompt` 全文);`agent_tool` 照抄,**不要**自己加 `model`,也不要把全 ID 换成 `opus`/`sonnet` 别名(2026-10-03 钉版后模型由 agent 定义 frontmatter 钉住,别名会随 Claude Code 升级漂移)。拿到 agentId **立刻**执行 `mailbox bind-access --run-id "$RUN_ID" --task-id <task_id> --attempt <attempt> --context-ref <agentId>`,然后继续 `wait` |
 | 某个 Agent 返回 | 立刻 `mailbox complete --run-id "$RUN_ID" --task-id <task_id> --attempt <attempt> --context-ref <agentId>`。一个一个结,不攒批。Agent 报错改传 `--error "<原文>" --error-class TIMEOUT|CONNECTION|RATE_LIMIT` |
 | `IDLE` | 再 `wait` |
 | `complete` 返回 `ABANDONED` | 该 attempt 已超时作废,不手动重试,runner 自己会开新 attempt |

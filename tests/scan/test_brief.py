@@ -295,7 +295,7 @@ def _ledger_csv(root: Path, rows: list[dict]) -> None:
     p = root / "scan" / "_ledger" / "recommendations.csv"
     p.parent.mkdir(parents=True, exist_ok=True)
     cols = ["run_id", "analysis_date", "mode", "role", "e6_buy", "outcome_status",
-            "actionability", "gap_c1_o2"]
+            "actionability", "gap_c1_o2", "rel_gap_market"]
     with p.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -1322,3 +1322,17 @@ def test_relative_buy_line_locator_is_same_source_as_renderer(scan, mode, tier, 
 
 def test_relative_buy_line_returns_none_when_the_line_is_gone():
     assert brief.relative_buy_line("**③ 结论**\n- **研究评级分布**(…BUY 见下一行…)\n") is None
+
+
+
+def test_buy_line_adds_a_cost_adjusted_estimate_and_the_same_day_market(tmp_path, monkeypatch, scan):
+    """A9(2026-10-03):≥20 笔时毛均值旁并列「扣成本估算后」与「对同日市场」,两者都是账本事实。"""
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports")
+    _ledger_csv(tmp_path / "reports", [
+        {"run_id": f"r{i}", "analysis_date": "2026-08-06", "mode": "active", "role": "BUY",
+         "e6_buy": "True", "outcome_status": "MATURE", "actionability": "ACTIONABLE",
+         "gap_c1_o2": "0.0020", "rel_gap_market": "-0.0010"} for i in range(20)])
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "账本 BUY 实测 +0.20pp(n=20,胜率 100%,未扣成本;扣 12bp 后 +0.08pp;对同日市场 -0.10pp)" in md

@@ -129,6 +129,9 @@ class DispatchRequest:
     resolution: str = "RESOLVED"      # how model/effort were obtained (see runner/dispatch)
     schema_version: int = SCHEMA_VERSION
     access_manifest_path: str | None = None  # absent in historical frozen requests
+    #: 按引用派发(`session.mailbox.by_reference`):宿主传给 Agent 工具的一行指针;全文在
+    #: `instruction_refs` 最后一项的冻结文件里。None = 宿主照传 `prompt` 全文。
+    host_prompt: str | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "agent_spec", _frozen_map(self.agent_spec))

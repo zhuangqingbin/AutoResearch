@@ -26,7 +26,25 @@ DEFAULT_BUDGETS = {
     "baseline_run": "20260727_2140",
     "maturity": {"phase1": {"cost_reduction": 0.15, "p50": 75, "p90": 100},
                  "phase2": {"cost_reduction": 0.25, "p50": 65, "p90": 90}},
+    # 相对预算带(`scan.run_drift.relative`):对近期已发布真实扫描中位数的倍数。
+    "relative": {"window": 10, "min_runs": 3, "warn_ratio": 1.5, "alarm_ratio": 2.0},
 }
+
+
+def _relative_policy(raw: dict | None) -> dict:
+    """`budgets.relative` → 校验后的完整组;非法即 ValueError(配置错误不得静默变成另一把尺)。"""
+    merged = {**DEFAULT_BUDGETS["relative"], **(raw or {})}
+    window, min_runs = merged["window"], merged["min_runs"]
+    warn, alarm = merged["warn_ratio"], merged["alarm_ratio"]
+    if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (window, min_runs)):
+        raise ValueError("budgets.relative.window / min_runs 须为正整数")
+    if min_runs > window:
+        raise ValueError("budgets.relative 须满足 min_runs <= window")
+    if (_finite_number(warn, allow_zero=False) is None or _finite_number(alarm, allow_zero=False) is None
+            or not 1 < float(warn) <= float(alarm)):
+        raise ValueError("budgets.relative 须满足 1 < warn_ratio <= alarm_ratio")
+    return {"window": window, "min_runs": min_runs, "warn_ratio": float(warn),
+            "alarm_ratio": float(alarm)}
 
 
 def _finite_number(value, *, allow_zero: bool) -> float | None:
@@ -76,6 +94,7 @@ def normalize_budgets(raw: dict | None) -> dict:
             ph: {**DEFAULT_BUDGETS["maturity"][ph], **((raw.get("maturity") or {}).get(ph) or {})}
             for ph in ("phase1", "phase2")
         },
+        "relative": _relative_policy(raw.get("relative")),
     }
 
 
