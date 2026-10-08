@@ -1,0 +1,256 @@
+--- a/autoresearch/contracts/retry.py
++++ b/autoresearch/contracts/retry.py
+@@ -39,3 +39,10 @@
+ #: 两套的**交集** = 无论哪一层都算瞬时的错误。仅供诊断/展示,不要拿它当判据 ——
+ #: 判据必须显式选边,因为差集里的两个成员各自都是有理由的。
+ BOTH: frozenset[str] = frozenset(INTEL_RESEARCH) & TASK_ATTEMPT
++
++#: 第三套(2026-10-08):**改输入再来一次**的口径。``DOMAIN_VALIDATION`` = 产物被确定性领域校验
++#: 拒绝(精度契约、缺 P4 证据、身份缺失……)。它不是瞬时错误 —— 原样重跑多半还是同一个错 ——
++#: 所以不进 ``TASK_ATTEMPT``;但新尝试的 prompt 会带上校验原话(``session_agent.dispatch.repair_hint``),
++#: 输入变了,重试才有意义。封顶仍是各自的 max_attempts。10-07 第 5 场:一张复核卡的四舍五入
++#: 被判 CONTRACT_ERROR 不可重试 → 整场 BLOCKED、$53 零发布,就是没有这一套。
++VALIDATION_REPAIR: frozenset[str] = frozenset({"DOMAIN_VALIDATION"})
+--- a/autoresearch/session_agent/evidence.py
++++ b/autoresearch/session_agent/evidence.py
+@@ -402,6 +402,12 @@
+ 
+ def read_abandonment(handle, task_id: str, attempt: int) -> dict | None:
+     path = _attempt_record_path(handle, task_id, attempt, "abandoned")
++    return _read_json(path) if path.is_file() else None
++
++
++def read_failure(handle, task_id: str, attempt: int) -> dict | None:
++    """The frozen failure of one attempt (``freeze_failure``), ``None`` if it did not fail."""
++    path = _attempt_record_path(handle, task_id, attempt, "failure")
+     return _read_json(path) if path.is_file() else None
+ 
+ 
+--- a/autoresearch/session_agent/service.py
++++ b/autoresearch/session_agent/service.py
+@@ -567,7 +567,7 @@
+     handle_loader: Callable[[str], object] | None = None,
+ ) -> dict:
+     """Record an observed host failure without fabricating a task result."""
+-    from autoresearch.contracts.retry import TASK_ATTEMPT
++    from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
+     from autoresearch.trace.capsule import require_active_run
+ 
+     handle = (handle_loader or require_active_run)(run_id)
+@@ -577,7 +577,8 @@
+     kind = str(error_class).strip().upper()
+     if not kind or not message:
+         raise ValueError("error_class and message are required")
+-    retryable = kind in TASK_ATTEMPT
++    # 瞬时错误原样重来;领域校验拒绝带着校验原话重来(dispatch.repair_hint)。都受 max_attempts 封顶。
++    retryable = kind in TASK_ATTEMPT or kind in VALIDATION_REPAIR
+     store.mark_failed(
+         _store_path(handle),
+         task_id,
+@@ -622,7 +623,7 @@
+     handle_loader: Callable[[str], object] | None = None,
+ ) -> dict:
+     """Freeze a new L4 child subtree while leaving attempt ownership in l4_tasks."""
+-    from autoresearch.contracts.retry import TASK_ATTEMPT
++    from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
+     from autoresearch.session_agent.workflows.scan import l4_retry_expansion
+     from autoresearch.trace.capsule import require_active_run
+ 
+@@ -640,10 +641,11 @@
+     if ticket is None:
+         raise KeyError(code6)
+     previous_attempt = expected_attempt - 1
++    last_class = str(ticket.get("last_error_class") or "")
+     if (
+         ticket.get("status") != "FAILED"
+         or int(ticket.get("attempt") or 0) != previous_attempt
+-        or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
++        or (last_class not in TASK_ATTEMPT and last_class not in VALIDATION_REPAIR)
+     ):
+         raise RuntimeError("L4 ticket is not eligible for the requested retry")
+     if not any(
+--- a/autoresearch/session_agent/runner.py
++++ b/autoresearch/session_agent/runner.py
+@@ -48,7 +48,7 @@
+ from pathlib import Path
+ 
+ from autoresearch.common.atomic import atomic_write_json, canonical_json, sha256_bytes
+-from autoresearch.contracts.retry import TASK_ATTEMPT
++from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
+ from autoresearch.session_agent import artifacts, service, store
+ from autoresearch.session_agent.dispatch import build_request
+ from autoresearch.session_agent.executors.base import (
+@@ -78,6 +78,21 @@
+ 
+ class RunnerAlreadyRunning(RuntimeError):
+     """Another live runner holds ``_dispatch/runner.lock`` for this run."""
++
++
++def submit_error_class(exc: BaseException) -> str:
++    """``submit`` 拒绝的分类:领域校验拒绝(DomainValidationError,含其 cause 链)= DOMAIN_VALIDATION,
++    带校验原话重做一次(contracts.retry.VALIDATION_REPAIR);其余身份/契约拒绝 = CONTRACT_ERROR,不重试。"""
++    from autoresearch.session_agent.validation import DomainValidationError
++
++    seen: set[int] = set()
++    current: BaseException | None = exc
++    while current is not None and id(current) not in seen:
++        if isinstance(current, DomainValidationError):
++            return "DOMAIN_VALIDATION"
++        seen.add(id(current))
++        current = current.__cause__ or current.__context__
++    return "CONTRACT_ERROR"
+ 
+ 
+ def orphan_hint(run_id: str, task_id: str, attempt: int) -> str:
+@@ -518,8 +533,8 @@
+                 or int(entry["attempt"]) >= _session_max_attempts()
+             ):
+                 continue
+-            if spec["kind"] == "INFERENCE" and (entry.get("error") or {}).get(
+-                    "code") not in TASK_ATTEMPT:
++            code = (entry.get("error") or {}).get("code")
++            if spec["kind"] == "INFERENCE" and code not in TASK_ATTEMPT and code not in VALIDATION_REPAIR:
+                 continue
+             if spec.get("parent_task") is not None:
+                 from autoresearch.session_agent import legacy_scan
+@@ -846,7 +861,7 @@
+                 validator=self.hooks.validator, host_receipt=receipt,
+                 event_recorder=self.hooks.event_recorder)
+         except Exception as exc:  # noqa: BLE001 - contract/identity rejection of the output
+-            self._fail(flight, "CONTRACT_ERROR", f"{type(exc).__name__}: {exc}", result)
++            self._fail(flight, submit_error_class(exc), f"{type(exc).__name__}: {exc}", result)
+             return
+         self._record(flight, "SUBMITTED", result)
+ 
+@@ -942,9 +957,10 @@
+         wanted = {}
+         for code, ticket in (legacy_scan._payload(self.handle).get("tasks") or {}).items():
+             attempt = int(ticket.get("attempt") or 0)
++            last_class = str(ticket.get("last_error_class") or "")
+             if (
+                 ticket.get("status") != "FAILED"
+-                or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
++                or (last_class not in TASK_ATTEMPT and last_class not in VALIDATION_REPAIR)
+                 or attempt < 1
+                 or attempt + 1 > MAX_ATTEMPTS
+                 or code in in_flight
+@@ -996,5 +1012,5 @@
+ 
+ __all__ = [
+     "DISPATCH_DIR", "SESSION_MAX_ATTEMPTS", "Runner", "RunnerUnsupported", "ServiceHooks",
+-    "bind_transcript_evidence", "run_loop",
++    "bind_transcript_evidence", "run_loop", "submit_error_class",
+ ]
+--- a/autoresearch/scan/l4_tasks.py
++++ b/autoresearch/scan/l4_tasks.py
+@@ -31,6 +31,8 @@
+ #: 任务簿重试口径的单一真身在 `contracts/retry.py`(与情报再搜口径**故意不同**:
+ #: 这里含 STALE_TASK 而不含 ENOTFOUND,理由见那边)。
+ TRANSIENT_ERRORS = _retry.TASK_ATTEMPT
++#: 票据可再来一次的全部口径 = 瞬时错误 + 领域校验拒绝(带校验原话重做,2026-10-08)。
++RETRYABLE_ERRORS = _retry.TASK_ATTEMPT | _retry.VALIDATION_REPAIR
+ # 帽的键集与缺省从注册表转出(contracts/scan_config.DEFAULT_CONCURRENCY):l4_stock = 派发帽
+ # (64 = 事实无上限,Wave11 C1);tushare = prepare_slim 的操作级信号量。2026-09-27 删掉的
+ # web_search / web_fetch 两帽从未有过执行点(只校验不执行 = 假参数)。
+@@ -880,19 +882,19 @@
+             }
+         if status == "FAILED":
+             error_class = str(task.get("last_error_class") or "")
+-            if error_class not in TRANSIENT_ERRORS or int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
++            if error_class not in RETRYABLE_ERRORS or int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
+                 task["status"] = "BLOCKED"
+                 task["updated_at"] = stamp
+                 book_hash = _atomic_write(path, payload)
+                 terminal_event = (
+                     "TASK_FAILED"
+-                    if error_class in TRANSIENT_ERRORS
++                    if error_class in RETRYABLE_ERRORS
+                     and int(task["attempt"]) >= tasks_cfg()["max_attempts"]
+                     else "TASK_BLOCKED"
+                 )
+                 already_recorded_exhaustion = (
+                     old_status == "FAILED"
+-                    and error_class in TRANSIENT_ERRORS
++                    and error_class in RETRYABLE_ERRORS
+                     and int(task["attempt"]) >= tasks_cfg()["max_attempts"]
+                 )
+                 if not already_recorded_exhaustion:
+@@ -974,7 +976,7 @@
+             )
+         terminal_status = (
+             "FAILED"
+-            if kind in TRANSIENT_ERRORS and authoritative_attempt < tasks_cfg()["max_attempts"]
++            if kind in RETRYABLE_ERRORS and authoritative_attempt < tasks_cfg()["max_attempts"]
+             else "BLOCKED"
+         )
+         terminal_error = error or kind
+@@ -1006,7 +1008,7 @@
+                 payload.get("rate_limit_failures") or 0
+             ) + 1
+         book_hash = _atomic_write(path, payload)
+-        if kind not in TRANSIENT_ERRORS:
++        if kind not in RETRYABLE_ERRORS:
+             event_type = "TASK_BLOCKED"
+         elif int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
+             event_type = "TASK_FAILED"
+@@ -1567,7 +1569,7 @@
+             if task["status"] in {"PENDING", "FAILED"}:
+                 if (
+                     task["status"] == "FAILED"
+-                    and task.get("last_error_class") not in TRANSIENT_ERRORS
++                    and task.get("last_error_class") not in RETRYABLE_ERRORS
+                 ):
+                     continue
+                 if int(task.get("attempt") or 0) >= tasks_cfg()["max_attempts"]:
+--- a/autoresearch/session_agent/dispatch.py
++++ b/autoresearch/session_agent/dispatch.py
+@@ -423,8 +423,34 @@
+         from autoresearch.common.research_prompts import render_research_prompt
+         return render_research_prompt(role, prompt=_pick(inputs, '.prompt'), output=_only(outputs), run_index=run_index)
+     return _generic_prompt(task, attempt, get_role(role), inputs, outputs)
++
++
++def repair_hint(handle, task: dict, attempt: int) -> str:
++    """上一尝试被领域校验拒绝(DOMAIN_VALIDATION)时,这一尝试的 prompt 末尾带上校验原话。
++
++    SESSION 任务:同一 task_id 的上一 attempt 的冻结失败记录(``evidence.read_failure``);
++    L4 子树(重试是新 task_id,``parent_task.attempt`` ≥ 2):票据上的 ``last_error``。其它错误类
++    (瞬时错误、CONTRACT_ERROR)不带提示 —— 它们要么原样重来,要么根本不重来。
++    """
++    error = None
++    if attempt >= 2:
++        from autoresearch.session_agent.evidence import read_failure
++
++        error = (read_failure(handle, task["task_id"], attempt - 1) or {}).get("error")
++    else:
++        parent = task.get("parent_task") or {}
++        if int(parent.get("attempt") or 1) >= 2 and parent.get("subject"):
++            from autoresearch.session_agent import legacy_scan
+ 
++            ticket = (legacy_scan._payload(handle).get("tasks") or {}).get(str(parent["subject"]).zfill(6)) or {}
++            error = {"code": ticket.get("last_error_class"), "message": ticket.get("last_error")}
++    if not isinstance(error, dict) or error.get("code") != "DOMAIN_VALIDATION" or not error.get("message"):
++        return ""
++    return ("\n## 修订要求(上一尝试的产物被确定性校验拒绝,本尝试重做)\n"
++            f"校验原话:{str(error['message'])[:1000]}\n"
++            "重新完成全部研究;只修正被拒的那一点,其余契约、口径与输入边界不变。\n")
+ 
++
+ def build_request(
+     handle,
+     task: dict,
+@@ -462,7 +488,7 @@
+         from autoresearch.session_agent.task_access import freeze_instructions
+         instruction_refs = freeze_instructions(role_id, instruction_refs,
+             Path(handle.workspace) / 'session/instructions' / f"{task['task_id']}-a{attempt}", outputs)
+-    prompt = render_prompt(handle, task, attempt, inputs=inputs, outputs=outputs)
++    prompt = render_prompt(handle, task, attempt, inputs=inputs, outputs=outputs) + repair_hint(handle, task, attempt)
+     host_prompt = None
+     if artifacts.layout_version(handle) >= 2:
+         prompt += ("\nC4 输入边界：契约仅从冻结 instruction_refs 读取；文中的旧路径与链接不授权扩展。"
+@@ -513,4 +539,4 @@
+     return request
+ 
+ 
+-__all__ = ["build_request", "display_path", "l3_bounds", "l3_bounds_from_gate1", "render_prompt", "resolve_agent_spec"]
++__all__ = ["build_request", "display_path", "l3_bounds", "l3_bounds_from_gate1", "render_prompt", "repair_hint", "resolve_agent_spec"]

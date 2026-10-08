@@ -76,5 +76,6 @@ def test_market_view_missing_a_section_is_still_rejected(tmp_path, monkeypatch, 
     assert final["status"] == "BLOCKED"
     entry = store.read_entry(Path(run.handle.workspace) / "session/tasks.json",
                              "scan.market_view")
-    assert entry["error"]["code"] == "CONTRACT_ERROR"
+    # 2026-10-08:领域校验拒绝 = DOMAIN_VALIDATION,带校验原话重做一次;第二次仍缺节 → BLOCKED。
+    assert entry["error"]["code"] == "DOMAIN_VALIDATION" and entry["attempt"] == 2
     assert "six sections" in entry["error"]["message"]

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -116,10 +117,10 @@ def legacy_usage_dict(record: UsageRecord) -> dict:
     return tot
 
 
-def usage_of(path: Path, role: str = "subagent") -> dict:
-    """单份 Claude transcript → 保持旧 schema 的 usage dict。"""
-    ref = TranscriptRef(engine="claude", path=Path(path), role=role)
-    return legacy_usage_dict(adapter_for("claude").usage(ref))
+def usage_of(path: Path, role: str = "subagent", *, engine: str = "claude") -> dict:
+    """单份 transcript(Claude jsonl / Codex rollout)→ 保持旧 schema 的 usage dict。"""
+    ref = TranscriptRef(engine=engine, path=Path(path), role=role)
+    return legacy_usage_dict(adapter_for(engine).usage(ref))
 
 
 # 模型价差(相对 opus 输入价的**倍率**,仅供「贵在哪」定序,不冒充账单)。
@@ -246,6 +247,21 @@ def unmeasured_row(ref: TranscriptRef, *, reason: str) -> dict:
 #: headless 场每个推理任务是一个**顶级** `claude -p` 会话(`<projects>/<slug>/<session-id>.jsonl`),
 #: 不在任何宿主 session 的 subagents 目录下 —— 按 session 目录找永远是空表,只能从记录反查。
 HEADLESS_RECORDS = Path("_dispatch") / "headless"
+#: codex headless(2026-10-08):每个推理任务一个 `codex exec` 线程,rollout 在
+#: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl``;记录的 ``engine`` 字段选适配器。
+CODEX_SESSIONS_ROOT = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")) / "sessions"
+
+
+def find_codex_rollout(thread_id: str, sessions_root: Path | str | None = None) -> Path | None:
+    """thread id → its rollout file (newest when a resumed thread left several)."""
+    import glob as _glob
+
+    if not thread_id:
+        return None
+    root = Path(sessions_root or CODEX_SESSIONS_ROOT)
+    pattern = str(root / "**" / f"rollout-*-{_glob.escape(thread_id)}.jsonl")
+    found = [Path(item) for item in _glob.glob(pattern, recursive=True)]
+    return max(found, key=lambda item: item.stat().st_mtime_ns) if found else None
 
 
 def _headless_record_files(source: Path | str) -> list[Path]:
@@ -266,22 +282,25 @@ def _reported_cost(record: dict) -> float | None:
     return float(value)
 
 
-def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
+def _headless_row(record: dict, projects_root: Path | str | None,
+                  sessions_root: Path | str | None = None) -> dict:
+    engine = str(record.get("engine") or "claude")
     session_id = str(record.get("session_id") or record.get("requested_session_id") or "")
     agent = str(record.get("agent_type") or "headless")
     declared = record.get("transcript_path")
     path = Path(declared) if declared else None
     if (path is None or not path.is_file()) and session_id:
-        path = find_session_files(session_id, projects_root)[0]
+        path = (find_codex_rollout(session_id, sessions_root) if engine == "codex"
+                else find_session_files(session_id, projects_root)[0])
     cost = _reported_cost(record)
     if path is None or not path.is_file():
         row = unmeasured_row(
-            TranscriptRef(engine="claude", path=None, status="GONE", role="headless"),
+            TranscriptRef(engine=engine, path=None, status="GONE", role="headless"),
             reason=f"headless transcript missing for session {session_id or '—'}",
         )
         row["cost_source"] = None
     else:
-        row = usage_of(path, role="headless")
+        row = usage_of(path, role="headless", engine=engine)
         if cost is not None and row["status"] != "UNMEASURED":
             # CLI 自己算的钱(结果 JSON 的 total_cost_usd)比按 transcript 估的更真。
             row["estimated_usd"] = cost
@@ -291,6 +310,7 @@ def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
             row["cost_source"] = "estimate"
     row.update(
         agent=agent,
+        engine=engine,
         dispatcher="headless",
         task_id=record.get("task_id"),
         attempt=record.get("attempt"),
@@ -306,6 +326,7 @@ def collect_headless(
     source: Path | str,
     *,
     projects_root: Path | str | None = None,
+    sessions_root: Path | str | None = None,
 ) -> list[dict]:
     """headless 执行器的调用记录 → 逐次 `claude -p` 的 usage 行(``dispatcher=headless``)。
 
@@ -328,7 +349,7 @@ def collect_headless(
         # SPAWN_FAILED = the CLI never started: no session ran, nothing to meter.
         if (isinstance(record, dict) and record.get("task_id")
                 and record.get("state") != "SPAWN_FAILED"):
-            rows.append(_headless_row(record, projects_root))
+            rows.append(_headless_row(record, projects_root, sessions_root))
     return sorted(rows, key=lambda r: -r["weighted_in"])
 
 

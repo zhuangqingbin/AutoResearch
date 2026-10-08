@@ -465,13 +465,14 @@
     "date_lead_days": 3                // 持仓日期线提前几天预警
   },
 
-  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
+  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_codex.HeadlessCodexExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
   "session": {
     "global_intel_max_queries": 8,     // 全球情报搜索与原文抓取总额度;仅 session_agent
     "timeouts": {                      // 角色超时(秒,从被领取算起;仅 session_agent)
       "mailbox": { "scan.l4.intel": 1800 },   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
       "headless": {},                  // headless 模式逐 role 覆盖(缺 = HEADLESS_TIMEOUTS)
-      "fallback_s": 1800               // 表外角色的超时
+      "fallback_s": 1800,              // 表外角色的超时
+      "codex_open_s": 180              // codex headless 开线程(取 thread id 那一轮)的墙钟,不占角色预算
     },
     "max_turns": {},                   // headless --max-turns 逐 role 覆盖(缺 = MAX_TURNS;仅 session_agent)
     "tier_max_turns": {},              // 表外角色按档位的轮数上限覆盖(缺 = TIER_MAX_TURNS;仅 session_agent)
@@ -480,7 +481,7 @@
       "never_taken_factor": 4.0,       // 无人领取:超过角色预算的几倍放弃
       "wait_s": 90.0,                  // mailbox wait 缺省秒数(要 < 宿主 Bash 120 秒)
       "dead_heartbeats": 6,            // 心跳超过几拍未更新判 runner 已死
-      "by_reference": false            // 按引用派发:宿主只传指针,全文冻结成授权文件(仅 session_agent)
+      "by_reference": true             // 按引用派发:宿主只传指针,全文冻结成授权文件(仅 session_agent)
     },
     "max_attempts": 2,                 // SESSION 任务瞬时错最多尝试次数(仅 session_agent)
     "runner": {                        // runner 循环(仅 session_agent)

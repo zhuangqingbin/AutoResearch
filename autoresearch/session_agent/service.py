@@ -567,7 +567,7 @@ def fail(
     handle_loader: Callable[[str], object] | None = None,
 ) -> dict:
     """Record an observed host failure without fabricating a task result."""
-    from autoresearch.contracts.retry import TASK_ATTEMPT
+    from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
     from autoresearch.trace.capsule import require_active_run
 
     handle = (handle_loader or require_active_run)(run_id)
@@ -577,7 +577,8 @@ def fail(
     kind = str(error_class).strip().upper()
     if not kind or not message:
         raise ValueError("error_class and message are required")
-    retryable = kind in TASK_ATTEMPT
+    # 瞬时错误原样重来;领域校验拒绝带着校验原话重来(dispatch.repair_hint)。都受 max_attempts 封顶。
+    retryable = kind in TASK_ATTEMPT or kind in VALIDATION_REPAIR
     store.mark_failed(
         _store_path(handle),
         task_id,
@@ -622,7 +623,7 @@ def retry_l4(
     handle_loader: Callable[[str], object] | None = None,
 ) -> dict:
     """Freeze a new L4 child subtree while leaving attempt ownership in l4_tasks."""
-    from autoresearch.contracts.retry import TASK_ATTEMPT
+    from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
     from autoresearch.session_agent.workflows.scan import l4_retry_expansion
     from autoresearch.trace.capsule import require_active_run
 
@@ -640,10 +641,11 @@ def retry_l4(
     if ticket is None:
         raise KeyError(code6)
     previous_attempt = expected_attempt - 1
+    last_class = str(ticket.get("last_error_class") or "")
     if (
         ticket.get("status") != "FAILED"
         or int(ticket.get("attempt") or 0) != previous_attempt
-        or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
+        or (last_class not in TASK_ATTEMPT and last_class not in VALIDATION_REPAIR)
     ):
         raise RuntimeError("L4 ticket is not eligible for the requested retry")
     if not any(

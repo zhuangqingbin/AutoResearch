@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoresearch.common.atomic import atomic_write_json, canonical_json, sha256_bytes
-from autoresearch.contracts.retry import TASK_ATTEMPT
+from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
 from autoresearch.session_agent import artifacts, service, store
 from autoresearch.session_agent.dispatch import build_request
 from autoresearch.session_agent.executors.base import (
@@ -78,6 +78,21 @@ class RunnerUnsupported(RuntimeError):
 
 class RunnerAlreadyRunning(RuntimeError):
     """Another live runner holds ``_dispatch/runner.lock`` for this run."""
+
+
+def submit_error_class(exc: BaseException) -> str:
+    """``submit`` 拒绝的分类:领域校验拒绝(DomainValidationError,含其 cause 链)= DOMAIN_VALIDATION,
+    带校验原话重做一次(contracts.retry.VALIDATION_REPAIR);其余身份/契约拒绝 = CONTRACT_ERROR,不重试。"""
+    from autoresearch.session_agent.validation import DomainValidationError
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, DomainValidationError):
+            return "DOMAIN_VALIDATION"
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return "CONTRACT_ERROR"
 
 
 def orphan_hint(run_id: str, task_id: str, attempt: int) -> str:
@@ -518,8 +533,8 @@ class Runner:
                 or int(entry["attempt"]) >= _session_max_attempts()
             ):
                 continue
-            if spec["kind"] == "INFERENCE" and (entry.get("error") or {}).get(
-                    "code") not in TASK_ATTEMPT:
+            code = (entry.get("error") or {}).get("code")
+            if spec["kind"] == "INFERENCE" and code not in TASK_ATTEMPT and code not in VALIDATION_REPAIR:
                 continue
             if spec.get("parent_task") is not None:
                 from autoresearch.session_agent import legacy_scan
@@ -846,7 +861,7 @@ class Runner:
                 validator=self.hooks.validator, host_receipt=receipt,
                 event_recorder=self.hooks.event_recorder)
         except Exception as exc:  # noqa: BLE001 - contract/identity rejection of the output
-            self._fail(flight, "CONTRACT_ERROR", f"{type(exc).__name__}: {exc}", result)
+            self._fail(flight, submit_error_class(exc), f"{type(exc).__name__}: {exc}", result)
             return
         self._record(flight, "SUBMITTED", result)
 
@@ -942,9 +957,10 @@ class Runner:
         wanted = {}
         for code, ticket in (legacy_scan._payload(self.handle).get("tasks") or {}).items():
             attempt = int(ticket.get("attempt") or 0)
+            last_class = str(ticket.get("last_error_class") or "")
             if (
                 ticket.get("status") != "FAILED"
-                or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
+                or (last_class not in TASK_ATTEMPT and last_class not in VALIDATION_REPAIR)
                 or attempt < 1
                 or attempt + 1 > MAX_ATTEMPTS
                 or code in in_flight
@@ -996,5 +1012,5 @@ def run_loop(run_id: str, executor, **options) -> dict:
 
 __all__ = [
     "DISPATCH_DIR", "SESSION_MAX_ATTEMPTS", "Runner", "RunnerUnsupported", "ServiceHooks",
-    "bind_transcript_evidence", "run_loop",
+    "bind_transcript_evidence", "run_loop", "submit_error_class",
 ]

@@ -38,9 +38,12 @@ done
 launchctl list | grep nightly-close        # 只应剩 …nightly-close.claude(和 .codex)
 ```
 
-## 无人值守扫描(headless · launchd 交易日 21:20 · PILOT)
+## 无人值守扫描(headless · launchd 交易日 21:20 · PILOT;交互会话同一条路)
 
-`scripts/scan_run.sh` → `python -m autoresearch.scan.scan_run`,流程全在 Python(macOS 无 `flock(1)`/`timeout(1)`):
+`scripts/scan_run.sh [--engine claude|codex] …` → `python -m autoresearch.scan.scan_run`,流程全在 Python(macOS 无 `flock(1)`/`timeout(1)`)。
+2026-10-08 起这也是交互会话「分析全市场」的日常路径:宿主后台起它、等完成、读摘要,自己不进研究回路
+(`docs/session-agent/README.md`「日常全扫」)。`--engine` 缺省 claude(launchd 定时场);Codex 会话传 `--engine codex`,
+runner 以 `codex exec` 起每个推理任务(`executors/headless_codex.py`,开线程 → 绑定 → resume 三步,见 README「headless 执行器」)。
 
 1. **锁** `$CTX/.scan_run.lock`(fcntl,进程死锁即放):被占 → 立刻退出、打印持锁 pid、推「未开」。
 2. **窗口**:没带 `--date` 且此刻不在 21:10–22:30 内(本机睡眠/关机后 launchd 补触发)→ 推一次「扫描 <日> 错过」(日 = 最近已结算交易日;该日已有摘要则静默;同日 21:10 前 = 手动早触发,静默)退出 0,**不**在早上轮询 tushare、占锁一整天。
@@ -51,7 +54,7 @@ launchctl list | grep nightly-close        # 只应剩 …nightly-close.claude(�
 7. **runner** `session_agent run --executor headless`:每个推理任务 `claude -p --agent <role> --output-format json --permission-mode bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]`(不传 `--dangerously-skip-permissions`;项目 hook 照常生效)。子进程环境显式构造:`ANTHROPIC_*`(API key / auth token / base URL / 模型覆盖)、`CLAUDE_CODE_{SUBAGENT_MODEL,EFFORT_LEVEL,USE_BEDROCK,USE_VERTEX}`、所有 `*_API_KEY`/`*_TOKEN`/`*_SECRET`(`CLAUDE_CODE_OAUTH_TOKEN` 除外)一律不传,调用记录的 `env_stripped` 只列名字 —— `.env` 里填了 API key 或从 `cc-ds` 壳里手动触发,都不会把整场挪出订阅。超时 intel 12m / card·复核 25m / L3 30m → 杀整个进程组,TIMEOUT 以新 attempt 重试一次(overloaded / `API Error: 5xx` 同样重试一次);结果 JSON 非法 / `is_error` / 退出 0 但产物没落盘 = 该 attempt 失败;重试前上一次的产物挪到 `_dispatch/headless/stale/`,同任务还在跑的旧会话先停掉。整场墙钟 = min(180 分钟 `--run-timeout-minutes`, 距硬截止),超时连在飞的 `claude -p` 一起杀。
 8. **收尾**:完成 → `verify-report --level full` → 送达 brief(标题带 ✓ 或 `verify ✗`),摘要 `result: "FINISHED"` + 独立的 `delivery.status`(SENT / SKIPPED / FAILED —— 没发出去不叫送达);未完成 / 意外异常 / 收到 SIGTERM·SIGHUP·SIGINT(`launchctl bootout`、`kickstart -k`、关终端)→ 停 runner 进程组与在飞 `claude -p`(TERM→5 秒→KILL)→ `capsule finalize FAILED` + 推「FAILED · 阶段 · 一句原因 · run · 日志」(信号场摘要 `result: "INTERRUPTED"`)。**不自动改代码、不自动重跑第二场。**
 
-- **看什么**:日志 `$RPT/_ops/scan_run_<日>.log`(runner 的 JSON 事件行也在里面;launchd 的 `/tmp/scan-run.log` 只兜启动前的错);摘要 `$RPT/_ops/scan_run_<交易日>.json`(`result` / `delivery.status` / `delivery_channel` / `warnings`);每次 `claude -p` 一份 `<staging>/_dispatch/headless/<task>.a<n>.json`(同一 attempt 被重派时文件名多一段 session 前缀,不覆盖;argv 脱敏、pid + 启动时刻、exit、usage、`total_cost_usd`、transcript 路径、`env_stripped`、`claude_bin_resolved`)+ `.stdout/.stderr`;`token_usage.md` 多一列 `dispatcher`,headless 行成本 = 结果 JSON 的 `total_cost_usd`(transcript 找不到 = UNMEASURED,不计 $0)。
+- **看什么**:日志 `$RPT/_ops/scan_run_<日>.log`(runner 的 JSON 事件行也在里面;launchd 的 `/tmp/scan-run.log` 只兜启动前的错);摘要 `$RPT/_ops/scan_run_<交易日>.json`(`result` / `delivery.status` / `delivery_channel` / `warnings`);每次 `claude -p` 一份 `<staging>/_dispatch/headless/<task>.a<n>.json`(同一 attempt 被重派时文件名多一段 session 前缀,不覆盖;argv 脱敏、pid + 启动时刻、exit、usage、`total_cost_usd`、transcript 路径、`env_stripped`、`claude_bin_resolved`)+ `.stdout/.stderr`;`token_usage.md` 多一列 `dispatcher`,headless 行成本 = 结果 JSON 的 `total_cost_usd`(transcript 找不到 = UNMEASURED,不计 $0)。codex 场的记录同一目录、`engine: "codex"`,多 `thread_id` 与 `open`(开线程那一轮的 argv / exit / usage)、`.open.stdout`、`.last_message.md`;rollout 按线程 id 反查,行的成本按 rollout 估(`codex exec` 不自报美元),找不到 rollout 同样 UNMEASURED。
 - **电源**(MacBook):`scripts/scan_run.sh` 用 `/usr/bin/caffeinate -i` 包住整场,挡住电池 1 分钟闲置睡眠;但**合盖(无外接显示器)照样睡** → claude -p 中途睡死、角色超时、整场 FAILED。交易日晚上:**插电 + 开盖**(或接外接显示器)。可选:让机器在 21:15 前醒来 `sudo pmset repeat wakeorpoweron MTWRF 21:15:00`(看 `pmset -g sched`;撤销 `sudo pmset repeat cancel`,注意它会覆盖已有的 repeat 计划)。睡过了窗口 → 推「错过」,第二天用 `scripts/scan_run.sh --date <交易日> --skip-readiness` 补跑。
 - **安装前先选送达渠道**:缺省 `delivery.channel = "none"`,所有推送(含 FAILED / 未开 / 错过)都发不出去 —— scan_run 会在日志开头与结尾各打一行 `⚠ 送达渠道 = none`,摘要 `warnings` 也记着,但没人看日志就等于静默。见下方「送达」。
 - **安装**(只装 Claude 引擎;模板 `__REPO__` 占位同 prewarm):

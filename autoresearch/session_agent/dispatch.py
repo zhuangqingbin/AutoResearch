@@ -425,6 +425,32 @@ def _render_domain_prompt(handle, task: dict, attempt: int, *, inputs: dict, out
     return _generic_prompt(task, attempt, get_role(role), inputs, outputs)
 
 
+def repair_hint(handle, task: dict, attempt: int) -> str:
+    """上一尝试被领域校验拒绝(DOMAIN_VALIDATION)时,这一尝试的 prompt 末尾带上校验原话。
+
+    SESSION 任务:同一 task_id 的上一 attempt 的冻结失败记录(``evidence.read_failure``);
+    L4 子树(重试是新 task_id,``parent_task.attempt`` ≥ 2):票据上的 ``last_error``。其它错误类
+    (瞬时错误、CONTRACT_ERROR)不带提示 —— 它们要么原样重来,要么根本不重来。
+    """
+    error = None
+    if attempt >= 2:
+        from autoresearch.session_agent.evidence import read_failure
+
+        error = (read_failure(handle, task["task_id"], attempt - 1) or {}).get("error")
+    else:
+        parent = task.get("parent_task") or {}
+        if int(parent.get("attempt") or 1) >= 2 and parent.get("subject"):
+            from autoresearch.session_agent import legacy_scan
+
+            ticket = (legacy_scan._payload(handle).get("tasks") or {}).get(str(parent["subject"]).zfill(6)) or {}
+            error = {"code": ticket.get("last_error_class"), "message": ticket.get("last_error")}
+    if not isinstance(error, dict) or error.get("code") != "DOMAIN_VALIDATION" or not error.get("message"):
+        return ""
+    return ("\n## 修订要求(上一尝试的产物被确定性校验拒绝,本尝试重做)\n"
+            f"校验原话:{str(error['message'])[:1000]}\n"
+            "重新完成全部研究;只修正被拒的那一点,其余契约、口径与输入边界不变。\n")
+
+
 def build_request(
     handle,
     task: dict,
@@ -462,7 +488,7 @@ def build_request(
         from autoresearch.session_agent.task_access import freeze_instructions
         instruction_refs = freeze_instructions(role_id, instruction_refs,
             Path(handle.workspace) / 'session/instructions' / f"{task['task_id']}-a{attempt}", outputs)
-    prompt = render_prompt(handle, task, attempt, inputs=inputs, outputs=outputs)
+    prompt = render_prompt(handle, task, attempt, inputs=inputs, outputs=outputs) + repair_hint(handle, task, attempt)
     host_prompt = None
     if artifacts.layout_version(handle) >= 2:
         prompt += ("\nC4 输入边界：契约仅从冻结 instruction_refs 读取；文中的旧路径与链接不授权扩展。"
@@ -513,4 +539,4 @@ def build_request(
     return request
 
 
-__all__ = ["build_request", "display_path", "l3_bounds", "l3_bounds_from_gate1", "render_prompt", "resolve_agent_spec"]
+__all__ = ["build_request", "display_path", "l3_bounds", "l3_bounds_from_gate1", "render_prompt", "repair_hint", "resolve_agent_spec"]

@@ -22,7 +22,7 @@ def test_session_cfg_follows_config(tmp_path, monkeypatch):
     from autoresearch.session_agent import config as sc
     from autoresearch.session_agent.executors import base, headless_claude, mailbox
 
-    _cfg(tmp_path, monkeypatch, {"session": {"timeouts": {"mailbox": {"scan.l3": 10}, "fallback_s": 7},
+    _cfg(tmp_path, monkeypatch, {"session": {"timeouts": {"mailbox": {"scan.l3": 10}, "fallback_s": 7, "codex_open_s": 180},
                                              "max_turns": {"scan.l3": 3}, "tier_max_turns": {"relay": 2},
                                              "default_max_turns": 9,
                                              "mailbox": {"never_taken_factor": 2.0, "dead_heartbeats": 1},
@@ -30,6 +30,7 @@ def test_session_cfg_follows_config(tmp_path, monkeypatch):
     s = sc.session_cfg()
     assert s["timeouts"]["mailbox"]["scan.l3"] == 10 and s["timeouts"]["mailbox"]["scan.l4.card"] == 1800.0
     assert s["timeouts"]["headless"] == dict(headless_claude.HEADLESS_TIMEOUTS) and s["timeouts"]["fallback_s"] == 7
+    assert s["timeouts"]["codex_open_s"] == 180.0            # 2026-10-08:codex headless 开线程墙钟,缺省 = 模块常量
     assert s["max_turns"]["scan.l3"] == 3 and s["max_turns"]["scan.l4.card"] == 80
     assert s["tier_max_turns"]["relay"] == 2 and s["default_max_turns"] == 9
     # 2026-10-03 B8:by_reference(按引用派发)与 fanout_warmup_s(扇出预热)两个开关,缺省关。

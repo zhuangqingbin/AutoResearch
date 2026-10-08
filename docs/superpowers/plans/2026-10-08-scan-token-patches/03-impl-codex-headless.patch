@@ -1,0 +1,859 @@
+--- /dev/null
++++ b/autoresearch/session_agent/executors/headless_codex.py
+@@ -0,0 +1,488 @@
++"""Headless Codex executor: one ``codex exec`` thread per inference attempt (2026-10-08).
++
++Transport only (``executors.base``), the Codex twin of ``headless_claude``: agent, model,
++effort, prompt and output paths come from the :class:`DispatchRequest` verbatim; the
++executor's own checks are about the *process* (bounded wall clock with process-group
++cancellation, a parsable ``--json`` event stream without ``turn.failed`` / ``error``, and
++every declared output file present after a clean exit — an agent saying "I wrote it" is not
++a file).
++
++Why two ``codex exec`` calls per attempt.  The C4 hook (``scripts/hooks/agent_input_boundary.py``)
++selects the frozen task manifest by the hook payload's ``session_id`` — for a top-level
++thread that is the thread id — and by nothing else (never the environment, never the
++prompt).  ``codex exec`` has no ``--session-id``, so the id only exists once the thread does:
++
++1. **open**  ``codex exec --json … "<OPEN_PROMPT>"`` with the role's own model, reasoning
++   effort and ``developer_instructions``: the first event ``thread.started`` carries
++   ``thread_id`` (one trivial turn, no tools);
++2. **bind**  :func:`task_access.bind_headless` freezes the session-scoped binding for that
++   id (a top-level thread has no ``agent_id``), so the model's first tool call already
++   meets a binding;
++3. **work**  ``codex exec … resume <thread_id> "<prompt + broker commands>"`` with the same
++   model / reasoning effort plus ``web_search`` as ``-c`` overrides.
++
++The role's ``developer_instructions`` are read from ``.codex/agents/<config_role>.toml`` — the
++same text ``spawn_agent`` injects in host mode — and passed with ``-c developer_instructions=``
++**on the open turn**: the 2026-10-08 probes (``docs/research/2026-10-08-codex-exec-probes.md``)
++found that ``codex exec resume -c developer_instructions=`` is silently dropped, while the value
++given at thread creation survives into every later turn.  The same readout is why the open turn
++does not use a cheap relay tier: changing the model between turns makes Codex inject a
++17.9k-character ``<model_switch>`` developer message carrying its whole base prompt, which costs
++far more than the open turn saves.  So both turns declare the identical model / effort — or
++neither declares one and both fall through to the user config.
++
++``--ephemeral`` is never used: it would leave no rollout, hence no transcript evidence and no
++metering (``trace.usage_harvest`` meters headless runs from the call records).
++"""
++from __future__ import annotations
++
++import glob
++import json
++import os
++import subprocess
++import time
++import tomllib
++import uuid
++from collections.abc import Mapping
++from datetime import datetime, timezone
++from pathlib import Path
++from types import MappingProxyType
++
++from autoresearch.common.atomic import atomic_write_json, sha256_bytes
++from autoresearch.session_agent.executors.base import (
++    DISPATCH_DIR,
++    DispatchRequest,
++    DispatchResult,
++    ExecutorTimeout,
++)
++from autoresearch.session_agent.executors.headless_claude import (
++    _TRANSIENT_API,
++    HEADLESS_DIR,
++    HEADLESS_TIMEOUTS,
++    HeadlessClaudeExecutor,
++    _excerpt,
++    _group_stopped,
++    child_env as _claude_child_env,
++)
++from autoresearch.session_agent.task_access import bind_headless as bind_task_access
++from autoresearch.trace import process_probe
++from autoresearch.trace.process_probe import owns_group, stop_group
++
++#: 开线程那一轮只为拿 thread id:档位与干活轮**必须相同**(换档会被注入 ``<model_switch>`` 基础提示词)。
++OPEN_PROMPT = "这是一个即将接收冻结研究任务的线程。现在只回复 OK;不要调用任何工具,不要读任何文件。"
++OPEN_TIMEOUT_S = 180.0
++#: Codex 侧每个角色的墙钟与 Claude headless 同一张表(``session.timeouts.headless`` 可逐 role 覆盖)。
++HEADLESS_CODEX_TIMEOUTS: Mapping[str, float] = MappingProxyType(dict(HEADLESS_TIMEOUTS))
++#: 订阅登录以外的任何计费 / 路由开关都不传给子进程(与 ``headless_claude.child_env`` 叠加)。
++_CODEX_ENV_DROP_PREFIXES = ("OPENAI_",)
++_CODEX_ENV_DROP_NAMES = frozenset({"CODEX_API_KEY"})
++#: ``.codex/agents/<config_role>.toml``:``developer_instructions`` 的来源。
++DEFAULT_AGENTS_DIR = Path(".codex") / "agents"
++
++
++def codex_child_env(parent: Mapping[str, str] | None = None) -> tuple[dict[str, str], list[str]]:
++    """``(environment for codex exec, sorted NAMES of what was dropped)`` — never values."""
++    env, dropped = _claude_child_env(parent)
++    extra = sorted(key for key in env
++                   if key.startswith(_CODEX_ENV_DROP_PREFIXES) or key in _CODEX_ENV_DROP_NAMES)
++    for key in extra:
++        env.pop(key)
++    return env, sorted(set(dropped) | set(extra))
++
++
++def toml_value(value: str) -> str:
++    """``-c key=<value>``:TOML basic string(``json.dumps`` 的转义集是 TOML basic string 的子集)。"""
++    return json.dumps(str(value), ensure_ascii=True)
++
++
++def resolve_codex_bin(explicit: str | None = None) -> str:
++    """``--codex-bin`` > ``$AUTORESEARCH_CODEX_BIN`` > ``PATH`` > ``/usr/local/bin/codex``."""
++    if explicit:
++        return explicit
++    env = str(os.environ.get("AUTORESEARCH_CODEX_BIN", "")).strip()
++    if env:
++        return env
++    import shutil
++
++    found = shutil.which("codex")
++    if found:
++        return found
++    local = Path("/usr/local/bin/codex")
++    return str(local) if local.exists() else "codex"
++
++
++def default_sessions_root() -> Path:
++    """Codex rollouts: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl``."""
++    home = os.environ.get("CODEX_HOME")
++    return (Path(home) if home else Path.home() / ".codex") / "sessions"
++
++
++def find_rollout(thread_id: str, sessions_root: Path | str) -> str | None:
++    """The rollout file of one thread; several (resumed days apart) → the newest."""
++    if not thread_id:
++        return None
++    pattern = str(Path(sessions_root) / "**" / f"rollout-*-{glob.escape(thread_id)}.jsonl")
++    matches = [Path(item) for item in glob.glob(pattern, recursive=True)]
++    if not matches:
++        return None
++    return str(max(matches, key=lambda item: item.stat().st_mtime_ns))
++
++
++def parse_events(text: str) -> dict:
++    """``codex exec --json`` 事件流 → ``{thread_id, usage, failed, errors}``.
++
++    ``usage`` sums every ``turn.completed.usage`` (``input_tokens`` / ``cached_input_tokens`` /
++    ``output_tokens`` / ``reasoning_output_tokens``); non-JSON lines are ignored.
++    """
++    thread_id, usage, failed, errors = None, {}, [], []
++    for line in text.splitlines():
++        line = line.strip()
++        if not line.startswith("{"):
++            continue
++        try:
++            event = json.loads(line)
++        except json.JSONDecodeError:
++            continue
++        if not isinstance(event, dict):
++            continue
++        kind = event.get("type")
++        if kind == "thread.started" and event.get("thread_id"):
++            thread_id = str(event["thread_id"])
++        elif kind == "turn.completed" and isinstance(event.get("usage"), dict):
++            for key, value in event["usage"].items():
++                if isinstance(value, (int, float)) and not isinstance(value, bool):
++                    usage[key] = usage.get(key, 0) + value
++        elif kind == "turn.failed":
++            failed.append(_excerpt(json.dumps(event.get("error") or event, ensure_ascii=False)))
++        elif kind == "error":
++            errors.append(_excerpt(event.get("message") or json.dumps(event, ensure_ascii=False)))
++    return {"thread_id": thread_id, "usage": usage or None, "failed": failed, "errors": errors}
++
++
++def developer_instructions(agents_dir: Path | str, config_role: str | None) -> str | None:
++    """The role's ``developer_instructions`` from ``.codex/agents/<config_role>.toml`` (None = no role file)."""
++    if not config_role:
++        return None
++    path = Path(agents_dir) / f"{config_role}.toml"
++    if not path.is_file():
++        return None
++    text = tomllib.loads(path.read_text(encoding="utf-8")).get("developer_instructions")
++    return str(text) if text else None
++
++
++def _now() -> str:
++    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
++
++
++class HeadlessCodexExecutor:
++    """Run each inference attempt as its own ``codex exec`` thread (blocking)."""
++
++    name = "headless"
++    #: A dead runner cannot re-attach to a ``codex exec`` it did not start.
++    supports_reattach = False
++
++    def __init__(
++        self,
++        staging: Path | str,
++        *,
++        codex_bin: str | None = None,
++        cwd: Path | str | None = None,
++        sessions_root: Path | str | None = None,
++        agents_dir: Path | str | None = None,
++        kill_grace_seconds: float = 5.0,
++        open_timeout_seconds: float | None = None,
++    ):
++        self.staging = Path(staging)
++        self.codex_bin = resolve_codex_bin(codex_bin)
++        self.cwd = Path(cwd) if cwd is not None else Path.cwd()
++        self.sessions_root = Path(sessions_root) if sessions_root is not None else default_sessions_root()
++        self.agents_dir = Path(agents_dir) if agents_dir is not None else self.cwd / DEFAULT_AGENTS_DIR
++        self.kill_grace_seconds = float(kill_grace_seconds)
++        if open_timeout_seconds is None:
++            from autoresearch.session_agent.config import session_cfg
++
++            open_timeout_seconds = session_cfg()["timeouts"]["codex_open_s"]
++        self.open_timeout_seconds = float(open_timeout_seconds)
++
++    # ── helpers ─────────────────────────────────────────────────────────────────
++    def _record_dir(self) -> Path:
++        path = self.staging / DISPATCH_DIR / HEADLESS_DIR
++        path.mkdir(parents=True, exist_ok=True)
++        return path
++
++    def _base_argv(self) -> list[str]:
++        # ``-C`` = the trusted project root (project ``.codex/`` hooks + agents load from it);
++        # ``--skip-git-repo-check`` lets a drill root that is not a git checkout run too.
++        return [self.codex_bin, "exec", "--json", "-C", str(self.cwd), "--skip-git-repo-check"]
++
++    def _tier(self, request: DispatchRequest) -> dict[str, str]:
++        """Model / effort of the attempt — declared identically on both turns, or on neither."""
++        values = {}
++        if request.model:
++            values["model"] = str(request.model)
++        if request.effort:
++            values["model_reasoning_effort"] = str(request.effort)
++        return values
++
++    def open_overrides(self, request: DispatchRequest) -> dict[str, str]:
++        """``-c`` overrides of the open turn: the role's tier and its developer instructions."""
++        values = {"approval_policy": "never", **self._tier(request)}
++        instructions = developer_instructions(self.agents_dir, request.config_role)
++        if instructions:
++            values["developer_instructions"] = instructions
++        return values
++
++    def argv_open(self, request: DispatchRequest) -> list[str]:
++        argv = [*self._base_argv(), "--sandbox", "read-only"]
++        for key, value in self.open_overrides(request).items():
++            argv += ["-c", f"{key}={toml_value(value)}"]
++        return [*argv, OPEN_PROMPT]
++
++    def overrides(self, request: DispatchRequest) -> dict[str, str]:
++        """``-c`` overrides of the work turn, in a fixed order (recorded verbatim)."""
++        values = {"approval_policy": "never", **self._tier(request)}
++        web = request.agent_spec.get("web_search")
++        if web:
++            values["web_search"] = str(web)
++        return values
++
++    def argv_work(self, request: DispatchRequest, thread_id: str, prompt: str,
++                  last_message: Path) -> list[str]:
++        argv = [*self._base_argv(), "--sandbox", "workspace-write", "-o", str(last_message), "resume"]
++        for key, value in self.overrides(request).items():
++            argv += ["-c", f"{key}={toml_value(value)}"]
++        argv += [thread_id, prompt]
++        return argv
++
++    def _spawn(self, argv: list[str], *, stdout: Path, stderr: Path, env: dict) -> subprocess.Popen:
++        with stdout.open("wb") as out, stderr.open("wb") as err:
++            return subprocess.Popen(  # noqa: S603 - argv list, no shell
++                argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
++                cwd=str(self.cwd), env=env, start_new_session=True)
++
++    def _kill_group(self, proc: subprocess.Popen) -> bool | None:
++        return HeadlessClaudeExecutor._kill_group(self, proc)
++
++    def _stop_orphans(self, priors: list[tuple[Path, dict]], thread_hint: str) -> list[int]:
++        stopped = []
++        for path, record in priors:
++            if record.get("state") not in {"STARTING", "OPENING", "RUNNING"} or not owns_group(record):
++                continue
++            stop_group(int(record["pid"]), self.kill_grace_seconds)
++            stopped.append(int(record["pid"]))
++            confirmed = _group_stopped(int(record["pid"]))
++            record.update(state="KILLED" if confirmed is True else "CANCEL_UNCONFIRMED",
++                          cancel_capability="PROCESS_GROUP", cancel_requested=True,
++                          cancel_confirmed=confirmed, superseded_by=thread_hint, ended_at=_now(),
++                          error=f"superseded by call {thread_hint} (runner re-dispatched)")
++            atomic_write_json(path, record)
++        return stopped
++
++    @staticmethod
++    def _failure(exit_code: int, events: dict, stdout: str, stderr: str) -> tuple[str | None, str | None]:
++        """``(error, declared_class)``; transient API errors (overloaded / 5xx) = CONNECTION = one retry."""
++        if exit_code != 0:
++            detail = (" | ".join(events["failed"] + events["errors"])
++                      or _excerpt(stderr) or _excerpt(stdout))
++            error = f"codex exec 失败 exit={exit_code}: {detail}"
++        elif events["failed"]:
++            error = f"codex exec turn.failed: {' | '.join(events['failed'])}"
++        elif events["errors"]:
++            error = f"codex exec error: {' | '.join(events['errors'])}"
++        else:
++            return None, None
++        return error, ("CONNECTION" if _TRANSIENT_API.search(error) else None)
++
++    # ── dispatch ────────────────────────────────────────────────────────────────
++    def dispatch(self, request: DispatchRequest) -> DispatchResult:
++        if request.engine != "codex":
++            return DispatchResult(
++                ok=False, error_class="AGENT_ERROR",
++                error=f"headless codex executor runs `codex exec` only; run engine is {request.engine}")
++        folder = self._record_dir()
++        call_id = uuid.uuid4().hex[:8]
++        priors = HeadlessClaudeExecutor._prior_records(folder, request.task_id)
++        superseded = self._stop_orphans(priors, call_id)
++        moved = HeadlessClaudeExecutor._move_aside_stale_outputs(request, folder, call_id, bool(priors))
++        stem = f"{request.task_id}.a{request.attempt}"
++        if (folder / f"{stem}.json").exists():
++            stem = f"{stem}.{call_id}"          # a restarted runner: never overwrite the orphan's record
++        env, env_stripped = codex_child_env()
++        last_message = folder / f"{stem}.last_message.md"
++        record = {
++            "schema_version": 1,
++            "engine": "codex",
++            "transport": "codex exec",
++            "run_id": request.run_id,
++            "task_id": request.task_id,
++            "attempt": request.attempt,
++            "role": request.role,
++            "agent_type": request.agent_type,
++            "config_role": request.config_role,
++            "call_id": call_id,
++            "argv": None,
++            "open": None,
++            "thread_id": None,
++            "session_id": None,
++            "host_session_ref": request.host_session_ref,
++            "access_binding": None,
++            "cwd": str(self.cwd),
++            "codex_bin": self.codex_bin,
++            "env_stripped": env_stripped,
++            "superseded_pids": superseded,
++            "outputs_moved_aside": moved,
++            "timeout_seconds": request.timeout_seconds,
++            "state": "STARTING",
++            "pid": None,
++            "process_started_at": None,
++            "started_at": _now(),
++            "ended_at": None,
++            "elapsed_s": None,
++            "exit_code": None,
++            "timed_out": False,
++            "cancel_capability": "PROCESS_GROUP",
++            "cancel_requested": False,
++            "cancel_confirmed": None,
++            "usage": None,
++            "last_message_path": str(last_message),
++            "transcript_path": None,
++            "outputs_missing": [],
++            "leftovers_swept": False,
++            "error": None,
++        }
++        started = time.monotonic()
++
++        def save() -> None:
++            atomic_write_json(folder / f"{stem}.json", record)
++
++        # ── 1. open: one trivial turn gives us the thread id ──────────────────────
++        open_argv = self.argv_open(request)
++        record["open"] = {"argv": open_argv, "exit_code": None, "elapsed_s": None, "usage": None,
++                          "timed_out": False}
++        open_out, open_err = folder / f"{stem}.open.stdout", folder / f"{stem}.open.stderr"
++        try:
++            proc = self._spawn(open_argv, stdout=open_out, stderr=open_err, env=env)
++        except OSError as exc:
++            record.update(state="SPAWN_FAILED", ended_at=_now(), error=f"{type(exc).__name__}: {exc}")
++            save()
++            return DispatchResult(ok=False, error_class="AGENT_ERROR",
++                                  error=f"cannot start {self.codex_bin}: {exc}")
++        record.update(state="OPENING", pid=proc.pid, process_started_at=process_probe.started_at(proc.pid))
++        save()
++        try:
++            open_exit = proc.wait(timeout=self.open_timeout_seconds)
++        except subprocess.TimeoutExpired:
++            confirmed = self._kill_group(proc)
++            record["open"].update(exit_code=proc.returncode, timed_out=True,
++                                  elapsed_s=round(time.monotonic() - started, 1))
++            record.update(state="OPEN_FAILED", timed_out=True, cancel_requested=True,
++                          cancel_confirmed=confirmed, ended_at=_now(),
++                          elapsed_s=round(time.monotonic() - started, 1),
++                          error=f"codex exec open timed out after {self.open_timeout_seconds:.0f}s")
++            save()
++            # Not the role's budget: the thread never opened → transient, one retry.
++            return DispatchResult(ok=False, error_class="CONNECTION", error=record["error"])
++        open_events = parse_events(open_out.read_text(encoding="utf-8", errors="replace"))
++        record["open"].update(exit_code=open_exit, elapsed_s=round(time.monotonic() - started, 1),
++                              usage=open_events["usage"])
++        thread_id = open_events["thread_id"]
++        if open_exit != 0 or not thread_id:
++            error, declared = self._failure(open_exit, open_events,
++                                            open_out.read_text(encoding="utf-8", errors="replace"),
++                                            open_err.read_text(encoding="utf-8", errors="replace"))
++            error = error or "codex exec open: no thread.started event in the --json stream"
++            record.update(state="OPEN_FAILED", exit_code=open_exit, ended_at=_now(),
++                          elapsed_s=round(time.monotonic() - started, 1), error=error)
++            save()
++            return DispatchResult(ok=False, error=error, error_class=declared)
++        record.update(thread_id=thread_id, session_id=thread_id)
++        save()
++
++        # ── 2. bind: session-scoped C4 binding BEFORE the first tool call ─────────
++        try:
++            access_binding = bind_task_access(request, thread_id, repo_root=self.cwd)
++        except (ValueError, OSError, KeyError) as exc:
++            record.update(state="BIND_FAILED", ended_at=_now(),
++                          elapsed_s=round(time.monotonic() - started, 1),
++                          error=f"C4 access binding unavailable: {exc}")
++            save()
++            return DispatchResult(ok=False, error_class="CONTRACT_ERROR", error=record["error"],
++                                  session_ref=thread_id, context_ref=thread_id,
++                                  parent_context_ref=request.host_session_ref)
++        record["access_binding"] = access_binding
++        transport_prompt = request.prompt
++        if "read_commands" in access_binding:
++            transport_prompt += ("\nC4 已绑定本 headless 线程。以下为精确文件 broker 命令;Write 正文替换占位符,"
++                                 "保持单引号 JSON 参数,正文单引号写 Unicode 转义。\n"
++                                 + json.dumps({key: access_binding[key] for key in
++                                               ("read_commands", "write_commands")}, ensure_ascii=False))
++
++        # ── 3. work: resume the bound thread with the frozen task ─────────────────
++        argv = self.argv_work(request, thread_id, transport_prompt, last_message)
++        record["argv"] = argv[:-1] + [
++            f"<prompt {len(transport_prompt)} chars sha256:"
++            f"{sha256_bytes(transport_prompt.encode('utf-8'))[:16]}>"]
++        stdout_path, stderr_path = folder / f"{stem}.stdout", folder / f"{stem}.stderr"
++        try:
++            proc = self._spawn(argv, stdout=stdout_path, stderr=stderr_path, env=env)
++        except OSError as exc:
++            record.update(state="SPAWN_FAILED", ended_at=_now(), error=f"{type(exc).__name__}: {exc}")
++            save()
++            return DispatchResult(ok=False, error_class="AGENT_ERROR",
++                                  error=f"cannot start {self.codex_bin}: {exc}")
++        record.update(state="RUNNING", pid=proc.pid, process_started_at=process_probe.started_at(proc.pid))
++        save()
++        try:
++            exit_code = proc.wait(timeout=float(request.timeout_seconds))
++            record["leftovers_swept"] = stop_group(proc.pid, self.kill_grace_seconds)
++            if record["leftovers_swept"]:
++                record.update(cancel_requested=True, cancel_confirmed=_group_stopped(proc.pid))
++        except subprocess.TimeoutExpired:
++            confirmed = self._kill_group(proc)
++            record.update(state="KILLED" if confirmed is True else "CANCEL_UNCONFIRMED",
++                          timed_out=True, exit_code=proc.returncode,
++                          cancel_requested=True, cancel_confirmed=confirmed,
++                          ended_at=_now(), elapsed_s=round(time.monotonic() - started, 1),
++                          transcript_path=find_rollout(thread_id, self.sessions_root),
++                          error=f"timeout after {request.timeout_seconds:.0f}s")
++            save()
++            raise ExecutorTimeout(
++                f"{request.task_id} a{request.attempt}: codex exec 超时 "
++                f"{request.timeout_seconds:.0f}s,"
++                f"{'已确认进程组停止' if confirmed is True else '进程组停止未确认'}"
++                f"(thread {thread_id})"
++            ) from None
++        stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
++        stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
++        events = parse_events(stdout)
++        transcript = find_rollout(thread_id, self.sessions_root)
++        record.update(state="EXITED", exit_code=exit_code, ended_at=_now(),
++                      elapsed_s=round(time.monotonic() - started, 1),
++                      usage=events["usage"], transcript_path=transcript)
++        identity = {
++            "session_ref": thread_id,
++            "context_ref": thread_id,
++            "parent_context_ref": request.host_session_ref,
++            "transcript_path": transcript,
++            "usage": events["usage"],
++        }
++        error, error_class = self._failure(exit_code, events, stdout, stderr)
++        if error is None:
++            missing = [path for path in request.output_paths.values() if not Path(path).is_file()]
++            if missing:
++                record["outputs_missing"] = missing
++                error = (f"{request.task_id}: 产物未落盘 {missing}"
++                         "(codex exec 退出 0,agent 自称完成不算数)")
++                error_class = "CONTRACT_ERROR"
++        record["error"] = error
++        save()
++        if error is not None:
++            return DispatchResult(ok=False, error=error, error_class=error_class, **identity)
++        return DispatchResult(ok=True, **identity)
++
++
++__all__ = [
++    "DEFAULT_AGENTS_DIR", "HEADLESS_CODEX_TIMEOUTS", "HeadlessCodexExecutor",
++    "OPEN_PROMPT", "OPEN_TIMEOUT_S", "codex_child_env", "default_sessions_root",
++    "developer_instructions", "find_rollout", "parse_events", "resolve_codex_bin", "toml_value",
++]
+--- a/autoresearch/session_agent/task_access.py
++++ b/autoresearch/session_agent/task_access.py
+@@ -326,8 +326,8 @@
+     _assert_live(value)
+     if not headless and session_id != value['identity']['session_id']:
+         raise ValueError('host session differs from frozen dispatch')
+-    if headless and (value['identity']['engine'] != 'claude' or agent_id):
+-        raise ValueError('headless binding requires Claude session scope')
++    if headless and (value['identity']['engine'] not in {'claude', 'codex'} or agent_id):
++        raise ValueError('headless binding requires a session-scoped claude/codex identity')
+     if not headless and not agent_id:
+         raise ValueError('child agent id required')
+     path = _binding_path(value['identity']['engine'], session_id, agent_id, repo_root)
+--- a/autoresearch/session_agent/roles.py
++++ b/autoresearch/session_agent/roles.py
+@@ -19,7 +19,7 @@
+     "mailbox": {"engines": ("claude", "codex"), "independent_context": "HOST",
+                 "web": "HOST", "tool_policy": "HOST_ROLE_CONTRACT",
+                 "output_boundary": "REGISTERED_ARTIFACT_VALIDATION"},
+-    "headless": {"engines": ("claude",), "independent_context": True,
++    "headless": {"engines": ("claude", "codex"), "independent_context": True,
+                  "web": "HOST", "tool_policy": "PROJECT_AGENT_TOOL_SUPERSET",
+                  "output_boundary": "REGISTERED_ARTIFACT_VALIDATION"},
+ })
+--- a/autoresearch/session_agent/mailbox_cli.py
++++ b/autoresearch/session_agent/mailbox_cli.py
+@@ -41,15 +41,22 @@
+ 
+         return MailboxExecutor(handle.staging, poll_seconds=min(args.poll_seconds, 2.0)), None
+     if args.executor == "headless":
++        from autoresearch.session_agent.config import session_cfg
+         from autoresearch.session_agent.executors import headless_claude
+ 
+-        if handle.engine != "claude":
+-            raise ValueError(
+-                f"--executor headless runs `claude -p` and needs a claude run; "
+-                f"{args.run_id} is a {handle.engine} run (Codex headless is out of scope)")
+-        executor = headless_claude.HeadlessClaudeExecutor(
+-            handle.staging, claude_bin=args.claude_bin)
+-        from autoresearch.session_agent.config import session_cfg
++        # 2026-10-08:同一个 runner、同一张超时表,按 run 的引擎选传输 —— claude = `claude -p`,
++        # codex = `codex exec`(executors.headless_codex)。
++        if handle.engine == "claude":
++            executor = headless_claude.HeadlessClaudeExecutor(
++                handle.staging, claude_bin=args.claude_bin)
++        elif handle.engine == "codex":
++            from autoresearch.session_agent.executors import headless_codex
++
++            executor = headless_codex.HeadlessCodexExecutor(
++                handle.staging, codex_bin=getattr(args, "codex_bin", None),
++                open_timeout_seconds=session_cfg()["timeouts"]["codex_open_s"])
++        else:
++            raise ValueError(f"--executor headless: unsupported run engine {handle.engine} for {args.run_id}")
+         return executor, {**dict(headless_claude.HEADLESS_TIMEOUTS), **session_cfg()["timeouts"]["headless"]}
+     raise ValueError(f"unknown executor: {args.executor}")  # pragma: no cover - argparse
+ 
+@@ -153,6 +160,8 @@
+     run.add_argument("--executor", choices=("mailbox", "headless"), default="mailbox")
+     run.add_argument("--claude-bin", help="headless only: claude CLI path "
+                      "(default $AUTORESEARCH_CLAUDE_BIN, PATH, ~/.local/bin/claude)")
++    run.add_argument("--codex-bin", help="headless only (codex run): codex CLI path "
++                     "(default $AUTORESEARCH_CODEX_BIN, PATH, /usr/local/bin/codex)")
+     run.add_argument("--max-parallel", type=int)
+     from autoresearch.session_agent.config import session_cfg   # session.runner / session.mailbox 缺省
+     _rn = session_cfg()["runner"]
+--- a/autoresearch/session_agent/__main__.py
++++ b/autoresearch/session_agent/__main__.py
+@@ -28,7 +28,8 @@
+     begin.add_argument("--legacy-reason")
+     begin.add_argument("--ignore-scan-lock", action="store_true")
+     # 谁来派发推理任务:mailbox = 宿主原生 agent 工具(定义 frontmatter 决定模型,须与冻结配置一致);
+-    # headless = `claude -p` 显式透传 --model/--effort。与之后 `run --executor` 用同一个值。
++    # headless = `claude -p`(claude run)/ `codex exec`(codex run)显式透传模型与档位。与之后
++    # `run --executor` 用同一个值。
+     begin.add_argument("--executor", choices=("mailbox", "headless"), default="mailbox")
+     for command in ("status", "next", "resume", "finish"):
+         child = subparsers.add_parser(command)
+--- a/autoresearch/scan/scan_run.py
++++ b/autoresearch/scan/scan_run.py
+@@ -88,7 +88,9 @@
+ HEADLESS_EVIDENCE = (
+     "headless-probe:docs/research/2026-09-26-headless-driver-probes.md",
+     "headless-executor:autoresearch/session_agent/executors/headless_claude.py",
++    "headless-executor:autoresearch/session_agent/executors/headless_codex.py",
+ )
++HEADLESS_ENGINES = ("claude", "codex")
+ 
+ 
+ def ops_dir() -> Path:
+@@ -117,7 +119,8 @@
+         self.stream.close()
+ 
+ 
+-def build_headless_request(date: str, *, session_ref: str | None = None) -> dict:
++def build_headless_request(date: str, *, session_ref: str | None = None,
++                           engine: str | None = None) -> dict:
+     """session_v1 scan 请求;宿主 = 本无人值守进程 + 每个推理任务一个 ``claude -p`` 会话。
+ 
+     能力如实声明:确定性步骤在 runner 进程内跑(``deterministic_exec``),推理经 headless
+@@ -138,7 +141,9 @@
+         "force_full": runner_cfg()["force_full"],
+         "host_profile": {
+             "schema_version": 1,
+-            "engine": "claude",
++            # 2026-10-08:引擎 = 本进程的工作区引擎(scan_run.sh 导出);codex 场每个推理任务一个
++            # `codex exec` 线程(executors.headless_codex),证据链与 claude 场同形。
++            "engine": engine or ws.ENGINE,
+             "session_ref": session_ref or f"headless-{uuid.uuid4()}",
+             "deterministic_exec": True,
+             "capture_binding": True,
+@@ -379,9 +384,9 @@
+     return [sys.executable, "-m", "autoresearch.session_agent", *args]
+ 
+ 
+-def _env(run_id: str | None = None) -> dict:
++def _env(run_id: str | None = None, *, engine: str | None = None) -> dict:
+     env = {key: value for key, value in os.environ.items() if key != "AUTORESEARCH_RUN_ID"}
+-    env["AUTORESEARCH_ENGINE"] = "claude"
++    env["AUTORESEARCH_ENGINE"] = engine or ws.ENGINE
+     if run_id:
+         env["AUTORESEARCH_RUN_ID"] = run_id
+     return env
+@@ -445,6 +450,7 @@
+     stream = log.stream if log is not None else None
+     emit = log.line if log is not None else (lambda text: print(text, flush=True))
+     claude_bin = getattr(args, "claude_bin", None)
++    codex_bin = getattr(args, "codex_bin", None)
+     max_parallel = getattr(args, "max_parallel", None)
+ 
+     def missed_date(now: datetime) -> str | None:
+@@ -486,8 +492,10 @@
+ 
+     def run(run_id: str, timeout_s: float) -> dict | None:
+         argv = _session_agent("run", "--run-id", run_id, "--executor", "headless")
+-        if claude_bin:
++        if claude_bin and ws.ENGINE == "claude":
+             argv += ["--claude-bin", str(claude_bin)]
++        if codex_bin and ws.ENGINE == "codex":
++            argv += ["--codex-bin", str(codex_bin)]
+         if max_parallel:
+             argv += ["--max-parallel", str(max_parallel)]
+         code, out = _call(argv, env=_env(run_id), timeout=timeout_s, stderr=stream)
+@@ -747,15 +755,17 @@
+     ap.add_argument("--date", help="显式数据日(须为交易日;缺省 = 今天,非交易日静默退出)")
+     ap.add_argument("--deadline", default=readiness.DEADLINE, help="湖就绪等待截止 HH:MM")
+     ap.add_argument("--skip-readiness", action="store_true", help="不等 stk_factor_pro(补跑用)")
+-    ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude)")
++    ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude;claude 场)")
++    ap.add_argument("--codex-bin", help="codex CLI 路径(缺省 PATH / /usr/local/bin/codex;codex 场)")
+     ap.add_argument("--max-parallel", type=int, help="推理并发帽(缺省 budgets.concurrency.l4_stock)")
+     ap.add_argument("--run-timeout-minutes", type=float, default=None,
+                     help=f"runner 墙钟(缺省 = scan_config runner.run_timeout_minutes,内建 {RUN_TIMEOUT_MINUTES})")
+     ap.add_argument("--hard-stop", default=None,
+                     help=f"定时场夜间硬截止 HH:MM(缺省 = scan_config runner.hard_stop,内建 {HARD_STOP};显式 --date 补跑不受它约束)")
+     args = ap.parse_args(argv)
+-    if ws.ENGINE != "claude":
+-        print(f"[scan-run] headless 执行器只跑 claude 引擎;当前 {ws.ENGINE}(Codex headless 不在范围)")
++    if ws.ENGINE not in HEADLESS_ENGINES:
++        print(f"[scan-run] headless 执行器只跑 {'/'.join(HEADLESS_ENGINES)} 引擎;当前 {ws.ENGINE!r}"
++              "(scripts/scan_run.sh --engine claude|codex 显式钉死)")
+         return EXIT_USAGE
+     held = run_lock.try_acquire(run_lock.lock_path(), note="scan_run")
+     if held is None:
+@@ -782,7 +792,7 @@
+ 
+ 
+ __all__ = [
+-    "EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "HARD_STOP", "LIVE_RUN_WINDOW", "NO_CHANNEL_WARNING",
++    "EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "HARD_STOP", "HEADLESS_ENGINES", "LIVE_RUN_WINDOW", "NO_CHANNEL_WARNING",
+     "OpsLog", "RUN_TIMEOUT_MINUTES", "ScanRunInterrupted", "Steps", "WINDOW_START",
+     "build_headless_request", "default_steps", "failure_point", "hard_stop_after", "in_window",
+     "install_interrupt_handlers", "live_scan_runs", "locate_brief", "main", "ops_dir",
+--- a/scripts/scan_run.sh
++++ b/scripts/scan_run.sh
+@@ -18,8 +18,23 @@
+ set -u
+ cd "$(dirname "$0:A")/.." || exit 1
+ 
+-# 引擎显式钉死:launchd 环境里没有 CLAUDECODE,headless 执行器只跑 claude(Codex 不在范围)。
+-export AUTORESEARCH_ENGINE=claude
++# 引擎显式钉死:launchd 环境里没有 CLAUDECODE。--engine claude|codex(缺省 claude;交互会话里
++# 由宿主按自己的引擎传)—— claude 场每个推理任务一个 `claude -p`,codex 场一个 `codex exec`。
++engine=claude
++args=()
++while (( $# )); do
++  case "$1" in
++    --engine) engine="$2"; shift 2 ;;
++    --engine=*) engine="${1#--engine=}"; shift ;;
++    *) args+=("$1"); shift ;;
++  esac
++done
++case "$engine" in
++  claude|codex) ;;
++  *) echo "[scan-run] --engine 只认 claude|codex,收到 '$engine'" >&2; exit 2 ;;
++esac
++export AUTORESEARCH_ENGINE="$engine"
++set -- "${args[@]}"
+ 
+ if [[ -x /usr/bin/caffeinate ]]; then
+   exec /usr/bin/caffeinate -i uv run --no-sync python -m autoresearch.scan.scan_run "$@"
+--- a/autoresearch/trace/usage_harvest.py
++++ b/autoresearch/trace/usage_harvest.py
+@@ -22,6 +22,7 @@
+ 
+ import argparse
+ import json
++import os
+ from collections.abc import Sequence
+ from pathlib import Path
+ 
+@@ -116,10 +117,10 @@
+     return tot
+ 
+ 
+-def usage_of(path: Path, role: str = "subagent") -> dict:
+-    """单份 Claude transcript → 保持旧 schema 的 usage dict。"""
+-    ref = TranscriptRef(engine="claude", path=Path(path), role=role)
+-    return legacy_usage_dict(adapter_for("claude").usage(ref))
++def usage_of(path: Path, role: str = "subagent", *, engine: str = "claude") -> dict:
++    """单份 transcript(Claude jsonl / Codex rollout)→ 保持旧 schema 的 usage dict。"""
++    ref = TranscriptRef(engine=engine, path=Path(path), role=role)
++    return legacy_usage_dict(adapter_for(engine).usage(ref))
+ 
+ 
+ # 模型价差(相对 opus 输入价的**倍率**,仅供「贵在哪」定序,不冒充账单)。
+@@ -246,8 +247,23 @@
+ #: headless 场每个推理任务是一个**顶级** `claude -p` 会话(`<projects>/<slug>/<session-id>.jsonl`),
+ #: 不在任何宿主 session 的 subagents 目录下 —— 按 session 目录找永远是空表,只能从记录反查。
+ HEADLESS_RECORDS = Path("_dispatch") / "headless"
++#: codex headless(2026-10-08):每个推理任务一个 `codex exec` 线程,rollout 在
++#: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl``;记录的 ``engine`` 字段选适配器。
++CODEX_SESSIONS_ROOT = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")) / "sessions"
+ 
+ 
++def find_codex_rollout(thread_id: str, sessions_root: Path | str | None = None) -> Path | None:
++    """thread id → its rollout file (newest when a resumed thread left several)."""
++    import glob as _glob
++
++    if not thread_id:
++        return None
++    root = Path(sessions_root or CODEX_SESSIONS_ROOT)
++    pattern = str(root / "**" / f"rollout-*-{_glob.escape(thread_id)}.jsonl")
++    found = [Path(item) for item in _glob.glob(pattern, recursive=True)]
++    return max(found, key=lambda item: item.stat().st_mtime_ns) if found else None
++
++
+ def _headless_record_files(source: Path | str) -> list[Path]:
+     """run staging 目录 / 记录目录本身 / 记录文件 glob,三种写法都认。"""
+     import glob as _glob
+@@ -266,22 +282,25 @@
+     return float(value)
+ 
+ 
+-def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
++def _headless_row(record: dict, projects_root: Path | str | None,
++                  sessions_root: Path | str | None = None) -> dict:
++    engine = str(record.get("engine") or "claude")
+     session_id = str(record.get("session_id") or record.get("requested_session_id") or "")
+     agent = str(record.get("agent_type") or "headless")
+     declared = record.get("transcript_path")
+     path = Path(declared) if declared else None
+     if (path is None or not path.is_file()) and session_id:
+-        path = find_session_files(session_id, projects_root)[0]
++        path = (find_codex_rollout(session_id, sessions_root) if engine == "codex"
++                else find_session_files(session_id, projects_root)[0])
+     cost = _reported_cost(record)
+     if path is None or not path.is_file():
+         row = unmeasured_row(
+-            TranscriptRef(engine="claude", path=None, status="GONE", role="headless"),
++            TranscriptRef(engine=engine, path=None, status="GONE", role="headless"),
+             reason=f"headless transcript missing for session {session_id or '—'}",
+         )
+         row["cost_source"] = None
+     else:
+-        row = usage_of(path, role="headless")
++        row = usage_of(path, role="headless", engine=engine)
+         if cost is not None and row["status"] != "UNMEASURED":
+             # CLI 自己算的钱(结果 JSON 的 total_cost_usd)比按 transcript 估的更真。
+             row["estimated_usd"] = cost
+@@ -291,6 +310,7 @@
+             row["cost_source"] = "estimate"
+     row.update(
+         agent=agent,
++        engine=engine,
+         dispatcher="headless",
+         task_id=record.get("task_id"),
+         attempt=record.get("attempt"),
+@@ -306,6 +326,7 @@
+     source: Path | str,
+     *,
+     projects_root: Path | str | None = None,
++    sessions_root: Path | str | None = None,
+ ) -> list[dict]:
+     """headless 执行器的调用记录 → 逐次 `claude -p` 的 usage 行(``dispatcher=headless``)。
+ 
+@@ -328,7 +349,7 @@
+         # SPAWN_FAILED = the CLI never started: no session ran, nothing to meter.
+         if (isinstance(record, dict) and record.get("task_id")
+                 and record.get("state") != "SPAWN_FAILED"):
+-            rows.append(_headless_row(record, projects_root))
++            rows.append(_headless_row(record, projects_root, sessions_root))
+     return sorted(rows, key=lambda r: -r["weighted_in"])
+ 
+ 
+--- a/autoresearch/contracts/scan_config.py
++++ b/autoresearch/contracts/scan_config.py
+@@ -497,9 +497,10 @@
+     # ── session(hosts=sa)──
+     Key("session", "global_intel_max_queries", type="posint", default=8, hosts=HOST_SA,
+         consumers=("autoresearch.session_agent.workflows.macro:global_intel_policy",)),
+-    Key("session", "timeouts", kind=KIND_GROUP, type="dict", default=None, hosts=HOST_SA, children=("mailbox", "headless", "fallback_s"),
++    Key("session", "timeouts", kind=KIND_GROUP, type="dict", default=None, hosts=HOST_SA, children=("mailbox", "headless", "fallback_s", "codex_open_s"),
+         consumers=("autoresearch.session_agent.config:session_cfg", "autoresearch.session_agent.dispatch:build_request",
+-                   "autoresearch.session_agent.mailbox_cli:_build_executor")),
++                   "autoresearch.session_agent.mailbox_cli:_build_executor",
++                   "autoresearch.session_agent.executors.headless_codex:HeadlessCodexExecutor.__init__")),
+     Key("session", "max_turns", kind=KIND_DATA, type="int_dict", default=None, hosts=HOST_SA,
+         consumers=("autoresearch.session_agent.config:session_cfg", "autoresearch.session_agent.executors.headless_claude:HeadlessClaudeExecutor.__init__")),
+     Key("session", "tier_max_turns", kind=KIND_DATA, type="int_dict", default=None, hosts=HOST_SA,
+@@ -593,6 +594,7 @@
+     ("autoresearch.scan.l3.merge:CHASE_1D_PCT", "不进 config:已是 l3.guards.chase_1d_pct 的内建缺省"),
+     ("autoresearch.scan.l3.prompt:PROFILE_DEFAULTS", "不进 config:已是 l3.profile 的内建缺省"),
+     ("autoresearch.scan.scan_run:SUBPROCESS_TIMEOUT_S", "不进 config:已是 runner.subprocess_timeout_s 的内建缺省"),
++    ("autoresearch.session_agent.executors.headless_codex:OPEN_TIMEOUT_S", "不进 config:已是 session.timeouts.codex_open_s 的内建缺省"),
+     ("autoresearch.scan.l4_tasks:STALE_AFTER_S", "不进 config:已是 l4_tasks.stale_after_s 的内建缺省"),
+     ("autoresearch.scan.l4_tasks:SLOT_POLL_S", "不进 config:已是 l4_tasks.slot_poll_s 的内建缺省"),
+     ("autoresearch.scan.l4_tasks:SLOT_HEARTBEAT_S", "不进 config:已是 l4_tasks.slot_heartbeat_s 的内建缺省"),
+--- a/autoresearch/session_agent/config.py
++++ b/autoresearch/session_agent/config.py
+@@ -25,7 +25,7 @@
+ def session_cfg(cfg: dict | None = None) -> dict:
+     from autoresearch.scan.user_config import knob
+     from autoresearch.session_agent import runner as _runner
+-    from autoresearch.session_agent.executors import base as _base, headless_claude as _hl, mailbox as _mb
++    from autoresearch.session_agent.executors import base as _base, headless_claude as _hl, headless_codex as _hx, mailbox as _mb
+ 
+     tm = knob("session", "timeouts", None, {}, cfg) or {}
+     if not isinstance(tm, dict):
+@@ -39,7 +39,9 @@
+     return {
+         "timeouts": {"mailbox": {**dict(_base.DEFAULT_TIMEOUTS), **(tm.get("mailbox") or {})},
+                      "headless": {**dict(_hl.HEADLESS_TIMEOUTS), **(tm.get("headless") or {})},
+-                     "fallback_s": float(tm.get("fallback_s", _base.FALLBACK_TIMEOUT))},
++                     "fallback_s": float(tm.get("fallback_s", _base.FALLBACK_TIMEOUT)),
++                     # codex headless(2026-10-08):开线程那一轮(拿 thread id)的墙钟,不占角色预算。
++                     "codex_open_s": float(tm.get("codex_open_s", _hx.OPEN_TIMEOUT_S))},
+         "max_turns": {**dict(_hl.MAX_TURNS), **(knob("session", "max_turns", None, {}, cfg) or {})},
+         "tier_max_turns": {**dict(_hl.TIER_MAX_TURNS), **(knob("session", "tier_max_turns", None, {}, cfg) or {})},
+         "default_max_turns": int(knob("session", "default_max_turns", None, _hl.DEFAULT_MAX_TURNS, cfg)),
+--- a/.claude/skills/scan-market/scan_config.jsonc
++++ b/.claude/skills/scan-market/scan_config.jsonc
+@@ -465,13 +465,14 @@
+     "date_lead_days": 3                // 持仓日期线提前几天预警
+   },
+ 
+-  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
++  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_codex.HeadlessCodexExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
+   "session": {
+     "global_intel_max_queries": 8,     // 全球情报搜索与原文抓取总额度;仅 session_agent
+     "timeouts": {                      // 角色超时(秒,从被领取算起;仅 session_agent)
+       "mailbox": { "scan.l4.intel": 1800 },   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
+       "headless": {},                  // headless 模式逐 role 覆盖(缺 = HEADLESS_TIMEOUTS)
+-      "fallback_s": 1800               // 表外角色的超时
++      "fallback_s": 1800,              // 表外角色的超时
++      "codex_open_s": 180              // codex headless 开线程(取 thread id 那一轮)的墙钟,不占角色预算
+     },
+     "max_turns": {},                   // headless --max-turns 逐 role 覆盖(缺 = MAX_TURNS;仅 session_agent)
+     "tier_max_turns": {},              // 表外角色按档位的轮数上限覆盖(缺 = TIER_MAX_TURNS;仅 session_agent)

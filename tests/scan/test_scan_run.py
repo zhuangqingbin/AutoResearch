@@ -473,7 +473,7 @@ def test_headless_request_is_a_valid_session_v1_scan_request():
     from autoresearch.session_agent.hosts.base import observe_host
     from autoresearch.session_agent.origin import preflight_session_host
 
-    request = scan_run.build_headless_request(DATE)
+    request = scan_run.build_headless_request(DATE, engine="claude")
     validate_begin_request(request, expected_engine="claude")
     observe_host(request["host_profile"])
     preflight_session_host(request)
@@ -486,8 +486,23 @@ def test_headless_request_is_a_valid_session_v1_scan_request():
     assert profile["safe_resume"] is False          # executor cannot re-attach
     assert profile["evidence_refs"] and not any(
         ref.startswith("transcript-file:") for ref in profile["evidence_refs"])
-    assert scan_run.build_headless_request(DATE)["host_profile"]["session_ref"] != \
+    assert scan_run.build_headless_request(DATE, engine="claude")["host_profile"]["session_ref"] != \
         profile["session_ref"]
+
+
+def test_headless_request_for_a_codex_run_is_the_same_contract_on_the_codex_engine(monkeypatch):
+    """2026-10-08:codex 场每个推理任务一个 `codex exec` 线程;请求与 claude 场同一份契约,只换引擎。"""
+    from autoresearch.contracts.session_task import validate_begin_request
+    from autoresearch.session_agent.hosts.base import observe_host
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    request = scan_run.build_headless_request(DATE)          # engine defaults to the workspace engine
+    validate_begin_request(request, expected_engine="codex")
+    observe_host(request["host_profile"])
+    assert request["host_profile"]["engine"] == "codex"
+    assert any(ref.endswith("headless_codex.py") for ref in request["host_profile"]["evidence_refs"])
+    assert scan_run._env("R1")["AUTORESEARCH_ENGINE"] == "codex"
+    assert scan_run._env("R1", engine="claude")["AUTORESEARCH_ENGINE"] == "claude"
 
 
 def _spool(roots, run_id: str, *, status="ACTIVE", minutes_ago=5, lease=None) -> None:
@@ -738,9 +753,30 @@ def test_main_turns_termination_signals_into_a_clean_abort(roots, monkeypatch):
         assert signal.getsignal(sig) == before[sig]
 
 
-def test_main_refuses_a_codex_engine(roots, monkeypatch, capsys):
-    monkeypatch.setattr(ws, "ENGINE", "codex")
+def test_main_refuses_an_unknown_engine(roots, monkeypatch, capsys):
+    monkeypatch.setattr(ws, "ENGINE", "gemini")
     assert scan_run.main([]) == scan_run.EXIT_USAGE
+    assert scan_run.HEADLESS_ENGINES == ("claude", "codex")
+
+
+def test_runner_step_passes_the_cli_path_of_the_run_engine_only(roots, monkeypatch):
+    """claude 场传 --claude-bin,codex 场传 --codex-bin;另一引擎的路径不混进 argv。"""
+    seen = {}
+
+    def fake_call(argv, *, env, timeout, stderr=None):
+        seen["argv"], seen["env"] = list(argv), dict(env)
+        return 0, json.dumps({"finished": True})
+
+    monkeypatch.setattr(scan_run, "_call", fake_call)
+    args = SimpleNamespace(claude_bin="/opt/claude", codex_bin="/opt/codex", max_parallel=4)
+    scan_run.default_steps(args, None).run("R1", 60.0)
+    assert "--claude-bin" in seen["argv"] and "--codex-bin" not in seen["argv"]
+    assert seen["env"]["AUTORESEARCH_ENGINE"] == "claude"
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    scan_run.default_steps(args, None).run("R1", 60.0)
+    assert "--codex-bin" in seen["argv"] and "--claude-bin" not in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--executor") + 1] == "headless"
+    assert seen["env"]["AUTORESEARCH_ENGINE"] == "codex"
 
 
 def test_headless_request_matches_the_documented_scan_request_contract():

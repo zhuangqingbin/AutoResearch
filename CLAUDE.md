@@ -9,8 +9,10 @@
 
 ### 统一 session_v1 编排
 
-五类入口现在共用 `uv run --no-sync python -m autoresearch.session_agent`。显式设置
-`AUTORESEARCH_ENGINE=claude` 后，宿主循环为
+五类入口现在共用 `uv run --no-sync python -m autoresearch.session_agent`。**全扫的日常路径是 headless**
+(2026-10-08 起,两个引擎):主会话后台起 `scripts/scan_run.sh --engine claude --date <分析日> --skip-readiness`,
+等完成后读 `$RPT/_ops/scan_run_<日>.json`,自己不进研究回路(见 `docs/session-agent/README.md`「日常全扫」)。
+显式设置 `AUTORESEARCH_ENGINE=claude` 后，回退的宿主循环为
 `begin → next → claim → execute/Claude 推理 → submit → finish`。冻结计划、artifact、attempt、
 回执和发布由 Python 验证，推理仍发生在本 Claude Code 订阅会话。C4 下旧 Workflow 缺少任务绑定，
 研究启动前返回 `HOST_CAPABILITY_REQUIRED`；新入口仍须显式选 PILOT。取数前运行

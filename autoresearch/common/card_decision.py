@@ -261,6 +261,7 @@ def decision_instruction(*, subject: str, venue: str) -> str:
         "有价格情景时附唯一 conditional-scenarios-v1 JSON 块。字段：schema_version=1，entry=null 或 {low,high}正十进制字符串，"
         "probability_basis=not_provided|subjective，scenarios=[{name:bull|base|bear,exit_price,return_range:null|{low,high},probability:null|十进制字符串}]，ev_range=null|{low,high}，rr=null|十进制字符串。"
         "收益区间下界=exit/high(entry)-1，上界=exit/low(entry)-1；例 entry 10.00/10.00、exit 10.20→0.02/0.02。"
+        "收益与 EV 四舍五入保留 4 位小数，R:R 保留 2–4 位；校验按声明精度留容差（半个末位，封顶半个万分位，EV/R:R 再加收益舍入的传播），不要求无限精度。"
         "缺entry时return_range/ev_range/rr全null、卡面EV/R:R标未核；区间entry的rr须null。概率只能主观，三情景合计1，不从置信度生成概率。"
         "holding_review 保留真实成本与退出偏离，不冒充新建仓。\n"
     )

@@ -41,15 +41,22 @@ def _build_executor(args, handle) -> tuple[object, dict | None]:
 
         return MailboxExecutor(handle.staging, poll_seconds=min(args.poll_seconds, 2.0)), None
     if args.executor == "headless":
+        from autoresearch.session_agent.config import session_cfg
         from autoresearch.session_agent.executors import headless_claude
 
-        if handle.engine != "claude":
-            raise ValueError(
-                f"--executor headless runs `claude -p` and needs a claude run; "
-                f"{args.run_id} is a {handle.engine} run (Codex headless is out of scope)")
-        executor = headless_claude.HeadlessClaudeExecutor(
-            handle.staging, claude_bin=args.claude_bin)
-        from autoresearch.session_agent.config import session_cfg
+        # 2026-10-08:同一个 runner、同一张超时表,按 run 的引擎选传输 —— claude = `claude -p`,
+        # codex = `codex exec`(executors.headless_codex)。
+        if handle.engine == "claude":
+            executor = headless_claude.HeadlessClaudeExecutor(
+                handle.staging, claude_bin=args.claude_bin)
+        elif handle.engine == "codex":
+            from autoresearch.session_agent.executors import headless_codex
+
+            executor = headless_codex.HeadlessCodexExecutor(
+                handle.staging, codex_bin=getattr(args, "codex_bin", None),
+                open_timeout_seconds=session_cfg()["timeouts"]["codex_open_s"])
+        else:
+            raise ValueError(f"--executor headless: unsupported run engine {handle.engine} for {args.run_id}")
         return executor, {**dict(headless_claude.HEADLESS_TIMEOUTS), **session_cfg()["timeouts"]["headless"]}
     raise ValueError(f"unknown executor: {args.executor}")  # pragma: no cover - argparse
 
@@ -101,7 +108,8 @@ def mailbox_command(args) -> dict:
                 **bound_commands(path, session_id, args.context_ref)}
     if args.mailbox_command == "wait":
         return mailbox.wait_request(
-            handle.staging, timeout=args.timeout, include_taken=args.include_taken)
+            handle.staging, timeout=args.timeout, include_taken=args.include_taken,
+            full=bool(getattr(args, "full", False)))
     if args.mailbox_command == "pending":
         return {
             "kind": "PENDING",
@@ -152,6 +160,8 @@ def add_parsers(subparsers) -> None:
     run.add_argument("--executor", choices=("mailbox", "headless"), default="mailbox")
     run.add_argument("--claude-bin", help="headless only: claude CLI path "
                      "(default $AUTORESEARCH_CLAUDE_BIN, PATH, ~/.local/bin/claude)")
+    run.add_argument("--codex-bin", help="headless only (codex run): codex CLI path "
+                     "(default $AUTORESEARCH_CODEX_BIN, PATH, /usr/local/bin/codex)")
     run.add_argument("--max-parallel", type=int)
     from autoresearch.session_agent.config import session_cfg   # session.runner / session.mailbox 缺省
     _rn = session_cfg()["runner"]
@@ -166,6 +176,8 @@ def add_parsers(subparsers) -> None:
     wait.add_argument("--run-id", required=True)
     wait.add_argument("--timeout", type=float, default=session_cfg()["mailbox"]["wait_s"])   # < host Bash 120 s cap
     wait.add_argument("--include-taken", action="store_true")
+    wait.add_argument("--full", action="store_true",
+                      help="回显整份冻结请求(含 prompt 全文);缺省只给宿主视图(省主会话上下文)")
     pending = commands.add_parser("pending")
     pending.add_argument("--run-id", required=True)
     binding = commands.add_parser("bind-access")

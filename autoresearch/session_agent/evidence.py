@@ -405,6 +405,12 @@ def read_abandonment(handle, task_id: str, attempt: int) -> dict | None:
     return _read_json(path) if path.is_file() else None
 
 
+def read_failure(handle, task_id: str, attempt: int) -> dict | None:
+    """The frozen failure of one attempt (``freeze_failure``), ``None`` if it did not fail."""
+    path = _attempt_record_path(handle, task_id, attempt, "failure")
+    return _read_json(path) if path.is_file() else None
+
+
 def _captured_ref(
     handle,
     artifact_id: str,

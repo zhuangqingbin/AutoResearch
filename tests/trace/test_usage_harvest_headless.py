@@ -155,3 +155,50 @@ def test_collect_run_without_headless_records_is_unchanged(tmp_path, monkeypatch
                         lambda engine: ClaudeTranscriptAdapter(projects_root=projects))
     rows = U.collect_run("R", engine="claude")
     assert len(rows) == 1 and "dispatcher" not in rows[0]
+
+
+THREAD = "019a2c1e-7b6a-7c3b-9f1d-5c2f3a4b6d7e"
+
+
+def _codex_staging(tmp_path: Path, *, transcript_path: str | None = None) -> Path:
+    staging = tmp_path / "staging"
+    folder = staging / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    (folder / "scan.l4.card.600000.a1.json").write_text(json.dumps({
+        "schema_version": 1, "engine": "codex", "transport": "codex exec", "run_id": "R",
+        "task_id": "scan.l4.card.600000", "attempt": 1, "role": "scan.l4.card", "agent_type": "L4 card",
+        "state": "EXITED", "exit_code": 0, "thread_id": THREAD, "session_id": THREAD,
+        "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 9},
+        "transcript_path": transcript_path,
+    }), encoding="utf-8")
+    return staging
+
+
+def _codex_rollout(tmp_path: Path) -> Path:
+    fixture = Path(__file__).parent / "fixtures" / "codex" / "rollout.jsonl"
+    target = tmp_path / "sessions" / "2026" / "10" / "08" / f"rollout-2026-10-08T10-00-00-{THREAD}.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(fixture.read_bytes())
+    return target
+
+
+def test_codex_headless_records_are_metered_from_the_thread_rollout(tmp_path, monkeypatch):
+    """2026-10-08:codex headless 记录(engine=codex)按线程 id 反查 rollout,用 Codex 适配器计量。"""
+    rollout = _codex_rollout(tmp_path)
+    monkeypatch.setattr(U, "CODEX_SESSIONS_ROOT", tmp_path / "sessions")
+    rows = U.collect_headless(_codex_staging(tmp_path))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["dispatcher"] == "headless" and row["engine"] == "codex" and row["agent"] == "L4 card"
+    assert row["status"] != "UNMEASURED" and row["weighted_in"] > 0
+    assert row["cost_source"] == "estimate"          # codex exec reports no total_cost_usd
+    assert row["session_id"] == THREAD
+    assert U.find_codex_rollout(THREAD, tmp_path / "sessions") == rollout
+    assert U.find_codex_rollout("missing", tmp_path / "sessions") is None
+
+
+def test_codex_headless_record_without_a_rollout_is_unmeasured_not_free(tmp_path, monkeypatch):
+    monkeypatch.setattr(U, "CODEX_SESSIONS_ROOT", tmp_path / "sessions")
+    rows = U.collect_headless(_codex_staging(tmp_path))
+    assert rows[0]["status"] == "UNMEASURED" and rows[0]["engine"] == "codex"
+    assert rows[0]["estimated_usd"] is None and rows[0]["cost_source"] is None

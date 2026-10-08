@@ -577,3 +577,75 @@ def test_fanout_warmup_is_off_by_default(tmp_path, monkeypatch):
     runner.run_loop(run.run_id, ex, max_parallel=3, poll_seconds=0.01, max_rounds=500,
                     hooks=run.hooks())
     assert ex.max_active == 3                            # 缺省不预热:三份同时在飞
+
+
+# ── 2026-10-08:领域校验拒绝 = 重做这一个任务(带校验原话),不是整场作废 ───────────────────
+# 10-07 第 5 场:688578 review2 一个精度契约错 → CONTRACT_ERROR 不可重试 → REVIEW_UNAVAILABLE →
+# 整场 BLOCKED,$53 的研究零发布。DOMAIN_VALIDATION 现在是第三类可重试错误(contracts.retry
+# VALIDATION_REPAIR):同样受 max_attempts 封顶,但新尝试的 prompt 带上校验原话。
+
+
+def _domain_error(message: str):
+    from autoresearch.session_agent.validation import DomainValidationError
+
+    return DomainValidationError(message)
+
+
+def _failure_record(run, task_id: str, attempt: int) -> dict:
+    path = Path(run.handle.capsule) / "evidence/attempt_records" / task_id / f"a{attempt}" / "failure.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_domain_validation_failure_is_retried_once_with_the_validator_message(tmp_path, monkeypatch):
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    ex = _FakeExecutor()
+
+    def validator(submission, task):
+        if submission["envelope"]["attempt"] == 1:
+            raise _domain_error("ResearchCard decision: scenario return contradicts declared entry/exit")
+
+    final = runner.run_loop(run.run_id, ex, poll_seconds=0.01, max_rounds=50,
+                            hooks=run.hooks(validator=validator))
+    assert ex.calls == [("synthetic.inference", 1), ("synthetic.inference", 2)]
+    assert final["finished"] is True
+    assert _failure_record(run, "synthetic.inference", 1)["error"]["code"] == "DOMAIN_VALIDATION"
+    first, second = ex.requests[0].prompt, ex.requests[1].prompt
+    assert "修订要求" not in first
+    assert "修订要求" in second and "scenario return contradicts declared entry/exit" in second
+    assert second.startswith(first.split("\nC4 输入边界")[0][:40])   # same task, same frozen inputs
+
+
+def test_domain_validation_failing_twice_blocks_without_a_third_dispatch(tmp_path, monkeypatch):
+    run = begin_synthetic_run(tmp_path, monkeypatch, [inf("synthetic.inference")])
+    ex = _FakeExecutor()
+
+    def validator(submission, task):
+        raise _domain_error("buy-rated lite card lacks P4 intent evidence")
+
+    final = runner.run_loop(run.run_id, ex, poll_seconds=0.01, max_rounds=50,
+                            hooks=run.hooks(validator=validator))
+    assert ex.calls == [("synthetic.inference", 1), ("synthetic.inference", 2)]
+    assert final["status"] == "BLOCKED"
+    assert _entry(run, "synthetic.inference")["error"]["code"] == "DOMAIN_VALIDATION"
+    assert "lacks P4" in ex.requests[1].prompt
+
+
+def test_submit_error_class_only_names_domain_rejections_retryable():
+    from autoresearch.session_agent.validation import DomainValidationError
+
+    assert runner.submit_error_class(DomainValidationError("scenario return contradicts")) == "DOMAIN_VALIDATION"
+    wrapped = RuntimeError("accept failed")
+    wrapped.__cause__ = DomainValidationError("buy-rated lite card lacks P4 intent evidence")
+    assert runner.submit_error_class(wrapped) == "DOMAIN_VALIDATION"        # the cause chain counts
+    assert runner.submit_error_class(ValueError("submission run_id does not match")) == "CONTRACT_ERROR"
+    assert runner.submit_error_class(store.TaskConflict("submission attempt was abandoned")) == "CONTRACT_ERROR"
+    loop = RuntimeError("a"); loop.__cause__ = loop                           # a self-referencing chain ends
+    assert runner.submit_error_class(loop) == "CONTRACT_ERROR"
+
+
+def test_validation_repair_is_a_separate_named_retry_class():
+    from autoresearch.contracts import retry
+
+    assert retry.VALIDATION_REPAIR == frozenset({"DOMAIN_VALIDATION"})
+    assert not (retry.VALIDATION_REPAIR & retry.TASK_ATTEMPT)      # never merged, by doctrine
+    assert "DOMAIN_VALIDATION" not in retry.INTEL_RESEARCH

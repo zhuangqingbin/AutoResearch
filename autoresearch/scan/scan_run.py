@@ -88,7 +88,9 @@ VERIFY_KEYS = ("report_covered", "publication_ok", "orchestration_verified", "co
 HEADLESS_EVIDENCE = (
     "headless-probe:docs/research/2026-09-26-headless-driver-probes.md",
     "headless-executor:autoresearch/session_agent/executors/headless_claude.py",
+    "headless-executor:autoresearch/session_agent/executors/headless_codex.py",
 )
+HEADLESS_ENGINES = ("claude", "codex")
 
 
 def ops_dir() -> Path:
@@ -117,7 +119,8 @@ class OpsLog:
         self.stream.close()
 
 
-def build_headless_request(date: str, *, session_ref: str | None = None) -> dict:
+def build_headless_request(date: str, *, session_ref: str | None = None,
+                           engine: str | None = None) -> dict:
     """session_v1 scan 请求;宿主 = 本无人值守进程 + 每个推理任务一个 ``claude -p`` 会话。
 
     能力如实声明:确定性步骤在 runner 进程内跑(``deterministic_exec``),推理经 headless
@@ -138,7 +141,9 @@ def build_headless_request(date: str, *, session_ref: str | None = None) -> dict
         "force_full": runner_cfg()["force_full"],
         "host_profile": {
             "schema_version": 1,
-            "engine": "claude",
+            # 2026-10-08:引擎 = 本进程的工作区引擎(scan_run.sh 导出);codex 场每个推理任务一个
+            # `codex exec` 线程(executors.headless_codex),证据链与 claude 场同形。
+            "engine": engine or ws.ENGINE,
             "session_ref": session_ref or f"headless-{uuid.uuid4()}",
             "deterministic_exec": True,
             "capture_binding": True,
@@ -379,9 +384,9 @@ def _session_agent(*args: str) -> list[str]:
     return [sys.executable, "-m", "autoresearch.session_agent", *args]
 
 
-def _env(run_id: str | None = None) -> dict:
+def _env(run_id: str | None = None, *, engine: str | None = None) -> dict:
     env = {key: value for key, value in os.environ.items() if key != "AUTORESEARCH_RUN_ID"}
-    env["AUTORESEARCH_ENGINE"] = "claude"
+    env["AUTORESEARCH_ENGINE"] = engine or ws.ENGINE
     if run_id:
         env["AUTORESEARCH_RUN_ID"] = run_id
     return env
@@ -445,6 +450,7 @@ def default_steps(args, log: OpsLog | None) -> Steps:
     stream = log.stream if log is not None else None
     emit = log.line if log is not None else (lambda text: print(text, flush=True))
     claude_bin = getattr(args, "claude_bin", None)
+    codex_bin = getattr(args, "codex_bin", None)
     max_parallel = getattr(args, "max_parallel", None)
 
     def missed_date(now: datetime) -> str | None:
@@ -486,8 +492,10 @@ def default_steps(args, log: OpsLog | None) -> Steps:
 
     def run(run_id: str, timeout_s: float) -> dict | None:
         argv = _session_agent("run", "--run-id", run_id, "--executor", "headless")
-        if claude_bin:
+        if claude_bin and ws.ENGINE == "claude":
             argv += ["--claude-bin", str(claude_bin)]
+        if codex_bin and ws.ENGINE == "codex":
+            argv += ["--codex-bin", str(codex_bin)]
         if max_parallel:
             argv += ["--max-parallel", str(max_parallel)]
         code, out = _call(argv, env=_env(run_id), timeout=timeout_s, stderr=stream)
@@ -747,15 +755,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--date", help="显式数据日(须为交易日;缺省 = 今天,非交易日静默退出)")
     ap.add_argument("--deadline", default=readiness.DEADLINE, help="湖就绪等待截止 HH:MM")
     ap.add_argument("--skip-readiness", action="store_true", help="不等 stk_factor_pro(补跑用)")
-    ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude)")
+    ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude;claude 场)")
+    ap.add_argument("--codex-bin", help="codex CLI 路径(缺省 PATH / /usr/local/bin/codex;codex 场)")
     ap.add_argument("--max-parallel", type=int, help="推理并发帽(缺省 budgets.concurrency.l4_stock)")
     ap.add_argument("--run-timeout-minutes", type=float, default=None,
                     help=f"runner 墙钟(缺省 = scan_config runner.run_timeout_minutes,内建 {RUN_TIMEOUT_MINUTES})")
     ap.add_argument("--hard-stop", default=None,
                     help=f"定时场夜间硬截止 HH:MM(缺省 = scan_config runner.hard_stop,内建 {HARD_STOP};显式 --date 补跑不受它约束)")
     args = ap.parse_args(argv)
-    if ws.ENGINE != "claude":
-        print(f"[scan-run] headless 执行器只跑 claude 引擎;当前 {ws.ENGINE}(Codex headless 不在范围)")
+    if ws.ENGINE not in HEADLESS_ENGINES:
+        print(f"[scan-run] headless 执行器只跑 {'/'.join(HEADLESS_ENGINES)} 引擎;当前 {ws.ENGINE!r}"
+              "(scripts/scan_run.sh --engine claude|codex 显式钉死)")
         return EXIT_USAGE
     held = run_lock.try_acquire(run_lock.lock_path(), note="scan_run")
     if held is None:
@@ -782,7 +792,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
-    "EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "HARD_STOP", "LIVE_RUN_WINDOW", "NO_CHANNEL_WARNING",
+    "EXIT_FAILED", "EXIT_OK", "EXIT_USAGE", "HARD_STOP", "HEADLESS_ENGINES", "LIVE_RUN_WINDOW", "NO_CHANNEL_WARNING",
     "OpsLog", "RUN_TIMEOUT_MINUTES", "ScanRunInterrupted", "Steps", "WINDOW_START",
     "build_headless_request", "default_steps", "failure_point", "hard_stop_after", "in_window",
     "install_interrupt_handlers", "live_scan_runs", "locate_brief", "main", "ops_dir",

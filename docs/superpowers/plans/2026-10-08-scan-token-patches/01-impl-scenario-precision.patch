@@ -1,0 +1,93 @@
+--- a/autoresearch/contracts/execution.py
++++ b/autoresearch/contracts/execution.py
+@@ -303,10 +303,28 @@
+     if exit_value <= 0 or entry_value <= 0:
+         raise ValueError("scenario prices must be positive")
+     return format(exit_value / entry_value - 1, "f")
++
++
++#: 卡面收益 / EV / R:R 的最小声明精度(R5-1,2026-10-07):agent 没有计算工具,比值与四舍五入
++#: 对不上 1e-9 是必然的。校验容差 = 声明末位的一半、封顶半个万分位(声明得更粗不放宽,更细更严),
++#: EV 与 R:R 再加上各情景收益舍入传播过来的误差。
++SCENARIO_PRECISION = Decimal("0.0001")
+ 
+ 
++def declared_tolerance(raw: str) -> Decimal:
++    """半个「声明末位」,封顶 ``SCENARIO_PRECISION / 2``:``"0.0240"`` → 0.00005,``"0.02"`` → 0.00005,
++    ``"0.024018"`` → 0.0000005。"""
++    exponent = Decimal(raw).as_tuple().exponent
++    places = -exponent if isinstance(exponent, int) and exponent < 0 else 0
++    return min(Decimal(1).scaleb(-places), SCENARIO_PRECISION) / 2
++
++
+ def validate_scenario_estimate(value: dict) -> dict:
+-    """Validate declared conditional returns; interval bounds use high/low entry respectively."""
++    """Validate declared conditional returns; interval bounds use high/low entry respectively.
++
++    Declared figures are compared within :func:`declared_tolerance` (plus the rounding of
++    the returns they derive from), never bit-exactly.
++    """
+     fields = {'schema_version', 'entry', 'probability_basis', 'scenarios', 'ev_range', 'rr'}
+     if not isinstance(value, dict) or set(value) != fields or type(value['schema_version']) is not int or value['schema_version'] != 1:
+         raise ValueError('invalid conditional-scenarios-v1 fields')
+@@ -336,7 +354,7 @@
+     if not isinstance(rows, list) or not rows:
+         raise ValueError('scenario prices required')
+     names = []
+-    returns, probabilities = [], []
++    returns, return_tolerances, probabilities = [], [], []
+     for row in rows:
+         if not isinstance(row, dict) or set(row) != {'name', 'exit_price', 'return_range', 'probability'}:
+             raise ValueError('invalid scenario fields')
+@@ -350,9 +368,11 @@
+         else:
+             actual = bounds(row['return_range'])
+             expected = tuple(Decimal(conditional_gap(row['exit_price'], str(point))) for point in reversed(entry))
+-            if any(abs(a-b) > Decimal('0.000000001') for a, b in zip(actual, expected, strict=True)):
++            tolerance = tuple(declared_tolerance(row['return_range'][key]) for key in ('low', 'high'))
++            if any(abs(a-b) > t for a, b, t in zip(actual, expected, tolerance, strict=True)):
+                 raise ValueError('scenario return contradicts declared entry/exit')
+             returns.append(actual)
++            return_tolerances.append(tolerance)
+         probability = row['probability']
+         probabilities.append(None if probability is None else number(probability))
+     if any(p is not None for p in probabilities):
+@@ -367,14 +387,26 @@
+             raise ValueError('EV needs declared entry and subjective probabilities')
+         actual = bounds(ev)
+         expected = tuple(sum(row[i]*p for row, p in zip(returns, probabilities, strict=True)) for i in (0, 1))
+-        if any(abs(a-b) > Decimal('0.000000001') for a, b in zip(actual, expected, strict=True)):
++        # 声明精度的一半 + 各情景收益舍入按概率加权传播。
++        tolerance = tuple(declared_tolerance(ev[key])
++                          + sum(t[i]*p for t, p in zip(return_tolerances, probabilities, strict=True))
++                          for i, key in ((0, 'low'), (1, 'high')))
++        if any(abs(a-b) > t for a, b, t in zip(actual, expected, tolerance, strict=True)):
+             raise ValueError('EV contradicts scenario returns')
+     if value['rr'] is not None:
+         if entry is None or entry[0] != entry[1] or set(names) != {'bull', 'base', 'bear'}:
+             raise ValueError('R:R requires point entry and three scenarios')
+         by_name = dict(zip(names, returns, strict=True))
++        by_tolerance = dict(zip(names, return_tolerances, strict=True))
+         gain, loss = by_name['bull'][0], by_name['bear'][0]
+-        if gain <= 0 or loss >= 0 or abs(number(value['rr'], positive=True) - gain / -loss) > Decimal('0.000000001'):
++        if gain <= 0 or loss >= 0:
+             raise ValueError('R:R contradicts bull/bear returns')
++        declared = number(value['rr'], positive=True)
++        gain_tolerance, loss_tolerance = by_tolerance['bull'][0], by_tolerance['bear'][0]
++        # d(g/-l) ≈ dg/|l| + g·dl/l²:两头收益的舍入都会放大进比值。
++        tolerance = (declared_tolerance(value['rr'])
++                     + gain_tolerance / -loss + gain * loss_tolerance / (loss * loss))
++        if abs(declared - gain / -loss) > tolerance:
++            raise ValueError('R:R contradicts bull/bear returns')
+     return value
+ 
+--- a/autoresearch/common/card_decision.py
++++ b/autoresearch/common/card_decision.py
+@@ -261,6 +261,7 @@
+         "有价格情景时附唯一 conditional-scenarios-v1 JSON 块。字段：schema_version=1，entry=null 或 {low,high}正十进制字符串，"
+         "probability_basis=not_provided|subjective，scenarios=[{name:bull|base|bear,exit_price,return_range:null|{low,high},probability:null|十进制字符串}]，ev_range=null|{low,high}，rr=null|十进制字符串。"
+         "收益区间下界=exit/high(entry)-1，上界=exit/low(entry)-1；例 entry 10.00/10.00、exit 10.20→0.02/0.02。"
++        "收益与 EV 四舍五入保留 4 位小数，R:R 保留 2–4 位；校验按声明精度留容差（半个末位，封顶半个万分位，EV/R:R 再加收益舍入的传播），不要求无限精度。"
+         "缺entry时return_range/ev_range/rr全null、卡面EV/R:R标未核；区间entry的rr须null。概率只能主观，三情景合计1，不从置信度生成概率。"
+         "holding_review 保留真实成本与退出偏离，不冒充新建仓。\n"
+     )

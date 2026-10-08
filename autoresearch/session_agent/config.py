@@ -25,7 +25,7 @@ def orchestration_config(handle) -> dict:
 def session_cfg(cfg: dict | None = None) -> dict:
     from autoresearch.scan.user_config import knob
     from autoresearch.session_agent import runner as _runner
-    from autoresearch.session_agent.executors import base as _base, headless_claude as _hl, mailbox as _mb
+    from autoresearch.session_agent.executors import base as _base, headless_claude as _hl, headless_codex as _hx, mailbox as _mb
 
     tm = knob("session", "timeouts", None, {}, cfg) or {}
     if not isinstance(tm, dict):
@@ -39,7 +39,9 @@ def session_cfg(cfg: dict | None = None) -> dict:
     return {
         "timeouts": {"mailbox": {**dict(_base.DEFAULT_TIMEOUTS), **(tm.get("mailbox") or {})},
                      "headless": {**dict(_hl.HEADLESS_TIMEOUTS), **(tm.get("headless") or {})},
-                     "fallback_s": float(tm.get("fallback_s", _base.FALLBACK_TIMEOUT))},
+                     "fallback_s": float(tm.get("fallback_s", _base.FALLBACK_TIMEOUT)),
+                     # codex headless(2026-10-08):开线程那一轮(拿 thread id)的墙钟,不占角色预算。
+                     "codex_open_s": float(tm.get("codex_open_s", _hx.OPEN_TIMEOUT_S))},
         "max_turns": {**dict(_hl.MAX_TURNS), **(knob("session", "max_turns", None, {}, cfg) or {})},
         "tier_max_turns": {**dict(_hl.TIER_MAX_TURNS), **(knob("session", "tier_max_turns", None, {}, cfg) or {})},
         "default_max_turns": int(knob("session", "default_max_turns", None, _hl.DEFAULT_MAX_TURNS, cfg)),

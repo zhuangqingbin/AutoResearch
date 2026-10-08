@@ -274,6 +274,19 @@ def agent_tool_args(doc: dict) -> dict:
     return args
 
 
+#: 宿主视图(2026-10-08):`wait` 缺省不再回显这几项 —— `prompt` 与 `host_prompt` 重复(按引用派发时
+#: 全文已冻结成文件),`agent_spec` / `input_paths` / `instruction_refs` 只有 runner 与审计要看。
+#: 10-07 Codex 第 2 场主会话 49 万字符 exec 输出里,wait 回显是最大的一块;`--full` 保留旧形状。
+HOST_VIEW_DROPPED = ("prompt", "agent_spec", "input_paths", "instruction_refs")
+
+
+def host_view(doc: dict) -> dict:
+    """The request minus what the host never needs; ``prompt_chars`` keeps the size auditable."""
+    view = {key: value for key, value in doc.items() if key not in HOST_VIEW_DROPPED}
+    view["prompt_chars"] = len(doc.get("prompt") or "")
+    return view
+
+
 def _unanswered(staging) -> list[str]:
     return [
         Path(item["request_path"]).name.removesuffix(".request.json")
@@ -355,11 +368,15 @@ def wait_request(
     timeout: float | None = None,
     poll_seconds: float = 1.0,
     include_taken: bool = False,
+    full: bool = False,
     clock=time.monotonic,
     sleep=time.sleep,
     wall=time.time,
 ) -> dict:
     """Host side: block until one request is handed out, the runner exits, or timeout.
+
+    ``full=False`` (default) returns :func:`host_view` of the request; ``full=True`` the
+    whole frozen request (debugging).
 
     Returns ``{"kind": "RUNNER_EXITED", "runner", "unanswered"}`` as soon as the runner
     has exited (nothing it issued can be accepted any more); ``{"kind": "RUNNER_DEAD",
@@ -393,7 +410,8 @@ def wait_request(
         for doc in pending_requests(staging, include_taken=include_taken):
             if include_taken or _take(staging, doc, wall=wall):
                 # 宿主传给 Agent 工具的 prompt:按引用派发时是一行指针,否则就是全文。
-                return {"kind": "REQUEST", **doc, "agent_tool": agent_tool_args(doc),
+                return {"kind": "REQUEST", **(doc if full else host_view(doc)),
+                        "agent_tool": agent_tool_args(doc),
                         "host_prompt": doc.get("host_prompt") or doc.get("prompt")}
         if clock() >= deadline:
             return {

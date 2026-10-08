@@ -64,7 +64,24 @@ uv run --no-sync python -m autoresearch.session_agent verify-report \
 
 完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。逐票复核、状态提交与调度计量见 [scheduling.md](scheduling.md)。
 
-## 扫描 runner + mailbox 宿主循环(host 模式,PILOT,opt-in)
+## 日常全扫:宿主不进研究回路(2026-10-08 起,两个引擎同一条路)
+
+每日全扫的缺省路径是 **headless 执行器**:主会话只负责起一个后台进程、等它结束、读摘要,
+研究任务由 runner 直接起子进程(claude 场 `claude -p`,codex 场 `codex exec`),主会话的上下文
+里不再出现任何任务 prompt、绑定命令或轮询输出。10-07 两边的计量:mailbox 宿主循环让 Codex
+主会话吃掉全场输入的 84–90%、Claude 主会话吃掉加权输入的 62%,就是这条路要去掉的那块。
+
+```bash
+# 交互会话里(Claude 会话 --engine claude;Codex 会话 --engine codex),后台起、结束回合,等完成通知:
+scripts/scan_run.sh --engine claude --date <分析日> --skip-readiness
+# 摘要:$RPT/_ops/scan_run_<日>.json(result / delivery / run_id);日志同目录 .log;计量 token_usage.md
+```
+
+`--skip-readiness` 只在湖已灌齐时用(交易日 21:10 后由 launchd 定时场自己等就绪)。进度看日志里的
+GATE/CP 行(Claude 宿主可用 Monitor 盯日志文件,不要 90 秒轮询)。失败处置、送达、电源与安装见
+`docs/ops/scan-ops.md`「无人值守扫描」。下面的 mailbox 宿主循环只在 headless 不可用时作为回退。
+
+## 扫描 runner + mailbox 宿主循环(host 模式,PILOT,回退路径)
 
 上面的环由 runner 自动转圈:确定性任务(frame / prelude / GATE1 / 行业 pack / L3 prepare+lint+merge /
 GATE2 / L4 prep+任务簿+slim+intel 状态 / 复核决策 / finalize / assemble / GATE4 / usage / observe)在
@@ -96,6 +113,9 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
    ```
 
    `--timeout` 不超过 100 s(宿主 Bash 默认 120 s 上限),IDLE 就再调;不要一次长等。
+   `wait` 缺省只回宿主视图(`task_id` / `attempt` / `agent_tool` / `host_prompt` / 路径与 `prompt_chars`),
+   不再回显 `prompt` 全文与 `agent_spec`;排障要整份冻结请求加 `--full`。`by_reference` 现在缺省开:
+   `host_prompt` 是一行指针,研究 agent 第一步自己 Read 冻结的任务文件。
 
    - `kind=REQUEST`:原样执行 `Agent(**<agent_tool>, prompt=<host_prompt>)` —— `agent_tool` 与 `host_prompt` 都是
      `wait` 算好的,照抄,不增不改。`session.mailbox.by_reference` 打开时 `host_prompt` 是一行指针(全文已冻结成
@@ -144,6 +164,9 @@ runner 进程内经 `service.execute` 跑(`exec_capture` 留痕,零 agent、零 
    任务终态、成功主卡、必需深核和复核覆盖分别观察，详见 [局部恢复](local-recovery.md)。
    如需重新开始，建立新的显式 PILOT run；旧 legacy Workflow 仍被 C4 能力门阻断。runner 不替失败 run
    冻结 capsule,需要时显式 `python -m autoresearch.trace.capsule finalize <RUN_ID> --business-status FAILED`。
+   **领域校验拒绝不再整场作废**(2026-10-08):产物被确定性校验拒绝记 `DOMAIN_VALIDATION`
+   (`contracts.retry.VALIDATION_REPAIR`),该任务(或 L4 票据)带着校验原话重做一次(prompt 末尾
+   「修订要求」段),仍受 `session.max_attempts` / 票据 `max_attempts` 封顶;第二次仍被拒才 BLOCKED。
 
 **邮箱协议**(`<staging>/_dispatch/`,已登记为 run 内产物;驱动器只认 result 文件):
 `<task_id>.a<attempt>.request.json`(runner 写,`DispatchRequest`)· `.taken`(`wait` 排他领取)·
@@ -156,13 +179,29 @@ intel 15m / card·复核 30m,**从 `.taken` 起算**;没人领的请求 4× 后�
 (但超时的 subagent 不会被杀,别手动留着它继续写)。执行器协议(批 4 headless 复用)见
 `autoresearch/session_agent/executors/base.py`。
 
-## headless 执行器(批 4,无人值守,PILOT)
+## headless 执行器(批 4,无人值守;2026-10-08 起两个引擎)
 
 `session_agent begin … --executor headless` + `session_agent run --run-id <RUN_ID> --executor headless
-[--claude-bin <path>]`:同一个 runner,推理任务不交宿主会话,而是每个 attempt 起一个 `claude -p --agent <agent_type> --output-format json --permission-mode
-bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]` 子进程(独立顶级会话 = 独立上下文;
-项目 agent 定义与 hook 照常装载,见 `docs/research/2026-09-26-headless-driver-probes.md`)。只接 claude 引擎的
-run。超时按角色(intel 12m / card·复核 25m / L3 30m)杀整个进程组;结果 JSON 非法、`is_error`、或退出 0 但
+[--claude-bin <path>] [--codex-bin <path>]`:同一个 runner,推理任务不交宿主会话,按 run 的引擎选传输:
+
+- **claude run**:每个 attempt 起一个 `claude -p --agent <agent_type> --output-format json --permission-mode
+  bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]` 子进程(独立顶级会话 = 独立上下文;
+  项目 agent 定义与 hook 照常装载,见 `docs/research/2026-09-26-headless-driver-probes.md`)。
+- **codex run**(`executors/headless_codex.py`):每个 attempt 一个 `codex exec` 线程,分三步 —— ① 开线程:
+  `codex exec --json -C <仓库根> --sandbox read-only -c approval_policy=never -c model=<角色档>
+  -c model_reasoning_effort=<角色档> -c developer_instructions=<.codex/agents/<role>.toml 原文> "<只回复 OK>"`,
+  从首个事件 `thread.started` 取 `thread_id`;② 按 `thread_id` 做 session 级 C4 绑定(hook 负载的 `session_id`
+  就是线程 id,顶级线程没有 `agent_id`);③ 干活:`codex exec --json -o <末消息> --sandbox workspace-write resume
+  -c approval_policy=never -c model=… -c model_reasoning_effort=… [-c web_search=live]
+  <thread_id> "<冻结 prompt + broker 命令>"`。绝不 `--ephemeral`(没有 rollout 就没有
+  证据与计量)。开线程那一轮的墙钟 `session.timeouts.codex_open_s`(缺省 180 s),不占角色预算;rollout 按
+  `~/.codex/sessions/**/rollout-*-<thread_id>.jsonl` 反查并绑定为 transcript。
+  两个「为什么这么写」来自 2026-10-08 真实宿主探针(`docs/research/2026-10-08-codex-exec-probes.md`):
+  **`developer_instructions` 只在开线程时生效**(resume 上传了等于没传,但开线程给过就一直在),
+  **两轮必须同一档模型**(换档会被注入 1.79 万字符的 `<model_switch>` 基础提示词,比开线程省下的多得多);
+  同一组探针也确认了 `codex exec` 下项目层 hook 照常装载、`resume` 吃 `-c model` 覆盖、`-c web_search="live"` 可用。
+
+超时按角色(intel 12m / card·复核 25m / L3 30m)杀整个进程组;结果 JSON 非法、`is_error`、或退出 0 但
 声明的输出文件不在 = 该 attempt 失败。子进程环境显式构造:`ANTHROPIC_*`、模型/effort/Bedrock/Vertex 路由开关与
 `*_API_KEY`/`*_TOKEN`/`*_SECRET`(`CLAUDE_CODE_OAUTH_TOKEN` 除外)不传,记录只列被剥的名字。重试(attempt>1 或
 同任务已有调用记录)前,上一次的产物挪到 `_dispatch/headless/stale/`、同任务仍在跑的旧会话先停;正常退出后也扫一遍

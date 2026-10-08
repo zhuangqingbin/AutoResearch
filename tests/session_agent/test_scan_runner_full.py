@@ -1093,7 +1093,9 @@ def test_invalid_or_unverified_pinned_card_blocks_report_but_other_cards_finish(
     original_content = operations._content
 
     def content(operation, artifact_id):
-        if failure == "required_deep_missing" and artifact_id == "scan.l4.000002.a1.deep":
+        # 2026-10-08:停电要持续到重试的 a2 子树,否则一次 DOMAIN_VALIDATION 重试就把它救回来了
+        # (那是设计行为,但不是本用例要证的「坏卡挡报告」)。
+        if failure == "required_deep_missing" and re.fullmatch(r"scan\.l4\.000002\.a\d+\.deep", artifact_id):
             return "DEEP_EVIDENCE_UNAVAILABLE: synthetic outage"
         return original_content(operation, artifact_id)
 
@@ -1118,10 +1120,19 @@ def test_invalid_or_unverified_pinned_card_blocks_report_but_other_cards_finish(
     entries = store.read_entries(service._store_path(handle))
     assert entries[f"l4.{CODE}.a1.card"]["state"] == "SUCCEEDED"
     assert entries["l4.000001.a1.card"]["state"] == "SUCCEEDED"
-    assert entries["l4.000002.a1.card"]["state"] == "BLOCKED"
-    assert entries["l4.000002.a1.card"]["error"]["code"] == "CONTRACT_ERROR"
-    assert not entries["l4.000002.a1.card"]["outputs"]
-    assert len([r for r in models.requests if r.subject == "000002" and r.role == "scan.l4.card"]) == 1
+    # 2026-10-08:领域校验拒绝(DOMAIN_VALIDATION)= 票据带校验原话重做一次;a2 同样被拒 → 票据 BLOCKED。
+    assert entries["l4.000002.a1.card"]["state"] == "WAITING_RETRY"      # superseded by the a2 subtree
+    assert entries["l4.000002.a1.card"]["error"]["code"] == "DOMAIN_VALIDATION"
+    # a2 exhausts the ticket's attempt cap: the store entry stays FAILED (retryable class, no
+    # budget left), the taskbook ticket is BLOCKED and the run stops BLOCKED — same shape as a
+    # second TIMEOUT.
+    assert entries["l4.000002.a2.card"]["state"] == "FAILED"
+    assert entries["l4.000002.a2.card"]["error"]["code"] == "DOMAIN_VALIDATION"
+    assert legacy_scan._payload(handle)["tasks"]["000002"]["status"] == "BLOCKED"
+    assert not entries["l4.000002.a1.card"]["outputs"] and not entries["l4.000002.a2.card"]["outputs"]
+    cards_000002 = [r for r in models.requests if r.subject == "000002" and r.role == "scan.l4.card"]
+    assert [r.task_id for r in cards_000002] == ["l4.000002.a1.card", "l4.000002.a2.card"]
+    assert "修订要求" in cards_000002[1].prompt
     coverage = service.status(RUN_ID, handle_loader=lambda _: handle)["result"]["coverage"]
     assert coverage["successful_cards"]["required"] == 3
     assert coverage["successful_cards"]["completed"] == 2
@@ -1166,3 +1177,36 @@ def test_current_v3_card_runs_through_real_runner_and_submission_gates(tmp_path,
     assert usage["coverage"]["known_claims"] == 0
     assert usage["semantic_completeness"] == "UNKNOWN"
     assert usage["frame_sha256"] == artifacts.snapshot_artifact(handle, "research.frame")["sha256"]
+
+
+def test_l4_card_domain_rejection_drives_one_taskbook_retry_with_the_validator_message(tmp_path, monkeypatch):
+    """2026-10-08:一张卡被领域校验拒绝 = 这张卡带着校验原话重做一次(票据 attempt 2),整场继续。
+    10-07 第 5 场就是一张复核卡的精度契约错把整场送进 BLOCKED。"""
+    from autoresearch.session_agent.validation import DomainValidationError, validate_registered_contract
+
+    handle = _scan_run(tmp_path, monkeypatch)
+    operations = _FakeScanOperations(handle)
+    models = _FakeScanModels(transcripts=tmp_path / "host_transcripts")
+    rejected = []
+
+    def validator(submission, task):
+        if task["task_id"] == f"l4.{CODE}.a1.card" and not rejected:
+            rejected.append(task["task_id"])
+            raise DomainValidationError("ResearchCard decision: scenario return contradicts declared entry/exit")
+        return validate_registered_contract(handle, submission, task)
+
+    hooks = ServiceHooks(
+        handle_loader=lambda run_id: handle, operation_runner=operations,
+        event_recorder=lambda *args, **kwargs: None, validator=validator,
+        publisher=lambda current: None, finalizer=lambda current, report: {"ok": True})
+    final = runner.run_loop(RUN_ID, models, max_parallel=4, poll_seconds=0.01,
+                            max_rounds=3000, hooks=hooks)
+    assert final["finished"] is True, (final["stop_reason"], final["errors"], final["skipped"])
+    cards = [request for request in models.requests if request.role == "scan.l4.card"]
+    assert [request.task_id for request in cards] == [f"l4.{CODE}.a1.card", f"l4.{CODE}.a2.card"]
+    assert "修订要求" not in cards[0].prompt
+    assert "修订要求" in cards[1].prompt and "scenario return contradicts" in cards[1].prompt
+    book = json.loads((Path(handle.staging) / "_l4_tasks.json").read_text(encoding="utf-8"))
+    assert book["tasks"][CODE]["attempt"] == 2 and book["tasks"][CODE]["status"] == "SUCCEEDED"
+    promoted = (Path(handle.staging) / "details" / f"{CODE}.md").read_text(encoding="utf-8")
+    assert "**Rating**: Hold" in promoted

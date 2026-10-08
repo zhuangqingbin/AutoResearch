@@ -39,3 +39,10 @@ TASK_ATTEMPT: frozenset[str] = frozenset(
 #: 两套的**交集** = 无论哪一层都算瞬时的错误。仅供诊断/展示,不要拿它当判据 ——
 #: 判据必须显式选边,因为差集里的两个成员各自都是有理由的。
 BOTH: frozenset[str] = frozenset(INTEL_RESEARCH) & TASK_ATTEMPT
+
+#: 第三套(2026-10-08):**改输入再来一次**的口径。``DOMAIN_VALIDATION`` = 产物被确定性领域校验
+#: 拒绝(精度契约、缺 P4 证据、身份缺失……)。它不是瞬时错误 —— 原样重跑多半还是同一个错 ——
+#: 所以不进 ``TASK_ATTEMPT``;但新尝试的 prompt 会带上校验原话(``session_agent.dispatch.repair_hint``),
+#: 输入变了,重试才有意义。封顶仍是各自的 max_attempts。10-07 第 5 场:一张复核卡的四舍五入
+#: 被判 CONTRACT_ERROR 不可重试 → 整场 BLOCKED、$53 零发布,就是没有这一套。
+VALIDATION_REPAIR: frozenset[str] = frozenset({"DOMAIN_VALIDATION"})

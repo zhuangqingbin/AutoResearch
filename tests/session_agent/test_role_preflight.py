@@ -42,6 +42,11 @@ def test_preflight_reports_host_and_executor_failure_before_dispatch(tmp_path):
     assert not report["ok"]
     assert "independent_context" in str(report) and "web_search" in str(report)
     report = preflight_roles(_handle(tmp_path), ["stock.pm"], host, executor="headless")
+    assert report["ok"], report            # 2026-10-08:headless 两个引擎都服务(claude -p / codex exec)
+    from autoresearch.session_agent.roles import EXECUTOR_CAPABILITIES
+    claude_only = SimpleNamespace(name="claude-only", capabilities={**EXECUTOR_CAPABILITIES["headless"],
+                                                                     "engines": ("claude",)})
+    report = preflight_roles(_handle(tmp_path), ["stock.pm"], host, executor=claude_only)
     assert not report["ok"] and "codex" in str(report)
     report = preflight_roles(_handle(tmp_path), ["stock.pm"], host, executor="mystery")
     assert not report["ok"] and "unknown executor" in str(report)

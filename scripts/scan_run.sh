@@ -18,8 +18,23 @@
 set -u
 cd "$(dirname "$0:A")/.." || exit 1
 
-# 引擎显式钉死:launchd 环境里没有 CLAUDECODE,headless 执行器只跑 claude(Codex 不在范围)。
-export AUTORESEARCH_ENGINE=claude
+# 引擎显式钉死:launchd 环境里没有 CLAUDECODE。--engine claude|codex(缺省 claude;交互会话里
+# 由宿主按自己的引擎传)—— claude 场每个推理任务一个 `claude -p`,codex 场一个 `codex exec`。
+engine=claude
+args=()
+while (( $# )); do
+  case "$1" in
+    --engine) engine="$2"; shift 2 ;;
+    --engine=*) engine="${1#--engine=}"; shift ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+case "$engine" in
+  claude|codex) ;;
+  *) echo "[scan-run] --engine 只认 claude|codex,收到 '$engine'" >&2; exit 2 ;;
+esac
+export AUTORESEARCH_ENGINE="$engine"
+set -- "${args[@]}"
 
 if [[ -x /usr/bin/caffeinate ]]; then
   exec /usr/bin/caffeinate -i uv run --no-sync python -m autoresearch.scan.scan_run "$@"

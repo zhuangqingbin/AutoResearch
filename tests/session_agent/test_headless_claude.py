@@ -491,13 +491,20 @@ def test_cli_run_mailbox_keeps_host_timeouts(tmp_path, monkeypatch, capsys):
     assert seen["name"] == "mailbox" and seen.get("timeouts") is None
 
 
-def test_cli_run_headless_refuses_a_codex_run(tmp_path, monkeypatch, capsys):
+def test_cli_run_headless_builds_the_codex_executor_for_a_codex_run(tmp_path, monkeypatch, capsys):
+    """2026-10-08:同一个 `run --executor headless`,按 run 的引擎选传输(codex = `codex exec`)。"""
     from autoresearch.session_agent import __main__ as cli, runner
+    from autoresearch.session_agent.executors.headless_codex import HeadlessCodexExecutor
 
     run = _cli_run(tmp_path, monkeypatch, "codex")
-    monkeypatch.setattr(runner, "run_loop", lambda *a, **k: pytest.fail("must not run"))
-    assert cli.main(["run", "--run-id", run.run_id, "--executor", "headless"]) == 2
-    assert "claude" in json.loads(capsys.readouterr().out)["errors"][0]["message"]
+    seen = {}
+    monkeypatch.setattr(runner, "run_loop", lambda run_id, executor, **kwargs: seen.update(
+        kwargs, executor=executor) or {"finished": True, "stop_reason": "FINISHED"})
+    assert cli.main(["run", "--run-id", run.run_id, "--executor", "headless",
+                     "--codex-bin", "/opt/codex", "--max-parallel", "2"]) == 0
+    assert isinstance(seen["executor"], HeadlessCodexExecutor)
+    assert seen["executor"].codex_bin == "/opt/codex" and seen["executor"].name == "headless"
+    assert seen["timeouts"] == dict(hc.HEADLESS_TIMEOUTS) and seen["max_parallel"] == 2
 
 
 # ── child environment: no auth routing, no project secrets (review I2) ─────────

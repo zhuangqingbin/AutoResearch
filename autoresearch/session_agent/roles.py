@@ -19,7 +19,7 @@ EXECUTOR_CAPABILITIES = MappingProxyType({
     "mailbox": {"engines": ("claude", "codex"), "independent_context": "HOST",
                 "web": "HOST", "tool_policy": "HOST_ROLE_CONTRACT",
                 "output_boundary": "REGISTERED_ARTIFACT_VALIDATION"},
-    "headless": {"engines": ("claude",), "independent_context": True,
+    "headless": {"engines": ("claude", "codex"), "independent_context": True,
                  "web": "HOST", "tool_policy": "PROJECT_AGENT_TOOL_SUPERSET",
                  "output_boundary": "REGISTERED_ARTIFACT_VALIDATION"},
 })

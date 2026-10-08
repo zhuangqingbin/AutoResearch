@@ -326,8 +326,8 @@ def bind_context(request_path: Path, *, session_id: str, agent_id: str,
     _assert_live(value)
     if not headless and session_id != value['identity']['session_id']:
         raise ValueError('host session differs from frozen dispatch')
-    if headless and (value['identity']['engine'] != 'claude' or agent_id):
-        raise ValueError('headless binding requires Claude session scope')
+    if headless and (value['identity']['engine'] not in {'claude', 'codex'} or agent_id):
+        raise ValueError('headless binding requires a session-scoped claude/codex identity')
     if not headless and not agent_id:
         raise ValueError('child agent id required')
     path = _binding_path(value['identity']['engine'], session_id, agent_id, repo_root)
