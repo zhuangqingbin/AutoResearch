@@ -13,12 +13,14 @@ def build_bundle(handle, input_ids: list[str]) -> dict:
     if len(input_ids) != len(set(input_ids)) or not input_ids:
         raise ValueError("evidence bundle requires unique declared inputs")
     sources, source_index, gaps = [], [], []
+    # declared_path() is resolved; production handles are cwd-relative (context_<engine>/…).
+    staging = Path(handle.staging).resolve()
     for artifact_id in sorted(input_ids):
         with artifacts.open_artifact(handle, artifact_id) as stream:
             data = stream.read()
         path = artifacts.declared_path(handle, artifact_id)
         sources.append({"artifact_id": artifact_id,
-                        "relative_path": path.relative_to(Path(handle.staging)).as_posix(),
+                        "relative_path": path.relative_to(staging).as_posix(),
                         "sha256": sha256_bytes(data), "size_bytes": len(data)})
         # Retain exact source/gap lines, including their originating section; do
         # not turn analyst prose into machine-asserted facts or invent sources.

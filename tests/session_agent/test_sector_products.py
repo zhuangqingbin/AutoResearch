@@ -200,3 +200,13 @@ def test_directional_phrases_in_template_terrain_are_still_rejected(tmp_path, ph
         validate_registered_domain_contract(handle, submission, task)
     with pytest.raises(RuntimeError, match="directional"):
         sector_lite_validate(_lite_handle(tmp_path / "lite", brief))
+
+
+def test_sector_brief_definition_never_bans_a_word_its_own_template_requires():
+    # 2026-10-03: the definition banned 「买卖」 while its template requires the label
+    # 「主动买卖单净流入合计」, so one brief rewrote the label to dodge its own rule.
+    text = (Path(__file__).resolve().parents[2] / ".claude/agents/sector-brief.md").read_text(encoding="utf-8")
+    template = text.split("```", 2)[1]  # the one fenced block the brief must reproduce
+    assert "## 地形段(" in template
+    banned = re.search(r"地形段禁「([^」]+)」", text).group(1).split("/")
+    assert [word for word in banned if word in template] == []

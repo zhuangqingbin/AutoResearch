@@ -516,9 +516,9 @@ def _publish_stock_active(handle, *, reports_root: Path | None = None) -> Path:
             from autoresearch.news.card_claims import registered_card_semantics
             frame = json.loads(artifacts.read_bytes(handle, "research.frame"))
             semantics = registered_card_semantics(handle,
-                artifacts.read_bytes(handle, "stock.full.4_decision.decision").decode(), subject=bundle["ticker"],
+                artifacts.read_bytes(handle, stock_assemble.DECISION_ARTIFACT_ID).decode(), subject=bundle["ticker"],
                 frame=frame, frame_hash=artifacts.snapshot_artifact(handle, "research.frame")["sha256"],
-                artifact_id="stock.full.4_decision.decision", bands=card_rating_bands_from_capsule(handle.capsule))
+                artifact_id=stock_assemble.DECISION_ARTIFACT_ID, bands=card_rating_bands_from_capsule(handle.capsule))
             if manifest.get("claim_usage") != semantics["claim_usage"]:
                 raise RuntimeError("full report claim usage changed since assembly")
     else:

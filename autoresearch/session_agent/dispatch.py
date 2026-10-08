@@ -211,13 +211,15 @@ def render_prompt(handle, task: dict, attempt: int, *, inputs: dict, outputs: di
                 bound_claim_context,
                 claim_population,
                 claim_usage_instruction,
+                population_prompt_rows,
             )
             claim_context = bound_claim_context(handle, task=task)
             population, _ = claim_population(frame=frame, capsule=claim_context["capsule"],
                 identity=claim_context["identity"], accepted_attempts=claim_context["accepted_attempts"],
                 subject=subject, task_subjects=claim_context["task_subjects"])
             prefix += claim_usage_instruction()
-            prefix += "已知断言人口（不得删除未核项）：" + json.dumps([{key: row[key] for key in ("claim_id", "statement_sha256", "verdict")} for row in population.values()], ensure_ascii=False) + "\n"
+            prefix += ("已知断言人口（不得删除未核项；event 为该断言的结构化事件，对照情报正文定位后按维度/门映射）："
+                       + json.dumps(population_prompt_rows(population), ensure_ascii=False) + "\n")
             prefix += "冻结评分档位（不得读当前配置替换）：" + json.dumps(card_rating_bands_from_capsule(handle.capsule), ensure_ascii=False) + "\n"
     if task.get("expected_output_contract") in {"research.card.initial.v1", "research.card.decision.v1"}:
         from autoresearch.session_agent.card_facts import bound_manifest

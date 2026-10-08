@@ -57,6 +57,25 @@ def test_bundle_preserves_solvency_and_rejects_changed_sources(tmp_path):
         validate_bundle(handle, ['stock.evidence_bundle', *ids])
 
 
+def test_bundle_accepts_cwd_relative_handle(tmp_path, monkeypatch):
+    # Production handles are cwd-relative (`ws.context_root()` is `context_<engine>`), while
+    # `declared_path` returns resolved absolute paths; the bundle must index both alike.
+    from autoresearch.session_agent.evidence_bundle import build_bundle, validate_bundle
+    reference = _handle(tmp_path / "abs")
+    absolute = build_bundle(reference, _sources(reference))
+    handle = _handle(tmp_path / "rel")
+    monkeypatch.chdir(tmp_path / "rel")
+    handle.workspace = handle.workspace.relative_to(tmp_path / "rel")
+    handle.staging = handle.staging.relative_to(tmp_path / "rel")
+    handle.capsule = handle.capsule.relative_to(tmp_path / "rel")
+    ids = _sources(handle)
+    bundle = build_bundle(handle, ids)
+    assert [x["relative_path"] for x in bundle["sources"]] == [x["relative_path"] for x in absolute["sources"]]
+    artifacts.artifact_path(handle, "stock.evidence_bundle").write_text(json.dumps(bundle))
+    artifacts.bind_artifact_hash(handle, "stock.evidence_bundle")
+    validate_bundle(handle, ["stock.evidence_bundle", *ids])
+
+
 def test_evidence_bundle_operation_is_closed_and_replayable():
     from autoresearch.session_agent.operations import build_argv
     from autoresearch.contracts.operation_replay import operation_replay_classification

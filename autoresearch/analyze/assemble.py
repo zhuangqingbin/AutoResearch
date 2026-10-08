@@ -38,6 +38,9 @@ from autoresearch.data import contracts as data_contracts
 # The PM decision — required, rendered FIRST as the executive summary. v4: the PM
 # prepends a 决策仪表盘 (one-row dashboard) + 维度评分卡 (scorecard) at its top.
 DECISION_REL = "4_portfolio/decision.md"
+# session_v1 artifact id of DECISION_REL (`workflows.stock.full_product_artifacts` naming); the
+# claim-producer lookup must use exactly this id or it finds no producer task.
+DECISION_ARTIFACT_ID = "stock.full.4_portfolio.decision"
 DECISION_TITLE = "S1 · 执行摘要 · PM 决策（决策仪表盘 + 维度评分卡）"
 
 # ▸ 决策主线 — the sections AFTER the exec summary. (title, [(name, rel, optional)])
@@ -360,7 +363,7 @@ def main(
                     return 1
                 registry = json.loads((Path(tracked.workspace) / "session/artifacts.json").read_text())
                 decision_context.update(
-                    claim_context=bound_claim_context(tracked, artifact_id="stock.full.4_decision.decision"),
+                    claim_context=bound_claim_context(tracked, artifact_id=DECISION_ARTIFACT_ID),
                     frame_hash=registry["artifacts"]["research.frame"]["sha256"],
                 )
         return _main_unlocked(

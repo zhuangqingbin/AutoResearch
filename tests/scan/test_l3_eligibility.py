@@ -239,3 +239,18 @@ def test_write_finalists_rejects_duplicate_v2_before_publishing(tmp_path):
     with pytest.raises(ValueError, match="duplicate"):
         merge.write_finalists("2026-09-30", root=tmp_path)
     assert not (day / "finalists.csv").exists()
+
+
+def test_lint_reports_table_rows_the_ranker_left_unjudged(tmp_path):
+    # 2026-10-03: two production runs judged only 28–30 of the 40 table rows; the unjudged rows
+    # carried no finalist/bench decision and nothing surfaced the gap.
+    day = tmp_path / "2026-09-30"
+    day.mkdir()
+    (day / "_l3_table.md").write_text(
+        "〔L3输出契约 v2〕\n| 行业 | 全市场n |\n|---|---|\n| 半导体 | 175 |\n"
+        "| code | name |\n|---|---|\n| 000001 | 票000001 |\n| 000002 | 票000002 |\n| 000003 | 票000003 |\n",
+        encoding="utf-8")
+    (day / "_l3_judged.json").write_text(
+        json.dumps([ranked("000001"), ranked("000002", finalist=False)]), encoding="utf-8")
+    result = validation.lint_judged("2026-09-30", root=tmp_path)
+    assert result["coverage"] == {"table_rows": 3, "judged": 2, "unjudged": ["000003"]}

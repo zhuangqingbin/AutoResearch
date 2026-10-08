@@ -317,6 +317,50 @@ def test_candidate_raw_attempt_paths_are_not_mutable_harvest_cache(tmp_path):
         assert path == handle.staging / f"session_attempts/600519/a1/{key}.md"
 
 
+def test_single_stage_scan_retry_keeps_the_frozen_frame_on_the_a2_subtree(tmp_path):
+    # 2026-10-03 production run 20261003T101330575299Z: every single-stage a2 card was rejected
+    # (no research-decision-v2 block) because retry_l4 attached the frame only for two-stage plans,
+    # so dispatch never rendered the decision window / card contract / claim population.
+    from autoresearch.session_agent import legacy_scan, plan as plan_service, service, store
+    from autoresearch.session_agent.decision_frame import attach_expansion, register_frame
+    handle = _handle(tmp_path)
+    req = dict(scan_request(), schema_version=2, card_research_profile="single-stage-v1")
+    req["host_profile"] = dict(req["host_profile"], independent_context=True, web_search=True, web_fetch=True)
+    handle.contract.run_kind = "scan-market"
+    session = handle.workspace / "session"
+    session.mkdir()
+    plan = workflows.build_plan(req, handle)
+    assert not scan.two_stage_plan(plan)
+    register_frame(req, handle, calendar_loader=lambda *_: ([], "UNKNOWN"))
+    for name, value in (("request", req), ("host_profile", req["host_profile"]), ("plan", plan)):
+        (session / f"{name}.json").write_text(json.dumps(value))
+    store.initialize(session / "tasks.json", plan)
+    gate2 = scan._task("scan.gate2", "DETERMINISTIC", dependencies=["scan.gate1"],
+        inputs=["scan.run_mode"], outputs=["scan.finalists"], contract="scan.gate2.v1", operation="scan.gate2.skip")
+    prior = scan._expansion(plan, "scan.l3.repair", [{"artifact_id": "scan.run_mode", "sha256": "e" * 64}], [gate2])
+    plan_service.persist_expansion(session, plan, prior, existing_tasks=plan["tasks"])
+    store.register_tasks(session / "tasks.json", prior["tasks"], plan_hash=plan["plan_hash"])
+    expansion = scan.l4_expansion(plan, {"mode": "FULL"}, [{"code": "600519"}],
+        [{"artifact_id": "scan.finalists", "sha256": "f" * 64}], intel_enabled=True)
+    expansion = attach_expansion(expansion, artifacts.snapshot_artifact(handle, "research.frame"))
+    plan_service.persist_expansion(session, plan, expansion, existing_tasks=[*plan["tasks"], gate2])
+    store.register_tasks(session / "tasks.json", expansion["tasks"], plan_hash=plan["plan_hash"])
+    workflows.register_expansion_artifacts(req, handle, expansion)
+    _write(handle, "scan.l4.600519.a1.prompt", "task pack")
+    legacy_scan.initialize_tickets(handle, ["600519"])
+    legacy_scan.claim_ticket(handle, "600519", 1)
+    legacy_scan.fail_ticket(handle, "600519", 1, "TIMEOUT", "intel answered after its window")
+
+    service.retry_l4(handle.run_id, "600519", 2, handle_loader=lambda _: handle)
+
+    first = service._task(handle, "l4.600519.a1.card")
+    retry = service._task(handle, "l4.600519.a2.card")
+    assert "research.frame" in first["input_artifact_ids"]
+    assert "research.frame" in retry["input_artifact_ids"]
+    assert retry["expected_output_contract"] == first["expected_output_contract"]
+    assert "research.frame" in service._task(handle, "l4.600519.a2.intel")["input_artifact_ids"]
+
+
 @pytest.mark.parametrize("initial_succeeded", [True, False])
 def test_scan_retry_service_uses_frozen_graph_and_reuses_only_successful_initial(tmp_path, initial_succeeded):
     from autoresearch.session_agent import legacy_scan, plan as plan_service, service, store

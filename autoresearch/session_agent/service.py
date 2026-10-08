@@ -683,8 +683,9 @@ def retry_l4(
                     for task in initial_tasks),
     )
     from autoresearch.session_agent.decision_frame import attach_expansion, frame_in_plan
-    from autoresearch.session_agent.workflows.scan import two_stage_plan
-    if two_stage_plan(frozen_plan) and frame_in_plan(frozen_plan):
+    # Same rule as workflows.expansions_after_task: a frozen frame rides on every expansion, so
+    # a retried card keeps its decision window, card contract and claim population.
+    if frame_in_plan(frozen_plan):
         expansion = attach_expansion(expansion, artifacts.snapshot_artifact(handle, "research.frame"))
     root = _session_dir(handle) / "recoveries"
     root.mkdir(parents=True, exist_ok=True)

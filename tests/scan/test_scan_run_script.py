@@ -99,7 +99,7 @@ def test_nightly_close_runs_all_steps_when_no_scan_holds_the_lock(tmp_path):
     assert _modules(calls) == [
         "autoresearch.scan.run_lock", "autoresearch.scan.outcome", "autoresearch.scan.ledger_views",
         "autoresearch.scan.populations", "autoresearch.scan.populations",
-        "autoresearch.analyze.ledger"]
+        "autoresearch.analyze.ledger", "autoresearch.news.catalog"]
 
 
 def test_nightly_close_waits_for_a_running_scan_then_runs_everything(tmp_path):
@@ -118,6 +118,7 @@ def test_nightly_close_skips_the_scan_ledger_steps_while_a_scan_still_runs(tmp_p
     assert not any(module.startswith(("autoresearch.scan.outcome", "autoresearch.scan.ledger",
                                       "autoresearch.scan.populations")) for module in modules)
     assert "autoresearch.analyze.ledger" in modules              # independent of the scan
+    assert "autoresearch.news.catalog" in modules                # atomic catalog writes, no scan ledger
     assert "跳过" in proc.stdout + proc.stderr
 
 

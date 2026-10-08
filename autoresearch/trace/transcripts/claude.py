@@ -322,6 +322,34 @@ class ClaudeTranscriptAdapter:
                 )
             )
 
+        def tool_use_blocks(content) -> list[dict]:
+            return [block for block in (content if isinstance(content, list) else [])
+                    if isinstance(block, dict) and block.get("type") == "tool_use"]
+
+        def add_request(block: dict, message_id, timestamp: str | None) -> None:
+            emitted_requests.add(block.get("id"))
+            add(
+                "tool_request",
+                {
+                    "message_id": message_id,
+                    "tool_use_id": block.get("id"),
+                    "tool_name": block.get("name"),
+                    "input": block.get("input") or {},
+                },
+                timestamp,
+            )
+
+        # Claude Code streams one API response as one row per content block under the same
+        # message id and runs each tool call before the next block arrives, so an earlier row of
+        # a message can hold a distinct tool_use the message's last row lacks. The last row stays
+        # authoritative for text, errors and usage; tool calls it does not repeat are kept from
+        # the earlier rows, in place, so each request still precedes its result.
+        final_tool_ids = {
+            message_id: {block.get("id") for block in tool_use_blocks(
+                (rows[idx].get("message") or {}).get("content"))}
+            for message_id, idx in last_message_row.items()
+        }
+        emitted_requests: set = set()
         for row_idx, row in enumerate(rows):
             timestamp = row.get("timestamp")
             msg = row.get("message") or {}
@@ -329,6 +357,11 @@ class ClaudeTranscriptAdapter:
                 msg = {}
             message_id = msg.get("id")
             if message_id and last_message_row.get(str(message_id)) != row_idx:
+                for block in tool_use_blocks(msg.get("content")):
+                    request_id = block.get("id")
+                    if (request_id and request_id not in final_tool_ids.get(str(message_id), set())
+                            and request_id not in emitted_requests):
+                        add_request(block, message_id, timestamp)
                 continue
             if row.get("error") or row.get("isApiErrorMessage"):
                 add(
@@ -367,18 +400,9 @@ class ClaudeTranscriptAdapter:
                     continue
                 block_type = block.get("type")
                 if block_type == "tool_use":
-                    tool_name = block.get("name")
-                    request_id = block.get("id")
-                    add(
-                        "tool_request",
-                        {
-                            "message_id": message_id,
-                            "tool_use_id": request_id,
-                            "tool_name": tool_name,
-                            "input": block.get("input") or {},
-                        },
-                        timestamp,
-                    )
+                    if block.get("id") and block.get("id") in emitted_requests:
+                        continue
+                    add_request(block, message_id, timestamp)
                 elif block_type == "tool_result":
                     request_id = block.get("tool_use_id")
                     result = {

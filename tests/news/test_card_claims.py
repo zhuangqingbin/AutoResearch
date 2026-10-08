@@ -313,3 +313,18 @@ def test_own_declaration_offered_only_as_alternative_is_still_demoted_for_review
     result = assess(handle, claim, [usage(claim, "BACKGROUND", "BACKGROUND"),
                                     usage(_OWN, relation="ALTERNATIVE")], _OWN_DECLARATION)
     assert result["reviewed_card"]["gates"]["业绩真兑现"] == "UNKNOWN"
+
+
+def test_prompt_population_names_each_known_claim_by_its_structured_event(tmp_path):
+    # 2026-10-03 run 20261003T101330575299Z: every L4 card got only claim ids + hashes, could not
+    # tell which intel fact an id was, and parked all of them as BACKGROUND, so the claim-use map
+    # never reached a dimension or gate.
+    handle, _, _, claim = setup_claim(tmp_path)
+    population, _ = card_claims.claim_population(handle.capsule,
+        identity={"engine": handle.engine, "run_id": handle.run_id, "task_id": "card", "attempt": 1},
+        accepted_attempts={"intel.600000": 1}, frame=frame(), subject="600000")
+    assert card_claims.population_prompt_rows(population) == [{
+        "claim_id": "claim", "statement_sha256": claim["statement_sha256"],
+        "verdict": population["claim"]["verdict"],
+        "event": "2026-09-01 回购 · completed · actual · affirmed · 1000000000 CNY executed_total",
+    }]

@@ -132,10 +132,10 @@
   "l3": {
     "two_pass": true,                  // 两遍法;false = 单遍读全表
     "pass1_target": 40,                // pass1 分诊留给 l3-rank 的行数
-    "finalist_min": 7,                 // L3 finalist 区间下限(上限由 l4.max_cards 算出,GATE1 回显)
+    "finalist_min": 4,                 // L3 finalist 区间下限(上限由 l4.max_cards 算出,GATE1 回显)
     "composite_seat": {                // composite 证据席
       "enabled": true,                 // 席位开关
-      "m": 3,                          // 强送 finalists 的席位数(计入 l4.max_cards)
+      "m": 1,                          // 强送 finalists 的席位数(计入 l4.max_cards)
       "exclude_knife": true            // 席位剔落刀
     },
     "guards": {                        // finalists 守卫阈(merge_l3_finalists_v3)
@@ -188,7 +188,7 @@
 
   // ── l4 · 决策卡卡数 ── 生效点 scan/l4/card_count.effective_caps · scan/self_review.l4_card_count_lint · scan/l4/prompts.params_block · scan/menu.budget_cfg · scan/menu.l4_budget · scan/menu.zero_buy_streak · scan/l4/rubric.rubric_cfg · scan/l4/rubric.rubric_rating · scan/l4/rubric.force_full_card · scan/dossier.configured_max_days · scan/l4/prompts.configured_echo_lookback · scan/l4/producers.producers_cfg · scan/l4/producers.fetch_pledge · scan/l4/producers.fetch_seats · scan/l4/producers.fetch_consensus · scan/l4/producers.slim_min_bytes · scan/l4_tasks.prepare_slim · scan/l4/prompts.slim_hint · workflows/l4-stock.js · scan/decision_finalize.review_cfg · scan/decision_finalize.review_trigger · scan/decision_finalize._ensemble_flag · session_agent/domain_ops.scan_review_plan · session_agent/workflows/scan.review3_expansion
   "l4": {
-    "max_cards": 10,                   // 非 📌 卡上限(含 composite 席位;📌 持仓恒出卡不占额)
+    "max_cards": 5,                    // 非 📌 卡上限(含 composite 席位;📌 持仓恒出卡不占额)
     "budget_flags": true,              // finalist 名额再与菜单预算取小(max_cards = 13 时预算档最低 10,旗咬不到)
     "shadow_fields": true,             // 卡上三条影子机读行(兑现机制/入场否决/情景),只记账不进门
     "budget": {                        // 菜单感知 L4 预算(menu.l4_budget;只降不升)
@@ -224,7 +224,7 @@
     }
   },
 
-  // ── l4_intel · 活体情报站 ── 生效点 workflows/l4-stock.js · session_agent/workflows/scan.expansions_after_task · session_agent/domain_ops.scan_l4_prepare · scan/l4/intel_guard.configured_soft_cap · scan/self_review.product_shape_lint · scan/l4/intel_gate.decide · scan/l4/intel_guard.guard_cfg · scan/l4/intel_status.status_cfg · scan/l4/intel_gate.dead_gate_factors
+  // ── l4_intel · 活体情报站 ── 生效点 workflows/l4-stock.js · session_agent/workflows/scan._frozen_intel_enabled · session_agent/domain_ops.scan_l4_prepare · scan/l4/intel_guard.configured_soft_cap · scan/self_review.product_shape_lint · scan/l4/intel_gate.decide · scan/l4/intel_guard.guard_cfg · scan/l4/intel_status.status_cfg · scan/l4/intel_gate.dead_gate_factors
   "l4_intel": {
     "enabled": true,                   // 派活体情报员;false = 卡内网查兜底
     "max_queries": 20,                 // 情报员网查条数软顶(prompt 上限 + 裁稿 + 发布前 lint)
@@ -469,7 +469,7 @@
   "session": {
     "global_intel_max_queries": 8,     // 全球情报搜索与原文抓取总额度;仅 session_agent
     "timeouts": {                      // 角色超时(秒,从被领取算起;仅 session_agent)
-      "mailbox": {},                   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
+      "mailbox": { "scan.l4.intel": 1800 },   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
       "headless": {},                  // headless 模式逐 role 覆盖(缺 = HEADLESS_TIMEOUTS)
       "fallback_s": 1800               // 表外角色的超时
     },

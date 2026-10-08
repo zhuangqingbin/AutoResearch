@@ -305,7 +305,7 @@ def stock_full_assemble(handle=None) -> dict:
                              "frame": json.loads(_text(current, "research.frame")),
                              "rating_bands": card_rating_bands_from_capsule(current.capsule),
                              "frame_hash": artifacts.snapshot_artifact(current, "research.frame")["sha256"],
-                             "claim_context": bound_claim_context(claim_handle(current), artifact_id="stock.full.4_decision.decision")}
+                             "claim_context": bound_claim_context(claim_handle(current), artifact_id=stock_assemble.DECISION_ARTIFACT_ID)}
                             if version == CURRENT_CARD_RULES else None)
         if stock_assemble.main(
             clock=operation_clock(current),

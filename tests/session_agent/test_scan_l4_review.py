@@ -181,3 +181,19 @@ def test_scan_card_contract_validates_the_dynamic_output_instead_of_stock_lite_a
 
     with pytest.raises(DomainValidationError, match="disagree"):
         validate_registered_contract(object(), {}, task)
+
+
+def test_reviews_read_the_same_intel_doc_as_the_card_when_intel_is_on(tmp_path):
+    # 2026-10-03 run 20261003T101330575299Z: the pinned-holding review2 got intel_status but not the
+    # intel text, so the independent re-check judged on less evidence than the card it reviews.
+    plan = _plan(tmp_path)
+    review2 = next(task for task in review_expansion(
+        plan, {"reviews": [{"code": "300750", "rating": "Sell", "pinned": True, "trigger": "sell_review"}]},
+        _snapshots(), intel_enabled=True)["tasks"] if task["kind"] == "INFERENCE")
+    review3 = next(task for task in review3_expansion(
+        plan, {"decisions": [{"code": "300750", "trigger": "sell_review", "rating": "Underweight",
+                              "review2_rating": "Hold", "same_tier": False}]},
+        _snapshots(), intel_enabled=True)["tasks"] if task["kind"] == "INFERENCE")
+    for review in (review2, review3):
+        assert "scan.l4.300750.a1.intel_doc" in review["input_artifact_ids"]
+        assert not any(item.endswith((".card", ".review2", ".review3")) for item in review["input_artifact_ids"])

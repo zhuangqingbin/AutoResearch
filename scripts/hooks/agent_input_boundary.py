@@ -57,7 +57,8 @@ def decide(payload: dict, engine: str = 'claude') -> dict | None:
         if tool == 'Grep' and ACCESS['path_allowed'](
                 bound, args.get('path'), 'read', cwd=payload.get('cwd') or str(REPO_ROOT)):
             return None
-        if (tool in {'WebSearch', 'WebFetch', 'web_search', 'web_fetch', 'web.run'}
+        if ((tool in {'WebSearch', 'WebFetch', 'web_search', 'web_fetch', 'web.run'}
+             or (engine == 'codex' and tool == 'webrun'))
                 and 'WEB' in bound['manifest']['tool_policy'].split('_')):
             return None
         return _deny('tool is not registered for this task')

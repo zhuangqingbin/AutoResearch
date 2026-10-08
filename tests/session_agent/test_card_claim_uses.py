@@ -68,7 +68,7 @@ def test_full_publish_rechecks_claims_not_only_raw_gate(tmp_path, monkeypatch):
     context = {"rules_version": "skills-gap-v3", "subject": "NVDA",
         "frame": json.loads(artifacts.read_bytes(handle, "research.frame")),
         "frame_hash": artifacts.snapshot_artifact(handle, "research.frame")["sha256"],
-        "claim_context": bound_claim_context(handle, artifact_id="stock.full.4_decision.decision")}
+        "claim_context": bound_claim_context(handle, artifact_id="stock.full.4_portfolio.decision")}
     assert assemble.main(reports_root=tmp_path / "reports", context_root=tmp_path / "context_codex",
                          decision_context=context) == 1
     assert not (tmp_path / "reports").exists()

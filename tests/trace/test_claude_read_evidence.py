@@ -166,3 +166,48 @@ def test_codex_raw_read_file_output_still_observed(tmp_path):
     }
     proof = _observe(normalized, str(target), target.read_bytes())
     assert proof is not None and proof["call_id"] == "c1"
+
+
+def test_read_streamed_before_sibling_calls_of_the_same_message_is_observed(tmp_path):
+    # Claude Code 2.1.288 streams one API response holding several tool_use blocks as one row
+    # per block (same message id) and runs each call before the next block arrives. In run
+    # 20261003T101330575299Z the holding review's deep Read was the first block of its message;
+    # keeping only that message's last row dropped the Read and rejected the review (deep DD 未核).
+    path = str(tmp_path / "688981.deep.md")
+    rows = claude_read_rows(path)
+    common = {"sessionId": "host-session", "agentId": "child", "version": "2.1.288"}
+    rows[1]["message"]["id"] = "msg-stream"
+    rows.insert(1, {**common, "type": "assistant", "timestamp": "2026-10-01T07:00:01Z",
+                    "message": {"id": "msg-stream", "role": "assistant",
+                                "content": [{"type": "thinking", "thinking": ""}]}})
+    rows += [
+        {**common, "type": "assistant", "timestamp": "2026-10-01T07:00:03Z",
+         "message": {"id": "msg-stream", "role": "assistant", "stop_reason": "tool_use", "content": [
+             {"type": "tool_use", "id": "toolu_grep", "name": "Grep",
+              "input": {"pattern": "688981", "path": "/finalists.csv"}}]}},
+        {**common, "type": "user", "timestamp": "2026-10-01T07:00:04Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "toolu_grep", "content": "12:688981"}]}},
+    ]
+    proof = _observe(_normalized(tmp_path, rows), path, BODY.encode())
+    assert proof is not None and proof["call_id"] == "toolu_deep"
+
+
+def test_every_tool_call_streamed_under_one_message_is_normalized_in_order(tmp_path):
+    common = {"sessionId": "host-session", "agentId": "child", "version": "2.1.288"}
+
+    def call(call_id, name, target):
+        return {**common, "type": "assistant", "message": {"id": "msg-stream", "role": "assistant",
+                "content": [{"type": "tool_use", "id": call_id, "name": name, "input": {"file_path": target}}]}}
+
+    def result(call_id):
+        return {**common, "type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": call_id, "content": "1\tx"}]}}
+
+    rows = [call("c1", "Read", "/a.md"), result("c1"), call("c2", "Read", "/b.md"), result("c2"),
+            call("c3", "Read", "/c.md"), result("c3")]
+    rows[-2]["message"]["stop_reason"] = "tool_use"
+    items = _stats(tmp_path, rows).normalized.items
+    assert [(item.kind, item.payload["tool_use_id"]) for item in items] == [
+        ("tool_request", "c1"), ("tool_result", "c1"), ("tool_request", "c2"),
+        ("tool_result", "c2"), ("tool_request", "c3"), ("tool_result", "c3")]

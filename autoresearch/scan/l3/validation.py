@@ -298,10 +298,24 @@ def lint_judged(date: str, root: Path | None = None) -> dict:
     except ValueError as exc:
         return {"ok": False, "reason": str(exc), "failures": [], "contract_error": True}
     failures = _lint_failures(picks, scan_dir)
+    coverage = _table_coverage(picks, scan_dir)
     bad = [f"{row['code']}:{row['token']}" for row in failures]
     if bad:
-        return {"ok": False, "reason": "; ".join(bad), "failures": failures}
-    return {"ok": True, "reason": "ok", "failures": []}
+        return {"ok": False, "reason": "; ".join(bad), "failures": failures, "coverage": coverage}
+    return {"ok": True, "reason": "ok", "failures": [], "coverage": coverage}
+
+
+_TABLE_ROW_RE = re.compile(r"^\| (\d{6}) \|", re.MULTILINE)
+
+
+def _table_coverage(picks: list[dict], scan_dir: Path) -> dict:
+    """Every candidate row of the table l3-rank read needs a finalist or bench verdict (audit only)."""
+    table = scan_dir / "_l3_table.md"
+    text = table.read_text(encoding="utf-8") if table.is_file() else ""
+    rows = list(dict.fromkeys(_TABLE_ROW_RE.findall(text)))
+    judged = {str(pick.get("code", "")).zfill(6) for pick in picks}
+    return {"table_rows": len(rows), "judged": sum(code in judged for code in rows),
+            "unjudged": [code for code in rows if code not in judged]}
 
 def _atomic_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

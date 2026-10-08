@@ -4,7 +4,7 @@
 # 23:30(2026-09-26 批 4,原 20:45):排在 21:20 无人值守扫描(scripts/scan_run.sh)之后,
 # 避免与扫描读写同一账本;也错开 19:30/21:00 的 prewarm。
 #
-# 只跑**确定性、只记不学**的五步(零 LLM、零回注;LLM 复盘已于 2026-08-21 整体退役)。
+# 只跑**确定性、只记不学**的六步(零 LLM、零回注;LLM 复盘已于 2026-08-21 整体退役)。
 # 下面这张清单与真实的 `step "…"` 行逐条对齐(注释说「两步」却列三条 = 本仓反复复发的漂移,
 # `tests/scan/test_web_budget_wiring.py::test_nightly_close_header_comment_matches_the_real_steps`
 # 把两边钉死):
@@ -17,6 +17,9 @@
 #   5. analyze ledger     —— stock-research 独立产物(full 报告/lite 决策卡)结果账本:
 #      ingest(发现新产物,记评级/proposal)+ fill(D+2 成熟后补 gap_c1_o2;full 报告
 #      另补 fwd_5/10/20)连跑(D5.1;只记不学,不回注任何 prompt/权重)
+#   6. news flash ingest  —— news_catalog 三源快讯(B 级,源挂只降级、exit 恒 0;不写扫描账本,
+#      扫描持锁时照跑)。这条腿原在 learning/nightly_close.py 里,随它一起被删,目录
+#      first_seen 停在 2026-08-20,prelude 的「最新 …h 前」从那天起一直在涨
 #
 # 病灶:本脚本此前 `exec` 的是 `autoresearch.learning.nightly_close` —— 那个模块随
 # 2026-08-21 learning 层退役被真删了,于是 launchd 每个交易日 20:45 忠实地启动一次、
@@ -74,13 +77,14 @@ step() {
   return 0
 }
 
-# 五步都跑,**不因为前一步挂了就跳过后面的**:它们补的是五笔互不相干的欠账,
+# 六步都跑,**不因为前一步挂了就跳过后面的**:它们补的是六笔互不相干的欠账,
 # 连坐只会让"账本坏了"顺手把"日历也没了"藏起来(catalog.py:1012 同一条教训)。
 step "outcome fill"        autoresearch.scan.outcome      fill --today "$(date '+%FT%T%z')"
 step "ledger_views build"  autoresearch.scan.ledger_views build
 step "populations build"   autoresearch.scan.populations   build
 step "populations rulers"  autoresearch.scan.populations   rulers
 step "analyze ledger"      autoresearch.analyze.ledger     nightly --today "$(date '+%FT%T%z')"
+step "news flash ingest"   autoresearch.news.catalog       ingest-flash
 
 if [[ ${rc} -ne 0 ]]; then
   print -r -- "[nightly-close] $(date '+%F %T') · 有步骤失败,退出码 1" >&2

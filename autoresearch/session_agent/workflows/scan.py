@@ -750,7 +750,15 @@ def _review_ids(code: str, attempt: int = 1) -> dict[str, str]:
     }
 
 
-def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict], *, scope: str | None = None) -> dict:
+def _review_inputs(code: str, attempt: int, intel_enabled: bool) -> list[str]:
+    """An independent review reads the card's evidence (incl. the intel text), never its conclusion."""
+    ids = _l4_ids(code, attempt)
+    keys = ("prompt", "slim", "deep", "intel_status", *(("intel_doc",) if intel_enabled else ()))
+    return [ids[key] for key in keys] + ["scan.finalists"]
+
+
+def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict], *, scope: str | None = None,
+                     intel_enabled: bool = False) -> dict:
     """Expand the first independent review without exposing another review's result."""
     plan_id = f"scan.review.plan.{scope}" if scope else "scan.review.plan"
     decide_id = f"scan.review.decide.{scope}" if scope else "scan.review.decide"
@@ -775,7 +783,7 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict], *, sc
                     task_id,
                     "INFERENCE",
                     dependencies=[plan_id],
-                    inputs=[_l4_ids(code, attempt)[key] for key in ("prompt", "slim", "deep", "intel_status")] + ["scan.finalists"],
+                    inputs=_review_inputs(code, attempt, intel_enabled),
                     outputs=[ids["review2"]],
                     contract="stock.lite.v1",
                     role="scan.l4.review",
@@ -836,7 +844,8 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict], *, sc
     return _expansion(plan, "scan.reviews", snapshots, tasks)
 
 
-def review3_expansion(plan: dict, decision: dict, snapshots: list[dict], *, scope: str | None = None) -> dict:
+def review3_expansion(plan: dict, decision: dict, snapshots: list[dict], *, scope: str | None = None,
+                      intel_enabled: bool = False) -> dict:
     """Expand only mathematically necessary third reviews, then finalize each ticket."""
     decide_id = f"scan.review.decide.{scope}" if scope else "scan.review.decide"
     decision_id = f"scan.review.decision.{scope}" if scope else "scan.review.decision"
@@ -872,7 +881,7 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict], *, scop
                     review3_id,
                     "INFERENCE",
                     dependencies=[decide_id],
-                    inputs=[_l4_ids(code, attempt)[key] for key in ("prompt", "slim", "deep", "intel_status")] + ["scan.finalists"],
+                    inputs=_review_inputs(code, attempt, intel_enabled),
                     outputs=[ids["review3"]],
                     contract="stock.lite.v1",
                     role="scan.l4.review",
@@ -1141,8 +1150,7 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
         mode = _load_artifact_json(handle, "scan.run_mode")
         with artifacts.open_artifact(handle, "scan.finalists") as stream:
             finalists = pd.read_csv(stream, dtype={"code": str}).to_dict("records")
-        config = getattr(handle.contract, "user_config", {}) or {}
-        intel_enabled = bool((config.get("l4_intel") or {}).get("enabled"))
+        intel_enabled = _frozen_intel_enabled(handle)
         return [
             l4_expansion(
                 plan,
@@ -1158,12 +1166,14 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
     if per_stock_reviews(plan) and task["task_id"].startswith("scan.review.plan."):
         artifact_id = task["output_artifact_ids"][0]
         return [review_expansion(plan, _load_artifact_json(handle, artifact_id),
-                                 [_expansion_snapshot(handle, artifact_id)], scope=task["subject"])]
+                                 [_expansion_snapshot(handle, artifact_id)], scope=task["subject"],
+                                 intel_enabled=_frozen_intel_enabled(handle))]
     if per_stock_reviews(plan) and task["task_id"].startswith("scan.review.decide."):
         import pandas as pd
         artifact_id = task["output_artifact_ids"][0]
         result = [review3_expansion(plan, _load_artifact_json(handle, artifact_id),
-                                    [_expansion_snapshot(handle, artifact_id)], scope=task["subject"])]
+                                    [_expansion_snapshot(handle, artifact_id)], scope=task["subject"],
+                                    intel_enabled=_frozen_intel_enabled(handle))]
         with artifacts.open_artifact(handle, "scan.finalists") as stream:
             codes = sorted(pd.read_csv(stream, dtype={"code": str})["code"].tolist())
         rows, snapshots = [], []
@@ -1187,6 +1197,7 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
                 plan,
                 review_plan,
                 [_expansion_snapshot(handle, "scan.review.plan")],
+                intel_enabled=_frozen_intel_enabled(handle),
             )
         ]
     if task["task_id"] in {"scan.review.decide", "scan.reviews.skip"}:
@@ -1196,9 +1207,16 @@ def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list
                 plan,
                 decision,
                 [_expansion_snapshot(handle, "scan.review.decision")],
+                intel_enabled=_frozen_intel_enabled(handle),
             )
         ]
     return []
+
+
+def _frozen_intel_enabled(handle) -> bool:
+    """The run contract's frozen L4 intel switch: cards and their reviews read the same evidence."""
+    config = getattr(handle.contract, "user_config", {}) or {}
+    return bool((config.get("l4_intel") or {}).get("enabled"))
 
 
 def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str]:

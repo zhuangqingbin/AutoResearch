@@ -366,7 +366,7 @@ KEYS: tuple[Key, ...] = (
     # ── l4_intel ──
     Key("l4_intel", "enabled", type="bool", default=False, hosts=HOST_BOTH,
         consumers=(_L4_STOCK_JS,
-                   "autoresearch.session_agent.workflows.scan:expansions_after_task",
+                   "autoresearch.session_agent.workflows.scan:_frozen_intel_enabled",
                    "autoresearch.session_agent.domain_ops:scan_l4_prepare")),
     Key("l4_intel", "max_queries", type="posint", default=DEFAULT_INTEL_MAX_QUERIES, hosts=HOST_BOTH,
         consumers=(_L4_STOCK_JS, "autoresearch.session_agent.domain_ops:scan_l4_prepare",

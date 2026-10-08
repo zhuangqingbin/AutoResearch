@@ -174,3 +174,27 @@ def test_full_pm_and_product_validation_reject_conflicting_decisions(tmp_path, d
     with pytest.raises(RuntimeError):
         stock_full_validate(handle)
     assert not (handle.staging / "session_outputs/full.validation.json").exists()
+
+
+def test_full_artifact_id_literals_in_code_exist_in_the_real_plan():
+    # 2026-10-04 first Claude A-share FULL run: five call sites hard-coded
+    # "stock.full.4_decision.decision" while the plan names the PM decision
+    # "stock.full.4_portfolio.decision" (DECISION_REL = 4_portfolio/decision.md). The claim
+    # producer lookup then found no task, and assemble/publish rejected every decision that
+    # declared claim evidence. Fixtures registered the same wrong id, so they stayed green.
+    import re
+    from pathlib import Path
+
+    from autoresearch.analyze import assemble as stock_assemble
+    from autoresearch.session_agent.workflows.stock import full_product_artifacts
+
+    products = full_product_artifacts()
+    assert stock_assemble.DECISION_ARTIFACT_ID == products[stock_assemble.DECISION_REL]
+    known = set(products.values())
+    package = Path(__file__).resolve().parents[2] / "autoresearch"
+    unknown = {}
+    for path in package.rglob("*.py"):
+        for literal in re.findall(r'"(stock\.full\.[0-9]_[a-z_]+\.[a-z_]+)"', path.read_text(encoding="utf-8")):
+            if literal not in known:
+                unknown.setdefault(literal, []).append(str(path.relative_to(package)))
+    assert not unknown

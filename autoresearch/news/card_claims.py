@@ -131,6 +131,7 @@ def claim_population(capsule, *, identity, accepted_attempts, frame, subject, ta
             "source_hashes": sorted(fingerprints), "source_origins": sorted(origins),
             "source_receipt_ids": sorted(related), "source_lineage_complete": lineage_complete, "sidecar_ids": [value["sidecar_id"]],
             "task_id": value["task_id"], "attempt": value["attempt"],
+            "claim_event": value.get("claim_event"),
         })
     population = {}
     for key, rows in versions.items():
@@ -149,8 +150,30 @@ def claim_population(capsule, *, identity, accepted_attempts, frame, subject, ta
             row[field] = sorted({item for version in rows for item in version[field]})
         row["source_lineage_complete"] = all(version["source_lineage_complete"] for version in rows)
         row["sidecar_ids"] = sorted({item for version in rows for item in version["sidecar_ids"]})
+        row["claim_event"] = None if event_conflict else rows[0].get("claim_event")
         population[key] = row
     return population, audit
+
+
+def _event_label(event) -> str | None:
+    """One line a card can match against its intel text; None when the claim has no structured event."""
+    if not isinstance(event, dict) or not event.get("predicate"):
+        return None
+    start = str(((event.get("effective_at") or {}).get("start")) or "")[:10]
+    head = " ".join(part for part in (start, str(event["predicate"])) if part)
+    parts = [str(event[key]) for key in ("lifecycle", "assertion_kind", "polarity")
+             if event.get(key) not in (None, "", "unknown")]
+    if event.get("amount_value") not in (None, ""):
+        parts.append(" ".join(str(event[key]) for key in ("amount_value", "amount_unit", "amount_basis")
+                              if event.get(key) not in (None, "")))
+    return " · ".join([head, *parts])
+
+
+def population_prompt_rows(population: dict) -> list[dict]:
+    """The known-claim list a card dispatch shows: identity, frozen hash, verdict and a readable event."""
+    return [{"claim_id": row["claim_id"], "statement_sha256": row["statement_sha256"],
+             "verdict": row["verdict"], "event": _event_label(row.get("claim_event"))}
+            for row in population.values()]
 
 
 def evaluate_card_claims(text, *, card, frame, capsule, identity, accepted_attempts, frame_hash,
