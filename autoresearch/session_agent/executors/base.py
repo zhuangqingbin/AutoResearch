@@ -207,6 +207,11 @@ def supports_reattach(executor) -> bool:
 
 
 _CLASSIFIERS = (
+    ("USAGE_LIMIT", re.compile(
+        r"you(?:'ve| have) hit your (?:usage )?limit|"
+        r"(?:hit|reached|exceeded|exhausted).{0,40}usage limit|"
+        r"usage limit.{0,40}(?:reached|exceeded|exhausted)|"
+        r"insufficient_quota|subscription.{0,30}(?:limit|exhausted)", re.I)),
     ("RATE_LIMIT", re.compile(r"rate.?limit|\b429\b", re.I)),
     ("TIMEOUT", re.compile(r"timeout|timed out", re.I)),
     ("CONNECTION", re.compile(r"connect|socket|network|closed mid-response|enotfound", re.I)),
@@ -218,7 +223,7 @@ def classify_error(message: str | None, declared: str | None = None) -> str:
     """Mirror of ``l4-stock.js`` ``classifyFailure``; a declared known class wins."""
     if declared:
         upper = str(declared).strip().upper()
-        if upper in TASK_ATTEMPT or upper in {"SCHEMA_ERROR", "AGENT_ERROR", "CONTRACT_ERROR"}:
+        if upper in TASK_ATTEMPT or upper in {"USAGE_LIMIT", "SCHEMA_ERROR", "AGENT_ERROR", "CONTRACT_ERROR"}:
             return upper
     text = str(message or "")
     for name, pattern in _CLASSIFIERS:

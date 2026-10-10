@@ -1,0 +1,61 @@
+--- a/tests/session_agent/test_mailbox.py
++++ b/tests/session_agent/test_mailbox.py
+@@ -816,3 +816,58 @@
+     doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
+ 
+     assert doc["agent_tool"] == {"agent_name": "l4-card"}
++
++
++# ── 2026-10-08 宿主视图:wait 缺省只交出宿主要用的字段,不再把 prompt 全文(与 host_prompt 重复)
++# 和 agent_spec / input_paths / instruction_refs 一起倒进主会话上下文(10-07 Codex 第 2 场主会话
++# 的 exec 输出 49 万字符里,wait 的回显是最大的一块)。--full 保留旧形状,排障用。
++
++
++def _long_request(tmp_path, **changes) -> DispatchRequest:
++    base = _request(tmp_path).to_json()
++    base.update(prompt="任务包全文 " * 500, host_prompt="执行冻结任务 scan.l4.card.600000(attempt 1)。第一步:用 Read 读 …prompt.md",
++                agent_spec={"effort": "max", "model": "claude-opus-5-5"})
++    base.update(changes)
++    return DispatchRequest.from_json(base)
++
++
++def test_wait_hands_the_host_a_compact_view_by_default(tmp_path):
++    mailbox.issue_request(tmp_path, _long_request(tmp_path))
++    doc = mailbox.wait_request(tmp_path, timeout=0.2, poll_seconds=0.01)
++    assert doc["kind"] == "REQUEST"
++    for dropped in mailbox.HOST_VIEW_DROPPED:
++        assert dropped not in doc, dropped
++    assert doc["host_prompt"].startswith("执行冻结任务") and doc["agent_tool"] == {"agent_name": "l4-card"}
++    assert doc["prompt_chars"] == len("任务包全文 " * 500)
++    for key in ("task_id", "attempt", "role", "agent_type", "model", "effort", "subject", "tool_policy",
++                "timeout_seconds", "output_paths", "request_path", "access_manifest_path"):
++        assert key in doc, key
++    assert len(json.dumps(doc, ensure_ascii=False)) < 2000
++
++
++def test_wait_full_keeps_the_whole_request(tmp_path):
++    mailbox.issue_request(tmp_path, _long_request(tmp_path))
++    doc = mailbox.wait_request(tmp_path, timeout=0.2, poll_seconds=0.01, full=True)
++    assert doc["prompt"] == "任务包全文 " * 500 and doc["agent_spec"]["model"] == "claude-opus-5-5"
++    assert doc["host_prompt"].startswith("执行冻结任务")
++
++
++def test_compact_view_still_hands_out_the_full_prompt_when_not_by_reference(tmp_path):
++    # by_reference 关着(或盲搜角色):host_prompt 就是全文,但只出现一次。
++    mailbox.issue_request(tmp_path, _long_request(tmp_path, host_prompt=None))
++    doc = mailbox.wait_request(tmp_path, timeout=0.2, poll_seconds=0.01)
++    assert doc["host_prompt"] == "任务包全文 " * 500 and "prompt" not in doc
++
++
++def test_cli_wait_is_compact_unless_full_is_asked(tmp_path, monkeypatch, capsys):
++    from autoresearch.session_agent import __main__ as cli
++
++    run = _cli_run(tmp_path, monkeypatch)
++    staging = Path(run.handle.staging)
++    mailbox.issue_request(staging, _long_request(staging, task_id="synthetic.inference"))
++    assert cli.main(["mailbox", "wait", "--run-id", run.run_id, "--timeout", "1"]) == 0
++    doc = json.loads(capsys.readouterr().out)
++    assert doc["kind"] == "REQUEST" and "prompt" not in doc and doc["prompt_chars"] > 0
++    mailbox.issue_request(staging, _long_request(staging, task_id="synthetic.inference", attempt=2))
++    assert cli.main(["mailbox", "wait", "--run-id", run.run_id, "--timeout", "1", "--full"]) == 0
++    assert "prompt" in json.loads(capsys.readouterr().out)

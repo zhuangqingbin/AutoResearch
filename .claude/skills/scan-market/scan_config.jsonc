@@ -132,10 +132,10 @@
   "l3": {
     "two_pass": true,                  // 两遍法;false = 单遍读全表
     "pass1_target": 40,                // pass1 分诊留给 l3-rank 的行数
-    "finalist_min": 7,                 // L3 finalist 区间下限(上限由 l4.max_cards 算出,GATE1 回显)
+    "finalist_min": 4,                 // L3 finalist 区间下限(上限由 l4.max_cards 算出,GATE1 回显)
     "composite_seat": {                // composite 证据席
       "enabled": true,                 // 席位开关
-      "m": 3,                          // 强送 finalists 的席位数(计入 l4.max_cards)
+      "m": 1,                          // 强送 finalists 的席位数(计入 l4.max_cards)
       "exclude_knife": true            // 席位剔落刀
     },
     "guards": {                        // finalists 守卫阈(merge_l3_finalists_v3)
@@ -188,7 +188,7 @@
 
   // ── l4 · 决策卡卡数 ── 生效点 scan/l4/card_count.effective_caps · scan/self_review.l4_card_count_lint · scan/l4/prompts.params_block · scan/menu.budget_cfg · scan/menu.l4_budget · scan/menu.zero_buy_streak · scan/l4/rubric.rubric_cfg · scan/l4/rubric.rubric_rating · scan/l4/rubric.force_full_card · scan/dossier.configured_max_days · scan/l4/prompts.configured_echo_lookback · scan/l4/producers.producers_cfg · scan/l4/producers.fetch_pledge · scan/l4/producers.fetch_seats · scan/l4/producers.fetch_consensus · scan/l4/producers.slim_min_bytes · scan/l4_tasks.prepare_slim · scan/l4/prompts.slim_hint · workflows/l4-stock.js · scan/decision_finalize.review_cfg · scan/decision_finalize.review_trigger · scan/decision_finalize._ensemble_flag · session_agent/domain_ops.scan_review_plan · session_agent/workflows/scan.review3_expansion
   "l4": {
-    "max_cards": 10,                   // 非 📌 卡上限(含 composite 席位;📌 持仓恒出卡不占额)
+    "max_cards": 5,                    // 非 📌 卡上限(含 composite 席位;📌 持仓恒出卡不占额)
     "budget_flags": true,              // finalist 名额再与菜单预算取小(max_cards = 13 时预算档最低 10,旗咬不到)
     "shadow_fields": true,             // 卡上三条影子机读行(兑现机制/入场否决/情景),只记账不进门
     "budget": {                        // 菜单感知 L4 预算(menu.l4_budget;只降不升)
@@ -224,7 +224,7 @@
     }
   },
 
-  // ── l4_intel · 活体情报站 ── 生效点 workflows/l4-stock.js · session_agent/workflows/scan.expansions_after_task · session_agent/domain_ops.scan_l4_prepare · scan/l4/intel_guard.configured_soft_cap · scan/self_review.product_shape_lint · scan/l4/intel_gate.decide · scan/l4/intel_guard.guard_cfg · scan/l4/intel_status.status_cfg · scan/l4/intel_gate.dead_gate_factors
+  // ── l4_intel · 活体情报站 ── 生效点 workflows/l4-stock.js · session_agent/workflows/scan._frozen_intel_enabled · session_agent/domain_ops.scan_l4_prepare · scan/l4/intel_guard.configured_soft_cap · scan/self_review.product_shape_lint · scan/l4/intel_gate.decide · scan/l4/intel_guard.guard_cfg · scan/l4/intel_status.status_cfg · scan/l4/intel_gate.dead_gate_factors
   "l4_intel": {
     "enabled": true,                   // 派活体情报员;false = 卡内网查兜底
     "max_queries": 20,                 // 情报员网查条数软顶(prompt 上限 + 裁稿 + 发布前 lint)
@@ -278,23 +278,23 @@
 
   // ── agents · agent 角色 → 档位(注册角色闭集,必须列全) ── 生效点 scan/user_config.validate_user_config · scan/user_config.resolve_agent_bundle
   "agents": {
-    "strategist":    { "tier": "critical" },      // 市场研判(macro-brief)
-    "sector_brief":  { "tier": "analytical" },    // 行业 brief 写手
-    "l3_rank":       { "tier": "critical" },      // L3 精排
-    "l3_repair":     { "tier": "repair" },        // L3 产物修复
-    "l4_intel":      { "tier": "critical" },      // 活体情报员
-    "l4_card":       { "tier": "critical" },      // 决策卡
-    "ens_review":    { "tier": "critical" },      // ≥OW / SELL 双复核
-    "dossier_init":  { "tier": "critical" },      // 档案首覆
-    "stock_full":    { "tier": "critical" },      // 单股 FULL 逻辑角色共用
-    "macro_full":    { "tier": "critical" },      // 宏观 FULL
-    "sector_full":   { "tier": "critical" },      // 行业 FULL
-    "company_intel": { "tier": "critical" },      // A 股公司情报
-    "us_intel":      { "tier": "critical" },      // 美股公司情报
-    "sector_intel":  { "tier": "critical" },      // 行业情报
-    "global_intel":  { "tier": "critical" },      // 全球宏观情报
-    "gp_shell":      { "tier": "relay" },         // 命令壳
-    "gp_shell_json": { "tier": "relay" }          // 命令壳(JSON 回报)
+    "strategist":    { "tier": "critical", "consumer": "scan.l3.prepare" },      // 市场研判(macro-brief)
+    "sector_brief":  { "tier": "analytical", "consumer": "scan.l3" },    // 行业 brief 写手
+    "l3_rank":       { "tier": "critical", "consumer": "scan.l3.lint" },      // L3 精排
+    "l3_repair":     { "tier": "repair", "consumer": "scan.l3.repair.apply" },        // L3 产物修复
+    "l4_intel":      { "tier": "critical", "consumer": "scan.l4.intel.status" },      // 活体情报员
+    "l4_card":       { "tier": "critical", "consumer": "scan.l4.finalize" },      // 决策卡
+    "ens_review":    { "tier": "critical", "consumer": "scan.review.decide" },      // ≥OW / SELL 双复核
+    "dossier_init":  { "tier": "critical", "consumer": "dossier.validate" },      // 档案首覆
+    "stock_full":    { "tier": "critical", "consumer": "stock.full.assemble" },      // 单股 FULL 逻辑角色共用
+    "macro_full":    { "tier": "critical", "consumer": "macro.full.assemble" },      // 宏观 FULL
+    "sector_full":   { "tier": "critical", "consumer": "sector.validate" },      // 行业 FULL
+    "company_intel": { "tier": "critical", "consumer": "stock.news" },      // A 股公司情报
+    "us_intel":      { "tier": "critical", "consumer": "stock.news" },      // 美股公司情报
+    "sector_intel":  { "tier": "critical", "consumer": "sector.research" },      // 行业情报
+    "global_intel":  { "tier": "critical", "consumer": "macro.research" },      // 全球宏观情报
+    "gp_shell":      { "tier": "relay", "consumer": "legacy:.claude/workflows/scan-market.js" },         // 命令壳
+    "gp_shell_json": { "tier": "relay", "consumer": "legacy:.claude/workflows/scan-market.js" }          // 命令壳(JSON 回报)
   },
 
   // ── agent_engines · 档位 → 各引擎 model / effort ── 生效点 scan/user_config.validate_user_config · scan/user_config._dual_role_specs
@@ -331,7 +331,7 @@
     }
   },
 
-  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy
+  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy · scan/token_rules.lint_agent_chars · scan/budget._declared_policy · scan/redline.evaluate · scan/token_bom.estimate · scan/budget._envelope_policy
   "budgets": {
     "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
     "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED,不截断)
@@ -350,6 +350,19 @@
       "min_runs": 3,                   // 基线不足此数 = NO_BASELINE
       "warn_ratio": 1.5,               // 任一指标达此倍数 = ELEVATED
       "alarm_ratio": 2.0               // 任一指标达此倍数 = SPIKE
+    },
+    "agent_chars": { "company-intel": 6000, "dossier-init": 2700, "global-intel": 4800, "l3-rank": 4800, "l3-repair": 500, "l4-card": 11300, "l4-intel": 5700, "macro-brief": 2700, "macro-full": 2200, "sector-brief": 2700, "sector-full": 1000, "sector-intel": 5000, "stock-full": 3600, "us-intel": 5200 },   // .claude/agents/*.md 每文件字符上限(新 agent 须登记)
+    "declared": {                      // 每场预算线:超线 → 下一场开场断路;只许下调
+      "claude_run_usd": 41.0,          // claude 一场研究的 API 等价美元上限
+      "codex_run_window_points": 92    // codex 一场占 5h 窗口的百分点上限
+    },
+    "envelope": {                      // 场后信封(redline 判定)
+      "host_weighted_max": 100000,     // 宿主行加权输入上限(宿主不进研究回路)
+      "prefix_drift_warn": 1.2,        // 每角色前导中位对上一场的告警倍数
+      "prefix_drift_fail": 2.0,        // 每角色前导中位对上一场的断路倍数
+      "output_drift_warn": 2.0,        // 每角色输出中位对上一场的告警倍数(身份同变则断路)
+      "ratchet_margin": 1.15,          // 本场花费低于 线/此倍数 时建议把线降到 花费×此倍数
+      "idle_runs": 5                   // 连续几场零消费的角色列入待裁清单
     }
   },
 
@@ -465,22 +478,23 @@
     "date_lead_days": 3                // 持仓日期线提前几天预警
   },
 
-  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
+  // ── session · session_v1 宿主(mailbox / headless) ── 生效点 session_agent/workflows/macro.global_intel_policy · session_agent/config.session_cfg · session_agent/dispatch.build_request · session_agent/mailbox_cli._build_executor · session_agent/executors/headless_codex.HeadlessCodexExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.__init__ · session_agent/executors/headless_claude.HeadlessClaudeExecutor.max_turns_for · session_agent/executors/mailbox.wait_request · session_agent/executors/mailbox.MailboxExecutor.__init__ · session_agent/mailbox_cli.add_parsers · session_agent/runner._session_max_attempts
   "session": {
     "global_intel_max_queries": 8,     // 全球情报搜索与原文抓取总额度;仅 session_agent
     "timeouts": {                      // 角色超时(秒,从被领取算起;仅 session_agent)
-      "mailbox": {},                   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
+      "mailbox": { "scan.l4.intel": 1800 },   // mailbox 模式逐 role 覆盖(缺 = executors.base.DEFAULT_TIMEOUTS)
       "headless": {},                  // headless 模式逐 role 覆盖(缺 = HEADLESS_TIMEOUTS)
-      "fallback_s": 1800               // 表外角色的超时
+      "fallback_s": 1800,              // 表外角色的超时
+      "codex_open_s": 180              // codex headless 开线程(取 thread id 那一轮)的墙钟,不占角色预算
     },
-    "max_turns": {},                   // headless --max-turns 逐 role 覆盖(缺 = MAX_TURNS;仅 session_agent)
+    "max_turns": { "scan.l4.card": 14, "scan.l4.review": 14, "scan.l4.intel": 35, "scan.l3": 12, "sector.brief": 12, "macro.brief": 10, "scan.l3.repair": 10 },   // headless --max-turns 逐 role 封顶(仅 session_agent)
     "tier_max_turns": {},              // 表外角色按档位的轮数上限覆盖(缺 = TIER_MAX_TURNS;仅 session_agent)
     "default_max_turns": 60,           // 档位也没有时的轮数上限(仅 session_agent)
     "mailbox": {                       // mailbox 执行器(仅 session_agent)
       "never_taken_factor": 4.0,       // 无人领取:超过角色预算的几倍放弃
       "wait_s": 90.0,                  // mailbox wait 缺省秒数(要 < 宿主 Bash 120 秒)
       "dead_heartbeats": 6,            // 心跳超过几拍未更新判 runner 已死
-      "by_reference": false            // 按引用派发:宿主只传指针,全文冻结成授权文件(仅 session_agent)
+      "by_reference": true             // 按引用派发:宿主只传指针,全文冻结成授权文件(仅 session_agent)
     },
     "max_attempts": 2,                 // SESSION 任务瞬时错最多尝试次数(仅 session_agent)
     "runner": {                        // runner 循环(仅 session_agent)
@@ -488,6 +502,11 @@
       "max_rounds": 20000,             // 轮数上限
       "timeout_multiplier": 1.0,       // 超时倍率
       "fanout_warmup_s": 0             // 同一角色首份派发后其余等几秒(prompt 缓存预热;0 = 关)
+    },
+    "preamble": {                      // 研究线程前导瘦身(仅 session_agent)
+      "codex_project_doc_max_bytes": 0,          // codex exec 读项目 AGENTS.md 的字节上限;0 = 研究线程不读
+      "codex_skills_catalog_budget": 1000,       // codex exec 的 skills 目录预算(token);研究角色不用 skills
+      "claude_auto_memory": false      // claude -p 研究线程是否装自动记忆(MEMORY.md);false = 不装
     }
   },
 

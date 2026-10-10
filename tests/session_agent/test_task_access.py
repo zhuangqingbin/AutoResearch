@@ -474,3 +474,23 @@ def test_the_mailbox_hands_out_host_prompt_falling_back_to_the_full_prompt(tmp_p
     mailbox.issue_request(tmp_path, pointed)
     doc = mailbox.wait_request(tmp_path, timeout=0, poll_seconds=0)
     assert doc['host_prompt'] == '先 Read /x/judge2-a1.prompt.md'
+
+
+def test_headless_session_binding_serves_a_codex_thread_too(tmp_path):
+    """2026-10-08:codex headless(`codex exec`)按线程 id 做 session 级绑定,与 Claude 的 --session-id 同构;
+    hook 负载里 session_id = 线程 id、没有 agent_id,照样命中。"""
+    import json
+
+    from autoresearch.session_agent import task_access as access
+    req = replace(request(tmp_path), engine='codex')
+    state = tmp_path / 'session/tasks.json'
+    state.parent.mkdir()
+    state.write_text(json.dumps({'engine': 'codex', 'run_id': 'run-A', 'tasks': {'judge': {'state': 'RUNNING', 'attempt': 1, 'session_ref': 'host-1', 'spec': {'owner': 'SESSION', 'kind': 'INFERENCE', 'role': 'stock.card', 'task_id': 'judge'}}}}))
+    path = tmp_path / 'session/dispatch/judge-a1.json'
+    access.freeze_access(req, path)
+    thread = '019a2c1e-7b6a-7c3b-9f1d-5c2f3a4b6d7e'
+    access.bind_context(path, session_id=thread, agent_id='', repo_root=tmp_path, headless=True)
+    assert access.has_binding({'session_id': thread}, 'codex', repo_root=tmp_path)
+    assert access.load_bound_access({'session_id': thread}, 'codex', repo_root=tmp_path)['manifest']['identity']['engine'] == 'codex'
+    with pytest.raises(ValueError, match='session-scoped'):
+        access.bind_context(path, session_id=thread, agent_id='child', repo_root=tmp_path, headless=True)

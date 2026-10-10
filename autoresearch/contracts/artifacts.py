@@ -667,6 +667,9 @@ def paths() -> frozenset[str]:
 #: 文档路径、agent def、glob 片段、第三方/历史文件。**只许减不许增** ——
 #: 新增一个名字之前先问「它是不是一个产物」,是就进 `ARTIFACTS`。
 NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
+    # token 防膨胀(2026-10-10):两份是契约数据(档位锁、成本清单校准种子),一份是 _ops 运维状态
+    # (断路器);都不是某次 run 的研究产物,不进产物登记表。
+    "tier_lock.json", "token_bom_seeds.json", "redline_breaker.json",
     # glob / 路径片段
     # 下列是给已有 basename 追加的后缀；完整产物族已在上面登记。
     ".claim-uses.json", ".ref.json",

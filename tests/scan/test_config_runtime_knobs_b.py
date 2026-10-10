@@ -22,19 +22,24 @@ def test_session_cfg_follows_config(tmp_path, monkeypatch):
     from autoresearch.session_agent import config as sc
     from autoresearch.session_agent.executors import base, headless_claude, mailbox
 
-    _cfg(tmp_path, monkeypatch, {"session": {"timeouts": {"mailbox": {"scan.l3": 10}, "fallback_s": 7},
+    _cfg(tmp_path, monkeypatch, {"session": {"timeouts": {"mailbox": {"scan.l3": 10}, "fallback_s": 7, "codex_open_s": 180},
                                              "max_turns": {"scan.l3": 3}, "tier_max_turns": {"relay": 2},
                                              "default_max_turns": 9,
                                              "mailbox": {"never_taken_factor": 2.0, "dead_heartbeats": 1},
-                                             "max_attempts": 4, "runner": {"poll_seconds": 1.5}}})
+                                             "max_attempts": 4, "runner": {"poll_seconds": 1.5},
+                                             "preamble": {"codex_skills_catalog_budget": 2000}}})
     s = sc.session_cfg()
     assert s["timeouts"]["mailbox"]["scan.l3"] == 10 and s["timeouts"]["mailbox"]["scan.l4.card"] == 1800.0
     assert s["timeouts"]["headless"] == dict(headless_claude.HEADLESS_TIMEOUTS) and s["timeouts"]["fallback_s"] == 7
+    assert s["timeouts"]["codex_open_s"] == 180.0            # 2026-10-08:codex headless 开线程墙钟,缺省 = 模块常量
     assert s["max_turns"]["scan.l3"] == 3 and s["max_turns"]["scan.l4.card"] == 80
     assert s["tier_max_turns"]["relay"] == 2 and s["default_max_turns"] == 9
     # 2026-10-03 B8:by_reference(按引用派发)与 fanout_warmup_s(扇出预热)两个开关,缺省关。
     assert s["mailbox"] == {"never_taken_factor": 2.0, "wait_s": 90.0, "dead_heartbeats": 1,
                             "by_reference": False}
+    # 2026-10-10:研究线程前导瘦身三键,缺省 = 执行器常量(codex 不读 AGENTS.md、skills 目录 1000、claude 不装记忆)。
+    assert s["preamble"] == {"codex_project_doc_max_bytes": 0, "codex_skills_catalog_budget": 2000,
+                            "claude_auto_memory": False}
     assert s["max_attempts"] == 4 and s["runner"] == {"poll_seconds": 1.5, "max_rounds": 20000,
                                                       "timeout_multiplier": 1.0, "fanout_warmup_s": 0.0}
     _nocfg(tmp_path, monkeypatch)

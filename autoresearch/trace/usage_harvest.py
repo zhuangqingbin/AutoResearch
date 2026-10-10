@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -97,6 +99,11 @@ def legacy_usage_dict(record: UsageRecord) -> dict:
         as_of=PRICE_SOURCE_EFFECTIVE_DATE,
         speed=tot["speed"],
     )
+    if record.ref.engine == "codex":
+        # Subscription allowance is not an API dollar bill. No known conversion
+        # exists in this meter; do not attach Claude prices to Codex evidence.
+        priced.update(total_usd=None, pricing_source=None, source_effective_date=None,
+                      pricing_status="UNKNOWN", pricing_reason="codex_subscription_unpriced")
     tot.update({k: v for k, v in priced.items() if k != "total_usd"})
     tot["estimated_usd"] = priced["total_usd"]
     opus = estimate_usd(
@@ -116,10 +123,10 @@ def legacy_usage_dict(record: UsageRecord) -> dict:
     return tot
 
 
-def usage_of(path: Path, role: str = "subagent") -> dict:
-    """单份 Claude transcript → 保持旧 schema 的 usage dict。"""
-    ref = TranscriptRef(engine="claude", path=Path(path), role=role)
-    return legacy_usage_dict(adapter_for("claude").usage(ref))
+def usage_of(path: Path, role: str = "subagent", *, engine: str = "claude") -> dict:
+    """单份 transcript(Claude jsonl / Codex rollout)→ 保持旧 schema 的 usage dict。"""
+    ref = TranscriptRef(engine=engine, path=Path(path), role=role)
+    return legacy_usage_dict(adapter_for(engine).usage(ref))
 
 
 # 模型价差(相对 opus 输入价的**倍率**,仅供「贵在哪」定序,不冒充账单)。
@@ -246,6 +253,21 @@ def unmeasured_row(ref: TranscriptRef, *, reason: str) -> dict:
 #: headless 场每个推理任务是一个**顶级** `claude -p` 会话(`<projects>/<slug>/<session-id>.jsonl`),
 #: 不在任何宿主 session 的 subagents 目录下 —— 按 session 目录找永远是空表,只能从记录反查。
 HEADLESS_RECORDS = Path("_dispatch") / "headless"
+#: codex headless(2026-10-08):每个推理任务一个 `codex exec` 线程,rollout 在
+#: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl``;记录的 ``engine`` 字段选适配器。
+CODEX_SESSIONS_ROOT = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")) / "sessions"
+
+
+def find_codex_rollout(thread_id: str, sessions_root: Path | str | None = None) -> Path | None:
+    """thread id → its rollout file (newest when a resumed thread left several)."""
+    import glob as _glob
+
+    if not thread_id:
+        return None
+    root = Path(sessions_root or CODEX_SESSIONS_ROOT)
+    pattern = str(root / "**" / f"rollout-*-{_glob.escape(thread_id)}.jsonl")
+    found = [Path(item) for item in _glob.glob(pattern, recursive=True)]
+    return max(found, key=lambda item: item.stat().st_mtime_ns) if found else None
 
 
 def _headless_record_files(source: Path | str) -> list[Path]:
@@ -266,23 +288,37 @@ def _reported_cost(record: dict) -> float | None:
     return float(value)
 
 
-def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
+def _headless_row(record: dict, projects_root: Path | str | None,
+                  sessions_root: Path | str | None = None,
+                  snapshot_cache: dict[str, TranscriptSnapshot] | None = None) -> dict:
+    engine = str(record.get("engine") or "claude")
     session_id = str(record.get("session_id") or record.get("requested_session_id") or "")
     agent = str(record.get("agent_type") or "headless")
     declared = record.get("transcript_path")
     path = Path(declared) if declared else None
     if (path is None or not path.is_file()) and session_id:
-        path = find_session_files(session_id, projects_root)[0]
+        path = (find_codex_rollout(session_id, sessions_root) if engine == "codex"
+                else find_session_files(session_id, projects_root)[0])
     cost = _reported_cost(record)
     if path is None or not path.is_file():
         row = unmeasured_row(
-            TranscriptRef(engine="claude", path=None, status="GONE", role="headless"),
+            TranscriptRef(engine=engine, path=None, status="GONE", role="headless"),
             reason=f"headless transcript missing for session {session_id or '—'}",
         )
         row["cost_source"] = None
     else:
-        row = usage_of(path, role="headless")
-        if cost is not None and row["status"] != "UNMEASURED":
+        ref = TranscriptRef(engine=engine, path=path, role="headless")
+        try:
+            key = str(path.resolve())
+            snapshot = (snapshot_cache or {}).get(key)
+            if snapshot is None:
+                snapshot = capture_snapshot(path, engine=engine)
+                if snapshot_cache is not None:
+                    snapshot_cache[key] = snapshot
+            row = legacy_usage_dict(adapter_for(engine).stats_from_rows(snapshot.rows, ref).usage)
+        except Exception as exc:  # noqa: BLE001 - retain the invocation when parsing fails
+            row = unmeasured_row(ref, reason=f"{type(exc).__name__}: {exc}")
+        if engine != "codex" and cost is not None and row["status"] != "UNMEASURED":
             # CLI 自己算的钱(结果 JSON 的 total_cost_usd)比按 transcript 估的更真。
             row["estimated_usd"] = cost
             row["discarded_usd"] = cost if row.get("discarded") else 0.0
@@ -291,6 +327,7 @@ def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
             row["cost_source"] = "estimate"
     row.update(
         agent=agent,
+        engine=engine,
         dispatcher="headless",
         task_id=record.get("task_id"),
         attempt=record.get("attempt"),
@@ -302,10 +339,107 @@ def _headless_row(record: dict, projects_root: Path | str | None) -> dict:
     return row
 
 
+def _dispatch_outcomes(staging: Path) -> dict[tuple[str, int], dict]:
+    """Latest runner disposition per task attempt, including post-CLI rejection."""
+    path = staging / "_dispatch" / "ledger.jsonl"
+    if not path.is_file():
+        return {}
+    outcomes = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # A crash can leave an unfinished last ledger line.
+        if (isinstance(row, dict) and row.get("kind") == "INFERENCE"
+                and isinstance(row.get("task_id"), str)
+                and type(row.get("attempt")) is int
+                and (str(row.get("outcome") or "").startswith("FAILED")
+                     or row.get("outcome") in {"SUBMITTED", "SUCCEEDED"})):
+            outcomes[(row["task_id"], row["attempt"])] = row
+    return outcomes
+
+
+def _task_usage_outcome(row: dict, outcomes: dict) -> None:
+    disposition = outcomes.get((row.get("task_id"), row.get("attempt")), {})
+    outcome = disposition.get("outcome")
+    task_id = str(row.get("task_id") or "")
+    domain_attempt = re.search(r"(?:^|\.)a([1-9]\d*)(?:\.|$)", task_id)
+    retried = (int(row.get("attempt") or 1) > 1
+               or (domain_attempt is not None and int(domain_attempt.group(1)) > 1))
+    failed = (str(outcome or "").startswith("FAILED")
+              or (row.get("exit_code") is not None and row["exit_code"] != 0))
+    capacity = disposition.get("error_class") == "USAGE_LIMIT"
+    row.update(task_outcome=outcome, task_error_class=disposition.get("error_class"),
+               domain_failure_count=int(disposition.get("error_class") == "DOMAIN_VALIDATION"),
+               task_failure_count=int(str(outcome or "").startswith("FAILED")),
+               capacity_failure_count=int(capacity),
+               task_retry_count=int(retried),
+               transcript_failure_count=row.get("failure_count", 0),
+               transcript_retry_count=row.get("retry_count", 0))
+    row["failure_count"] = max(int(row.get("failure_count") or 0), int(failed))
+    row["retry_count"] = max(int(row.get("retry_count") or 0), int(retried))
+    row["discarded"] = bool(row.get("discarded") or failed)
+    row["discarded_usd"] = row.get("estimated_usd") if row["discarded"] else 0.0
+    if retried:
+        row["retry_usd"] = row.get("estimated_usd")
+        row["retry_cost_status"] = "ATTRIBUTED" if row["retry_usd"] is not None else "UNPRICED"
+
+
+def _source_key(row: dict) -> tuple[str, str] | None:
+    path = row.get("path")
+    if row.get("status") == "UNMEASURED" or not path or path == "—":
+        return None
+    return str(row.get("engine") or "claude"), str(Path(path).resolve())
+
+
+def _merge_headless_sources(rows: list[dict]) -> list[dict]:
+    """A resumed source has one cumulative total, while attempts remain explicit."""
+    merged = []
+    sources = {}
+    for row in rows:
+        key = _source_key(row)
+        if key is None:
+            merged.append(row)
+            continue
+        attempt = {name: row.get(name) for name in (
+            "task_id", "attempt", "session_id", "agent", "exit_code", "call_state",
+            "task_outcome", "task_error_class", "domain_failure_count", "task_failure_count",
+            "capacity_failure_count", "task_retry_count",
+            "reported_cost_usd")}
+        if key not in sources:
+            row["headless_attempts"] = [attempt]
+            sources[key] = row
+            merged.append(row)
+            continue
+        source = sources[key]
+        if attempt in source["headless_attempts"]:
+            continue
+        source["headless_attempts"].append(attempt)
+        source["domain_failure_count"] += row["domain_failure_count"]
+        source["task_failure_count"] += row["task_failure_count"]
+        source["capacity_failure_count"] += row["capacity_failure_count"]
+        source["task_retry_count"] += row["task_retry_count"]
+        source["failure_count"] = max(source["transcript_failure_count"],
+                                      source["task_failure_count"])
+        source["retry_count"] = max(source["transcript_retry_count"], source["task_retry_count"])
+        source["discarded"] = any(str(item["task_outcome"] or "").startswith("FAILED")
+                                  or item["exit_code"] not in (None, 0)
+                                  for item in source["headless_attempts"])
+        # Without invocation windows, separate CLI dollar reports cannot be
+        # allocated against the cumulative source without risking duplication.
+        source.update(estimated_usd=None, relative_opus_cost=None, discarded_usd=None,
+                      retry_usd=None, retry_cost_status="UNATTRIBUTED",
+                      cost_source=None, pricing_status="UNKNOWN",
+                      pricing_reason="shared_source_cost_coverage_unknown")
+    return merged
+
+
 def collect_headless(
     source: Path | str,
     *,
     projects_root: Path | str | None = None,
+    sessions_root: Path | str | None = None,
+    snapshot_cache: dict[str, TranscriptSnapshot] | None = None,
 ) -> list[dict]:
     """headless 执行器的调用记录 → 逐次 `claude -p` 的 usage 行(``dispatcher=headless``)。
 
@@ -314,7 +448,10 @@ def collect_headless(
     ``reported_cost_usd`` 保留为事实但不计入合计 —— 未计量不是免费,也不是「按自报算」。
     """
     rows = []
-    for record_path in _headless_record_files(source):
+    files = _headless_record_files(source)
+    outcomes = _dispatch_outcomes(files[0].parent.parent.parent) if files else {}
+    cache = {} if snapshot_cache is None else snapshot_cache
+    for record_path in files:
         try:
             record = json.loads(record_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -328,8 +465,10 @@ def collect_headless(
         # SPAWN_FAILED = the CLI never started: no session ran, nothing to meter.
         if (isinstance(record, dict) and record.get("task_id")
                 and record.get("state") != "SPAWN_FAILED"):
-            rows.append(_headless_row(record, projects_root))
-    return sorted(rows, key=lambda r: -r["weighted_in"])
+            row = _headless_row(record, projects_root, sessions_root, cache)
+            _task_usage_outcome(row, outcomes)
+            rows.append(row)
+    return sorted(_merge_headless_sources(rows), key=lambda r: -r["weighted_in"])
 
 
 def _ordinal_span(ref: TranscriptRef) -> tuple[float, float]:
@@ -393,10 +532,11 @@ def collect_run(
 
     run = load_run(run_id)
     session_ref = run.contract.session_ref
+    cache: dict[str, TranscriptSnapshot] = {} if snapshot_cache is None else snapshot_cache
     # headless 场(批 4):每个推理任务一个顶级 `claude -p` 会话,记录在 staging 的
     # `_dispatch/headless/`;宿主 session 目录里找不到它们。没有记录 = 空列表 = 旧行为。
     staging = getattr(run, "staging", None)
-    headless_rows = collect_headless(staging) if staging is not None and (
+    headless_rows = collect_headless(staging, snapshot_cache=cache) if staging is not None and (
         Path(staging) / HEADLESS_RECORDS).is_dir() else []
     adapter = adapter_for(resolved_engine)
     identity = RunIdentity(run_id=run_id, engine=resolved_engine, session_ref=session_ref)
@@ -410,20 +550,35 @@ def collect_run(
             *headless_rows,
         ]
 
-    cache: dict[str, TranscriptSnapshot] = {} if snapshot_cache is None else snapshot_cache
-
     def snapshot_for(path: Path) -> TranscriptSnapshot:
-        key = str(path)
+        key = str(path.resolve())
         snapshot = cache.get(key)
         if snapshot is None:
             snapshot = capture_snapshot(path, engine=resolved_engine)
             cache[key] = snapshot
         return snapshot
 
+    # Headless rows cover the entire source. Any bound windows of that same
+    # source are already included; retain their identities without another
+    # charge (including gaps outside those windows).
+    headless_sources = {_source_key(row): row for row in headless_rows
+                        if _source_key(row) is not None}
+    uncovered_refs = []
+    for ref in refs:
+        key = (ref.engine, str(ref.path.resolve())) if ref.path is not None else None
+        source = headless_sources.get(key) if ref.status == "PRESENT" else None
+        if source is None:
+            uncovered_refs.append(ref)
+            continue
+        source.setdefault("bound_invocations", []).append({
+            "invocation_id": ref.invocation_id, "role": ref.role, "subject": ref.subject,
+            "start_ordinal": ref.start_ordinal, "end_ordinal": ref.end_ordinal,
+        })
+    refs = uncovered_refs
     by_path: dict[str, list[TranscriptRef]] = {}
     for ref in refs:
         if ref.status == "PRESENT" and ref.path is not None:
-            by_path.setdefault(str(ref.path), []).append(ref)
+            by_path.setdefault(str(ref.path.resolve()), []).append(ref)
     overlapping_paths = {
         path for path, siblings in by_path.items()
         if len(siblings) > 1 and _has_overlapping_segments(siblings)
@@ -434,7 +589,7 @@ def collect_run(
         if ref.status != "PRESENT":
             rows.append(unmeasured_row(ref, reason=f"transcript {ref.status}"))
             continue
-        if str(ref.path) in overlapping_paths:
+        if str(ref.path.resolve()) in overlapping_paths:
             rows.append(
                 unmeasured_row(
                     ref,
@@ -449,7 +604,9 @@ def collect_run(
         try:
             snapshot = snapshot_for(Path(ref.path))
             usage = adapter.stats_from_rows(snapshot.rows, ref).usage
-            rows.append(legacy_usage_dict(usage))
+            row = legacy_usage_dict(usage)
+            row["engine"] = ref.engine
+            rows.append(row)
         except Exception as exc:  # noqa: BLE001 - 不可解析也必须留一行
             rows.append(
                 unmeasured_row(ref, reason=f"{type(exc).__name__}: {exc}")
@@ -464,6 +621,7 @@ def collect_run(
             snapshot = snapshot_for(Path(path))
             usage = adapter.stats_from_rows(snapshot.rows, combined_ref).usage
             combined_row = legacy_usage_dict(usage)
+            combined_row["engine"] = resolved_engine
             combined_row["merged_invocation_ids"] = sorted(
                 {ref.invocation_id for ref in siblings if ref.invocation_id}
             )
@@ -538,9 +696,12 @@ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
         "cache_create_1h": sum(int(r.get("cache_create_1h") or 0) for r in rows),
         "weighted_in": sum(int(r.get("weighted_in") or 0) for r in rows),
         "failure_count": sum(int(r.get("failure_count") or 0) for r in rows),
+        "domain_failure_count": sum(int(r.get("domain_failure_count") or 0) for r in rows),
+        "capacity_failure_count": sum(int(r.get("capacity_failure_count") or 0) for r in rows),
+        "task_retry_count": sum(int(r.get("task_retry_count") or 0) for r in rows),
         "retry_count": sum(int(r.get("retry_count") or 0) for r in rows),
         "discarded_transcripts": sum(bool(r.get("discarded")) for r in rows),
-        "estimated_usd": sum(float(r["estimated_usd"]) for r in priced),
+        "estimated_usd": sum(float(r["estimated_usd"]) for r in priced) if priced else None,
         "discarded_usd": sum(float(r.get("discarded_usd") or 0) for r in priced),
         "unpriced_transcripts": len(rows) - len(priced),
         "unmeasured_transcripts": sum(
@@ -550,14 +711,26 @@ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
         "priced_transcripts": len(priced),
     }
     totals["weighted_input_proxy"] = totals["weighted_in"]
+    has_codex = any(row.get("engine") == "codex"
+                    or str(row.get("model") or "").startswith("gpt-") for row in rows)
+    has_claude = any(row.get("engine") == "claude"
+                     or str(row.get("model") or "").startswith("claude-") for row in rows)
+    pricing = {
+        "source": PRICE_SOURCE_URL,
+        "effective_date": PRICE_SOURCE_EFFECTIVE_DATE,
+        "scope": "Claude API standard global list-price estimate",
+    }
+    if has_codex:
+        pricing = {
+            "source": PRICE_SOURCE_URL if has_claude else None,
+            "effective_date": PRICE_SOURCE_EFFECTIVE_DATE if has_claude else None,
+            "scope": ("Claude API estimates only; Codex subscription usage is unpriced"
+                      if has_claude else "Codex subscription usage; dollar cost is unknown"),
+        }
     return {
         "schema_version": 1,
         "metric_version": "weighted-input-v1",
-        "pricing": {
-            "source": PRICE_SOURCE_URL,
-            "effective_date": PRICE_SOURCE_EFFECTIVE_DATE,
-            "scope": "Claude API standard global list-price estimate",
-        },
+        "pricing": pricing,
         "source": source,
         "cache_hit_rate": cache_hit_rate(rows),
         "identity": observed_identity(rows),
@@ -638,8 +811,9 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
             f"废弃 {facts['discarded_transcripts']} 份/{discarded_cost} · "
             f"未定价 {facts['unpriced_transcripts']} 份 · "
             f"未计量 {facts['unmeasured_transcripts']} 份)",
-            f"- 价格口径:Claude API standard global list price · "
-            f"{PRICE_SOURCE_EFFECTIVE_DATE} 快照 · {PRICE_SOURCE_URL}",
+            f"- 价格口径:{ledger['pricing']['scope']}"
+            + (f" · {PRICE_SOURCE_EFFECTIVE_DATE} 快照 · {PRICE_SOURCE_URL}"
+               if ledger["pricing"]["source"] else ""),
             _identity_line(ledger["identity"]),
             ""]
     # dispatcher 列只在有 headless 行时出现:宿主场的 token_usage.md 逐字不变(parity)。
@@ -698,9 +872,10 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
                    f"| {adj} | {_k(b['out'])} | {cost} | {b['unpriced']} |")
     if headless:
         coverage = (
-            "_**覆盖声明**:headless 行 = 每个推理任务一个 `claude -p` 会话(按执行器调用记录"
+            "_**覆盖声明**:headless 行 = 执行器记录的 Claude/Codex 推理会话(按调用记录"
             "`_dispatch/headless/*.json` 反查 transcript;成本取该会话结果 JSON 的 "
-            "`total_cost_usd`,缺时按 transcript 估);驱动它们的 runner 是零 LLM 的 Python 进程。"
+            "`total_cost_usd`,缺时仅对已知价格的模型估算;Codex 订阅额度不换算美元)。"
+            "绑定引用与 headless 引用的同一源只计一次;驱动它们的 runner 是零 LLM 的 Python 进程。"
             "transcript 找不到的调用记为 UNMEASURED、不计入合计。产物能证明跑过什么,不能证明"
             "没跑过什么:表里没有的不等于没花钱。_"
         )

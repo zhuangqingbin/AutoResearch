@@ -162,6 +162,83 @@ def test_success_runs_begin_runner_verify_and_delivers_the_compat_brief(roots):
     assert summary["delivery"]["status"] == "SENT"
 
 
+@pytest.mark.parametrize("stop", ["USAGE_LIMIT", "BLOCKED", "FINISH_FAILED"])
+def test_recoverable_stop_preserves_active_capsule(roots, stop):
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": stop,
+                   "recoverable": True, "recovery_tasks": [{"task_id": "scan.assemble", "attempt": 2}],
+                   "errors": [], "dispatches": []})
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    assert steps.finalized == [] and steps.swept == [RUN_ID]
+    summary = _summary(roots)
+    assert summary["result"] == "RECOVERABLE" and summary["run_id"] == RUN_ID
+    assert summary["recovery_tasks"] == steps.outcome["recovery_tasks"]
+    assert "--resume-run-id" in summary["resume_command"]
+
+
+def test_resume_uses_existing_run_and_skips_readiness_begin(roots):
+    from dataclasses import replace
+    steps = _Steps(roots, live=[{"run_id": RUN_ID}])
+    resumes = []
+    injected = replace(steps.as_steps(), resume=lambda rid: resumes.append(rid) or DATE)
+    log = scan_run.OpsLog(roots / "reports_claude/_ops/resume.log")
+    try:
+        assert scan_run.run_once(_args(resume_run_id=RUN_ID), injected, log=log) == 0
+    finally:
+        log.close()
+    assert resumes == [RUN_ID]
+    assert "begin" not in steps.calls and "wait_ready" not in steps.calls
+    assert "run" in steps.calls and _summary(roots)["resumed"]
+
+
+def test_resume_refuses_live_own_runner_before_mutation(roots, monkeypatch):
+    import fcntl
+
+    from autoresearch.trace import capsule
+    workspace = roots / "context_claude/scan_runs" / RUN_ID
+    staging = workspace / "staging" / DATE
+    lock = staging / "_dispatch/runner.lock"
+    lock.parent.mkdir(parents=True)
+    (workspace / "session").mkdir()
+    (workspace / "state.json").write_text(json.dumps({"business_status": "ACTIVE"}))
+    (workspace / "session/request.json").write_text(json.dumps({"host_profile": {
+        "engine": "claude", "session_ref": "headless-test"}}))
+    handle = SimpleNamespace(workspace=workspace, staging=staging, engine="claude",
+                             analysis_date=DATE, contract=SimpleNamespace(run_kind="scan-market"))
+    monkeypatch.setattr(capsule, "load_run", lambda _: handle)
+    monkeypatch.setattr(scan_run, "_call", lambda *a, **k: pytest.fail("mutated live run"))
+    with lock.open("a+") as owner:
+        fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="live runner"):
+            scan_run.default_steps(_args(resume_run_id=RUN_ID), None).resume(RUN_ID)
+    assert scan_run.default_steps(_args(resume_run_id=RUN_ID), None).resume(RUN_ID) == DATE
+
+
+def test_timeout_preserves_durable_quota_failure(roots, monkeypatch):
+    root = roots / "context_claude/scan_runs" / RUN_ID
+    (root / "session").mkdir(parents=True)
+    (root / "session/tasks.json").write_text(json.dumps({
+        "run_id": RUN_ID, "engine": "claude", "tasks": {"intel": {
+            "state": "FAILED", "attempt": 1, "error": {"code": "USAGE_LIMIT"},
+            "spec": {"operation": None}}}}))
+    monkeypatch.setattr(ws, "find_run_root", lambda _: root)
+    monkeypatch.setattr(scan_run, "_call", lambda *a, **k: (None, ""))
+    monkeypatch.setattr(scan_run, "_terminate_inflight_headless", lambda _: [])
+    outcome = scan_run.default_steps(_args(), None).run(RUN_ID, 1)
+    assert outcome["recoverable"] and outcome["recovery_tasks"][0]["task_id"] == "intel"
+
+
+def test_resume_lock_race_does_not_stop_or_finalize_live_runner(roots):
+    from dataclasses import replace
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": "RUNNER_BUSY"})
+    log = scan_run.OpsLog(roots / "reports_claude/_ops/race.log")
+    try:
+        assert scan_run.run_once(_args(resume_run_id=RUN_ID),
+            replace(steps.as_steps(), resume=lambda rid: DATE), log=log) == run_lock.EXIT_HELD
+    finally:
+        log.close()
+    assert steps.swept == [] and steps.finalized == []
+
+
 def _summary(roots, date: str = DATE) -> dict:
     return json.loads((roots / "reports_claude" / "_ops" / f"scan_run_{date}.json")
                       .read_text(encoding="utf-8"))
@@ -473,7 +550,7 @@ def test_headless_request_is_a_valid_session_v1_scan_request():
     from autoresearch.session_agent.hosts.base import observe_host
     from autoresearch.session_agent.origin import preflight_session_host
 
-    request = scan_run.build_headless_request(DATE)
+    request = scan_run.build_headless_request(DATE, engine="claude")
     validate_begin_request(request, expected_engine="claude")
     observe_host(request["host_profile"])
     preflight_session_host(request)
@@ -486,8 +563,23 @@ def test_headless_request_is_a_valid_session_v1_scan_request():
     assert profile["safe_resume"] is False          # executor cannot re-attach
     assert profile["evidence_refs"] and not any(
         ref.startswith("transcript-file:") for ref in profile["evidence_refs"])
-    assert scan_run.build_headless_request(DATE)["host_profile"]["session_ref"] != \
+    assert scan_run.build_headless_request(DATE, engine="claude")["host_profile"]["session_ref"] != \
         profile["session_ref"]
+
+
+def test_headless_request_for_a_codex_run_is_the_same_contract_on_the_codex_engine(monkeypatch):
+    """2026-10-08:codex 场每个推理任务一个 `codex exec` 线程;请求与 claude 场同一份契约,只换引擎。"""
+    from autoresearch.contracts.session_task import validate_begin_request
+    from autoresearch.session_agent.hosts.base import observe_host
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    request = scan_run.build_headless_request(DATE)          # engine defaults to the workspace engine
+    validate_begin_request(request, expected_engine="codex")
+    observe_host(request["host_profile"])
+    assert request["host_profile"]["engine"] == "codex"
+    assert any(ref.endswith("headless_codex.py") for ref in request["host_profile"]["evidence_refs"])
+    assert scan_run._env("R1")["AUTORESEARCH_ENGINE"] == "codex"
+    assert scan_run._env("R1", engine="claude")["AUTORESEARCH_ENGINE"] == "claude"
 
 
 def _spool(roots, run_id: str, *, status="ACTIVE", minutes_ago=5, lease=None) -> None:
@@ -738,9 +830,30 @@ def test_main_turns_termination_signals_into_a_clean_abort(roots, monkeypatch):
         assert signal.getsignal(sig) == before[sig]
 
 
-def test_main_refuses_a_codex_engine(roots, monkeypatch, capsys):
-    monkeypatch.setattr(ws, "ENGINE", "codex")
+def test_main_refuses_an_unknown_engine(roots, monkeypatch, capsys):
+    monkeypatch.setattr(ws, "ENGINE", "gemini")
     assert scan_run.main([]) == scan_run.EXIT_USAGE
+    assert scan_run.HEADLESS_ENGINES == ("claude", "codex")
+
+
+def test_runner_step_passes_the_cli_path_of_the_run_engine_only(roots, monkeypatch):
+    """claude 场传 --claude-bin,codex 场传 --codex-bin;另一引擎的路径不混进 argv。"""
+    seen = {}
+
+    def fake_call(argv, *, env, timeout, stderr=None):
+        seen["argv"], seen["env"] = list(argv), dict(env)
+        return 0, json.dumps({"finished": True})
+
+    monkeypatch.setattr(scan_run, "_call", fake_call)
+    args = SimpleNamespace(claude_bin="/opt/claude", codex_bin="/opt/codex", max_parallel=4)
+    scan_run.default_steps(args, None).run("R1", 60.0)
+    assert "--claude-bin" in seen["argv"] and "--codex-bin" not in seen["argv"]
+    assert seen["env"]["AUTORESEARCH_ENGINE"] == "claude"
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    scan_run.default_steps(args, None).run("R1", 60.0)
+    assert "--codex-bin" in seen["argv"] and "--claude-bin" not in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--executor") + 1] == "headless"
+    assert seen["env"]["AUTORESEARCH_ENGINE"] == "codex"
 
 
 def test_headless_request_matches_the_documented_scan_request_contract():
@@ -758,3 +871,130 @@ def test_headless_request_matches_the_documented_scan_request_contract():
     varying = {"analysis_date", "host_profile", "force_full"}
     assert {k: v for k, v in request.items() if k not in varying} == {
         k: v for k, v in example.items() if k not in varying}
+
+
+# ── 2026-10-10 token growth guard: post-run redline readout + opening breaker (M3 / M4) ──────
+
+def _guarded(steps: _Steps, *, redline=None, breaker=None, acked=None, gate=None):
+    import dataclasses
+
+    acked = acked if acked is not None else []
+
+    def record(run_id):
+        steps.calls.append("redline")
+        if isinstance(redline, Exception):
+            raise redline
+        return redline or {"verdict": "PASS", "findings": []}
+
+    def ack(run_id):
+        steps.calls.append("ack")
+        acked.append(run_id)
+
+    def replay_gate():
+        steps.calls.append("replay_gate")
+        if isinstance(gate, Exception):
+            raise gate
+        return gate or {"verdict": "PASS", "run_id": "20261009T130000000000Z", "checked": 26, "regressions": []}
+
+    built = steps.as_steps()
+    return dataclasses.replace(built, redline=record, breaker=lambda: breaker, ack_breaker=ack,
+                               replay_gate=replay_gate)
+
+
+def _run_guarded(tmp_path, steps, guarded, **arg_changes) -> int:
+    log = scan_run.OpsLog(tmp_path / "reports_claude" / "_ops" / "scan_run_test.log")
+    try:
+        return scan_run.run_once(_args(**arg_changes), guarded, log=log)
+    finally:
+        log.close()
+
+
+def test_success_records_the_redline_after_verify_without_changing_the_outcome(roots):
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, redline={"verdict": "FAIL", "findings": ["FAIL:RUN_OVER_LINE"]}))
+    assert code == scan_run.EXIT_OK                                  # a readout never blocks delivery
+    assert steps.calls.index("verify") < steps.calls.index("redline") < steps.calls.index("deliver")
+    summary = _summary(roots)
+    assert summary["result"] == "FINISHED" and summary["redline"]["verdict"] == "FAIL"
+
+
+def test_sealed_failure_is_measured_too_but_a_recoverable_stop_is_not(roots):
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": "BLOCKED", "errors": [], "dispatches": []})
+    _run_guarded(roots, steps, _guarded(steps))
+    assert steps.calls.index("finalize_failed") < steps.calls.index("redline")
+    paused = _Steps(roots, outcome={"finished": False, "stop_reason": "USAGE_LIMIT", "recoverable": True,
+                                    "recovery_tasks": [], "errors": [], "dispatches": []})
+    _run_guarded(roots, paused, _guarded(paused))
+    assert "redline" not in paused.calls                             # the run is not over yet
+
+
+def test_a_crashing_readout_is_logged_not_raised(roots):
+    steps = _Steps(roots)
+    assert _run_guarded(roots, steps, _guarded(steps, redline=RuntimeError("boom"))) == scan_run.EXIT_OK
+    assert _summary(roots)["redline"]["verdict"] == "ERROR"
+
+
+def test_an_unacknowledged_breaker_refuses_a_new_run_before_waiting_for_the_lake(roots):
+    breaker = {"run_id": "20261009T130000000000Z", "readout": "/x.json",
+               "findings": [{"level": "FAIL", "code": "PREFIX_DRIFT"}]}
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, breaker=breaker))
+    assert code == scan_run.EXIT_FAILED
+    assert "wait_ready" not in steps.calls and "begin" not in steps.calls
+    summary = _summary(roots)
+    assert summary["result"] == "REFUSED_BUDGET" and summary["breaker"]["run_id"] == breaker["run_id"]
+    [(title, body)] = steps.notified
+    assert "--ack-redline 20261009T130000000000Z" in body and "PREFIX_DRIFT" in body
+
+
+def test_ack_redline_for_that_run_releases_the_breaker(roots):
+    breaker = {"run_id": "20261009T130000000000Z", "findings": []}
+    steps, acked = _Steps(roots), []
+    code = _run_guarded(roots, steps, _guarded(steps, breaker=breaker, acked=acked),
+                        ack_redline="20261009T130000000000Z")
+    assert code == scan_run.EXIT_OK and acked == ["20261009T130000000000Z"] and "begin" in steps.calls
+
+
+def test_ack_for_another_run_does_not_release_it(roots):
+    breaker = {"run_id": "20261009T130000000000Z", "findings": []}
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, breaker=breaker), ack_redline="20260101T000000000000Z")
+    assert code == scan_run.EXIT_FAILED and "ack" not in steps.calls
+
+
+def test_resume_with_ack_for_the_same_run_acknowledges_before_resuming(roots):
+    steps, acked = _Steps(roots), []
+    guarded = _guarded(steps, acked=acked)
+    import dataclasses
+
+    guarded = dataclasses.replace(guarded, resume=lambda run_id: DATE)
+    _run_guarded(roots, steps, guarded, resume_run_id=RUN_ID, ack_redline=RUN_ID)
+    assert acked == [RUN_ID] and "begin" not in steps.calls
+
+
+_REGRESSED = {"verdict": "FAIL", "run_id": "20261009T130000000000Z", "checked": 26,
+              "regressions": [{"task_id": "l4.688578.a1.review2", "now": "REJECT", "reason": "精度契约"}]}
+
+
+def test_a_validator_regression_on_last_nights_accepted_cards_refuses_the_run(roots):
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, gate=_REGRESSED))
+    assert code == scan_run.EXIT_FAILED and "wait_ready" not in steps.calls and "begin" not in steps.calls
+    assert steps.calls.index("replay_gate") < len(steps.calls)
+    summary = _summary(roots)
+    assert summary["result"] == "REFUSED_REPLAY" and summary["replay_gate"]["regressions"] == ["l4.688578.a1.review2"]
+    [(title, body)] = steps.notified
+    assert "--ack-redline 20261009T130000000000Z" in body and "l4.688578.a1.review2" in body
+
+
+def test_ack_for_the_replayed_run_lets_the_run_proceed(roots):
+    steps, acked = _Steps(roots), []
+    code = _run_guarded(roots, steps, _guarded(steps, gate=_REGRESSED, acked=acked),
+                        ack_redline="20261009T130000000000Z")
+    assert code == scan_run.EXIT_OK and acked == ["20261009T130000000000Z"] and "begin" in steps.calls
+
+
+def test_a_crashing_gate_is_logged_and_does_not_cost_the_night(roots):
+    steps = _Steps(roots)
+    assert _run_guarded(roots, steps, _guarded(steps, gate=RuntimeError("boom"))) == scan_run.EXIT_OK
+    assert _summary(roots)["replay_gate"]["verdict"] == "ERROR"

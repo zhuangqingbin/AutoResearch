@@ -207,6 +207,12 @@ def _group_stopped(pgid: int) -> bool | None:
 
 
 
+#: 研究线程不装自动记忆(``claude -p --agent`` 缺省把 MEMORY.md 整个放进系统提示:l3-repair 实测 19,013 →
+#: 8,144 token;记忆里是用户裁定与实跑读数,研究角色按 C4 不该看见)。``--settings`` 原样进记录。
+AUTO_MEMORY = False
+AUTO_MEMORY_OFF_SETTINGS = json.dumps({"autoMemoryEnabled": False})
+
+
 class HeadlessClaudeExecutor:
     """Run each inference attempt as its own ``claude -p`` session (blocking)."""
 
@@ -224,14 +230,19 @@ class HeadlessClaudeExecutor:
         transcript_root: Path | str | None = None,
         max_turns: Mapping[str, int] | None = None,
         kill_grace_seconds: float = 5.0,
+        auto_memory: bool | None = None,
     ):
         self.staging = Path(staging)
         self.claude_bin = resolve_claude_bin(claude_bin)
         self.cwd = Path(cwd) if cwd is not None else Path.cwd()
         self.transcript_root = Path(transcript_root) if transcript_root is not None else None
         from autoresearch.session_agent.config import session_cfg
-        self.max_turns = {**MAX_TURNS, **session_cfg()["max_turns"], **dict(max_turns or {})}
+        _sc = session_cfg()
+        self.max_turns = {**MAX_TURNS, **_sc["max_turns"], **dict(max_turns or {})}
         self.kill_grace_seconds = float(kill_grace_seconds)
+        if auto_memory is None:
+            auto_memory = (_sc.get("preamble") or {}).get("claude_auto_memory", AUTO_MEMORY)
+        self.auto_memory = bool(auto_memory)
 
     # ── helpers ─────────────────────────────────────────────────────────────────
     def max_turns_for(self, request: DispatchRequest) -> int:
@@ -270,6 +281,8 @@ class HeadlessClaudeExecutor:
             "--session-id", session_id,
             "--max-turns", str(self.max_turns_for(request)),
         ]
+        if not self.auto_memory:
+            argv += ["--settings", AUTO_MEMORY_OFF_SETTINGS]
         if request.model:
             argv += ["--model", str(request.model)]
         if request.effort:
@@ -425,7 +438,12 @@ class HeadlessClaudeExecutor:
     def _failure(exit_code: int, doc: dict | None, stdout: str,
                  stderr: str) -> tuple[str | None, str | None]:
         """``(error, declared_class)``; the class is left to ``classify_error`` except for
-        transient API errors (overloaded / 5xx), declared CONNECTION = one retry."""
+        transient API errors (overloaded / 5xx), declared CONNECTION = one retry, and the turn
+        cap (``subtype=error_max_turns``, any exit code), declared TIMEOUT: the attempt ran out
+        of its runtime envelope like a wall-clock timeout — one retry, never a whole-run block."""
+        if (doc or {}).get("subtype") == "error_max_turns":
+            return (f"claude -p 轮数封顶(subtype=error_max_turns,session.max_turns): "
+                    f"{_excerpt((doc or {}).get('result')) or _excerpt(stderr)}"), "TIMEOUT"
         if exit_code != 0:
             detail = _excerpt((doc or {}).get("result")) or _excerpt(stderr) or _excerpt(stdout)
             error = f"claude -p 失败 exit={exit_code}: {detail}"

@@ -5,12 +5,13 @@ import importlib.util
 import io
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import tomllib
 
-from tests.session_agent.test_task_access import manifest
+from tests.session_agent.test_task_access import manifest, request
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/hooks/agent_input_boundary.py'
@@ -41,6 +42,34 @@ def env(tmp_path, monkeypatch):
 def denied(result):
     assert result['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert 'AGENT_INPUT_BOUNDARY' in result['hookSpecificOutput']['permissionDecisionReason']
+
+
+@pytest.mark.parametrize('engine', ['codex', 'claude'])
+@pytest.mark.parametrize('policy', ['READ_WRITE', 'WEB_WRITE', 'READ_WEB_WRITE'])
+def test_codex_native_web_tool_name_requires_registered_web_policy(tmp_path, monkeypatch, engine, policy):
+    from autoresearch.session_agent import task_access as access
+
+    req = replace(request(tmp_path), engine=engine, tool_policy=policy)
+    state = tmp_path / 'session/tasks.json'
+    state.parent.mkdir()
+    state.write_text(json.dumps({'engine': engine, 'run_id': req.run_id, 'tasks': {
+        req.task_id: {'state': 'RUNNING', 'attempt': req.attempt, 'session_ref': 'host-1',
+                     'spec': {'owner': 'SESSION', 'kind': 'INFERENCE', 'role': req.role,
+                              'task_id': req.task_id}}}}))
+    dispatch = tmp_path / 'session/dispatch/judge-a1.json'
+    access.freeze_access(req, dispatch)
+    access.bind_context(dispatch, session_id='host-1', agent_id='child-1', repo_root=tmp_path)
+    hook = load_hook()
+    monkeypatch.setattr(hook, 'REPO_ROOT', tmp_path)
+    payload = {'session_id': 'host-1', 'agent_id': 'child-1', 'agent_type': req.agent_type,
+               'cwd': str(tmp_path), 'tool_name': 'webrun',
+               'tool_input': {'search_query': [{'q': 'company announcement'}]}}
+
+    result = hook.decide(payload, engine)
+    if engine == 'codex' and 'WEB' in policy.split('_'):
+        assert result is None
+    else:
+        denied(result)
 
 
 def test_normal_declared_input_and_same_attempt_output_readback(env):

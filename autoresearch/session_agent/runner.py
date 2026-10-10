@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoresearch.common.atomic import atomic_write_json, canonical_json, sha256_bytes
-from autoresearch.contracts.retry import TASK_ATTEMPT
+from autoresearch.contracts.retry import TASK_ATTEMPT, VALIDATION_REPAIR
 from autoresearch.session_agent import artifacts, service, store
 from autoresearch.session_agent.dispatch import build_request
 from autoresearch.session_agent.executors.base import (
@@ -78,6 +78,21 @@ class RunnerUnsupported(RuntimeError):
 
 class RunnerAlreadyRunning(RuntimeError):
     """Another live runner holds ``_dispatch/runner.lock`` for this run."""
+
+
+def submit_error_class(exc: BaseException) -> str:
+    """``submit`` 拒绝的分类:领域校验拒绝(DomainValidationError,含其 cause 链)= DOMAIN_VALIDATION,
+    带校验原话重做一次(contracts.retry.VALIDATION_REPAIR);其余身份/契约拒绝 = CONTRACT_ERROR,不重试。"""
+    from autoresearch.session_agent.validation import DomainValidationError
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, DomainValidationError):
+            return "DOMAIN_VALIDATION"
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return "CONTRACT_ERROR"
 
 
 def orphan_hint(run_id: str, task_id: str, attempt: int) -> str:
@@ -193,6 +208,7 @@ class Runner:
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], str] = _now,
         fanout_warmup_s: float = 0.0,
+        prefix_guard=None,
     ):
         if type(max_parallel) is not int or max_parallel < 1:
             raise ValueError("max_parallel must be a positive integer")
@@ -201,6 +217,9 @@ class Runner:
         # B8(2026-10-03):并行扇出预热。同一角色第一份派发之后,其余等它领先这么多秒再发 ——
         # 并发请求读不到彼此的 prompt 缓存,同时发 N 份就是 N 次写同一个前缀。0 = 关。
         self.fanout_warmup_s = float(fanout_warmup_s)
+        # token 防膨胀 M4(2026-10-10):每角色第一个完成线程的前导对上一场翻倍 → 停派(见 scan.redline)。
+        self.prefix_guard = prefix_guard
+        self._prefix_drift: dict | None = None
         self._monotonic = monotonic
         self._role_first_start: dict[str, float] = {}
         if not heartbeat_seconds > 0:
@@ -399,6 +418,28 @@ class Runner:
                 rounds += 1
                 progressed = self._harvest()
                 self._bind_late_evidence()
+                if self._prefix_drift is not None:
+                    # Same drain as a capacity pause: finish what is paid for, start nothing new.
+                    if not self._inflight:
+                        state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
+                        outcome = self._outcome(state, rounds, "PREFIX_DRIFT")
+                        break
+                    self._beat()
+                    if not progressed:
+                        self._sleep(self.poll_seconds)
+                    continue
+                capacity = self._capacity_pending()
+                if capacity:
+                    # Drain already-paid work, but never fan out or automatically retry
+                    # while the subscription cannot serve new inference.
+                    if not self._inflight:
+                        state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
+                        outcome = self._outcome(state, rounds, "USAGE_LIMIT")
+                        break
+                    self._beat()
+                    if not progressed:
+                        self._sleep(self.poll_seconds)
+                    continue
                 if self._det_busy():
                     # A deterministic execute may be mid-expansion (expansion file on disk,
                     # store/artifacts not yet synced): read the graph only between executes.
@@ -450,6 +491,18 @@ class Runner:
             self._heartbeat = now
             self._write_status("RUNNING")
 
+    def _observe_prefix(self, task: dict, result) -> None:
+        if self.prefix_guard is None or self._prefix_drift is not None:
+            return
+        try:
+            drift = self.prefix_guard.observe(str(task.get("role") or ""), getattr(result, "transcript_path", None))
+        except Exception as exc:  # noqa: BLE001 - a guard fault must never fail the task
+            self._event("PREFIX_GUARD_FAILED", task_id=task["task_id"], message=str(exc))
+            return
+        if drift:
+            self._prefix_drift = drift
+            self._event("PREFIX_DRIFT", task_id=task["task_id"], **drift)
+
     def _outcome(self, state: dict | None, rounds: int, stop_reason: str, *,
                  finished: bool = False, finish: dict | None = None) -> dict:
         value = {
@@ -466,6 +519,27 @@ class Runner:
             "errors": [*(state or {}).get("errors", []), *self._errors],
             "finish": finish,
         }
+        entries = store.read_entries(service._store_path(self.handle))
+        recoveries = []
+        for task_id, entry in entries.items():
+            code = (entry.get("error") or {}).get("code")
+            spec = entry["spec"]
+            if (entry["state"] == "FAILED" and
+                    (code == "USAGE_LIMIT" or
+                     (spec.get("operation") == "scan.assemble"
+                      and code in {"OPERATION_ERROR", "OPERATION_FAILED"}))):
+                recoveries.append({"task_id": task_id, "attempt": entry["attempt"],
+                                   "error_class": code})
+        value["recoverable"] = (not finished and any(
+            row["error_class"] == "USAGE_LIMIT" for row in recoveries)) or (
+                                stop_reason in {"USAGE_LIMIT", "FINISH_FAILED", "PREFIX_DRIFT"}
+                                or (stop_reason == "BLOCKED" and bool(recoveries)))
+        value["recovery_tasks"] = recoveries
+        if self._prefix_drift is not None:
+            value["prefix_drift"] = dict(self._prefix_drift)
+            value["errors"].append({"message": (
+                f"PREFIX_DRIFT {self._prefix_drift['role']} 前导 {self._prefix_drift['prefix']} = 上一场中位 "
+                f"×{self._prefix_drift['ratio']};查明后 --resume-run-id {self.run_id} --ack-redline {self.run_id}")})
         self._event("RUNNER_STOPPED", stop_reason=stop_reason, status=value["status"],
                     finished=finished)
         return json.loads(json.dumps(value, default=str))
@@ -505,21 +579,25 @@ class Runner:
         retries = []
         for task_id, entry in store.read_entries(service._store_path(self.handle)).items():
             spec = entry["spec"]
+            authorized = store.recovery_authorized(entry)
+            code = (entry.get("error") or {}).get("code")
             if (spec.get("role") == "scan.l4.review"
+                    and code != "USAGE_LIMIT"
                     and entry["state"] in {"FAILED", "BLOCKED"}
                     and (entry["state"] == "BLOCKED" or int(entry["attempt"]) >= _session_max_attempts())):
                 self._review_failed(spec, (entry.get("error") or {}).get("code", "UNKNOWN"),
                                     (entry.get("error") or {}).get("message", ""))
             if (
                 entry["state"] != "FAILED"
-                or (spec.get("parent_task") is not None and spec.get("role") != "scan.l4.review")
+                or (spec.get("parent_task") is not None
+                    and spec.get("role") != "scan.l4.review" and not authorized)
                 or task_id in self._inflight
                 or task_id in self._skip
-                or int(entry["attempt"]) >= _session_max_attempts()
+                or (int(entry["attempt"]) >= _session_max_attempts() and not authorized)
             ):
                 continue
-            if spec["kind"] == "INFERENCE" and (entry.get("error") or {}).get(
-                    "code") not in TASK_ATTEMPT:
+            if (spec["kind"] == "INFERENCE" and code not in TASK_ATTEMPT
+                    and code not in VALIDATION_REPAIR and not authorized):
                 continue
             if spec.get("parent_task") is not None:
                 from autoresearch.session_agent import legacy_scan
@@ -530,6 +608,12 @@ class Runner:
                     continue
             retries.append((spec, int(entry["attempt"]) + 1))
         return retries
+
+    def _capacity_pending(self) -> list[dict]:
+        return [entry for entry in store.read_entries(service._store_path(self.handle)).values()
+                if entry["state"] == "FAILED"
+                and (entry.get("error") or {}).get("code") == "USAGE_LIMIT"
+                and not store.recovery_authorized(entry)]
 
     def _launch(self, ready: list[dict], retries: list[tuple[dict, int]] = ()) -> bool:
         launched = False
@@ -619,6 +703,8 @@ class Runner:
         if not can_dispatch():
             return
         self._harvest()
+        if self._capacity_pending():
+            return
         state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
         self._preflight()
         candidates = list(self._session_retries())
@@ -636,6 +722,8 @@ class Runner:
 
     def _start(self, task: dict, attempt: int, *, can_dispatch=None) -> bool:
         task_id = task["task_id"]
+        if self._capacity_pending():
+            return False
         if task["kind"] == "DETERMINISTIC":
             try:
                 params = _params_for(task, self._request())
@@ -798,6 +886,7 @@ class Runner:
             self._fail(flight, classify_error(result.error, result.error_class),
                        result.error or "executor reported failure", result)
             return
+        self._observe_prefix(task, result)
         outputs = []
         for artifact_id in task["output_artifact_ids"]:
             try:
@@ -846,7 +935,7 @@ class Runner:
                 validator=self.hooks.validator, host_receipt=receipt,
                 event_recorder=self.hooks.event_recorder)
         except Exception as exc:  # noqa: BLE001 - contract/identity rejection of the output
-            self._fail(flight, "CONTRACT_ERROR", f"{type(exc).__name__}: {exc}", result)
+            self._fail(flight, submit_error_class(exc), f"{type(exc).__name__}: {exc}", result)
             return
         self._record(flight, "SUBMITTED", result)
 
@@ -942,9 +1031,10 @@ class Runner:
         wanted = {}
         for code, ticket in (legacy_scan._payload(self.handle).get("tasks") or {}).items():
             attempt = int(ticket.get("attempt") or 0)
+            last_class = str(ticket.get("last_error_class") or "")
             if (
                 ticket.get("status") != "FAILED"
-                or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
+                or (last_class not in TASK_ATTEMPT and last_class not in VALIDATION_REPAIR)
                 or attempt < 1
                 or attempt + 1 > MAX_ATTEMPTS
                 or code in in_flight
@@ -996,5 +1086,5 @@ def run_loop(run_id: str, executor, **options) -> dict:
 
 __all__ = [
     "DISPATCH_DIR", "SESSION_MAX_ATTEMPTS", "Runner", "RunnerUnsupported", "ServiceHooks",
-    "bind_transcript_evidence", "run_loop",
+    "bind_transcript_evidence", "run_loop", "submit_error_class",
 ]

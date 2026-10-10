@@ -4,7 +4,7 @@ description: scan-market L3 比较式精排。通读本 run 候选表与地形�
 model: claude-opus-5-5
 effort: max
 tools: Read, Write, Grep, Glob
-maxTurns: 64
+maxTurns: 12
 omitClaudeMd: true
 ---
 
@@ -43,10 +43,10 @@ omitClaudeMd: true
 - **I. 同行业软上限 3 席**:确定性层剔最弱、补合资格异行业；conviction≥75 或 lane 配额可保护已合资格票，由派生列 `sector_cap_exception` 记录例外。软例外不得越过硬拒绝。
 
 ## 输出
-用 Write 将 ~20–28 只 finalist + bench 落到指定 `_l3_judged.json`。输出 **JSON 数组 v2**，每行严格含以下 17 字段：
+用 Write 将表内**每一行**(finalist 或 bench,不得漏判)落到指定 `_l3_judged.json`。输出 **JSON 数组 v2**，每行严格含以下 17 字段：
 `schema_version`(固定整数 2)、`veto_reasons`(下述结构化数组)、`code`(表内原样,保前导零)、`name`、`sector`(表内 industry)、`lenses`(命中的 5 维,逗号分隔)、`conviction`(0-100)、`fragility`(最大脆弱点一句)、`thesis`(多头论点一句,数字出自表)、`mechanism`(一句,兑现机制,与 thesis 同级)、`risk`(红队一句)、`catalyst`(催化,带日期最好)、`triage_lean`(OW|Hold|UW)、`lane`(trend|growth|reversion|accumulation|main|value|healthy|lowturn)、`pct_60d`(表内数字)、`sentiment`(看多|中性|看空)、**`finalist`**(true|false)。
 
-`finalist:true` 者 **7–10 只**(以派发给出的上限为准):**conviction≥75 的合资格非持仓票必须 true**(误杀保险)；命中 B/E 或追高等硬剔除时仍必须 false，不能只把拒绝藏在 thesis/risk。**conviction<55 禁止 true**;够格不足 7 只就出更少,**禁止凑数**(宁缺毋滥)。`finalist:false` 即 **bench**——不是弃权,仍按 6 维 rubric 认真判断。
+`finalist:true` 者**数量按派发给出的区间**:**conviction≥75 的合资格非持仓票必须 true**(误杀保险)；命中 B/E 或追高等硬剔除时仍必须 false，不能只把拒绝藏在 thesis/risk。**conviction<55 禁止 true**;够格不足下限就出更少,**禁止凑数**(宁缺毋滥)。`finalist:false` 即 **bench**——不是弃权,仍按 6 维 rubric 认真判断。
 
 `conviction`(0–100 整数，**序数确信度，不是概率或胜率**):≥70 = 我能说出 D2 开盘兑现买家、且愿意在 D1 收盘入场条件满足时承担隔夜风险(**每日 ≥70 至多 ~5 只**);50–69 = 值得 L4 深核但我不背书;<50 不该出现在入选里。
 `mechanism`(一句):**D1 收盘至 D2 开盘兑现机制**——催化落地/突破跟随/板块轮动位/超跌第一波修复 之一 + D2 开盘买家是谁;写不出兑现机制的票不选。

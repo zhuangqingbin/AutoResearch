@@ -5,6 +5,7 @@ The host loop itself is documented once, in ``docs/session-agent/README.md``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 #: ``run`` exit code when the runner stopped without finishing (BLOCKED / STALLED / …).
@@ -41,15 +42,22 @@ def _build_executor(args, handle) -> tuple[object, dict | None]:
 
         return MailboxExecutor(handle.staging, poll_seconds=min(args.poll_seconds, 2.0)), None
     if args.executor == "headless":
+        from autoresearch.session_agent.config import session_cfg
         from autoresearch.session_agent.executors import headless_claude
 
-        if handle.engine != "claude":
-            raise ValueError(
-                f"--executor headless runs `claude -p` and needs a claude run; "
-                f"{args.run_id} is a {handle.engine} run (Codex headless is out of scope)")
-        executor = headless_claude.HeadlessClaudeExecutor(
-            handle.staging, claude_bin=args.claude_bin)
-        from autoresearch.session_agent.config import session_cfg
+        # 2026-10-08:同一个 runner、同一张超时表,按 run 的引擎选传输 —— claude = `claude -p`,
+        # codex = `codex exec`(executors.headless_codex)。
+        if handle.engine == "claude":
+            executor = headless_claude.HeadlessClaudeExecutor(
+                handle.staging, claude_bin=args.claude_bin)
+        elif handle.engine == "codex":
+            from autoresearch.session_agent.executors import headless_codex
+
+            executor = headless_codex.HeadlessCodexExecutor(
+                handle.staging, codex_bin=getattr(args, "codex_bin", None),
+                open_timeout_seconds=session_cfg()["timeouts"]["codex_open_s"])
+        else:
+            raise ValueError(f"--executor headless: unsupported run engine {handle.engine} for {args.run_id}")
         return executor, {**dict(headless_claude.HEADLESS_TIMEOUTS), **session_cfg()["timeouts"]["headless"]}
     raise ValueError(f"unknown executor: {args.executor}")  # pragma: no cover - argparse
 
@@ -60,16 +68,28 @@ def run_command(args) -> tuple[dict, int]:
     handle = _handle(args.run_id)
     executor, timeouts = _build_executor(args, handle)
     options = {"timeouts": timeouts} if timeouts is not None else {}
-    outcome = runner.run_loop(
-        args.run_id,
-        executor,
-        max_parallel=resolve_max_parallel(handle, args.max_parallel),
-        poll_seconds=args.poll_seconds,
-        max_rounds=args.max_rounds,
-        timeout_multiplier=args.timeout_multiplier,
-        fanout_warmup_s=args.fanout_warmup_s,
-        **options,
-    )
+    if getattr(args, "executor", None) == "headless":
+        from autoresearch.scan import redline
+
+        try:
+            options["prefix_guard"] = redline.PrefixGuard.for_run(args.run_id, engine=handle.engine)
+        except Exception as exc:  # noqa: BLE001 - no baseline readable = no guard, never no run
+            print(json.dumps({"event": "PREFIX_GUARD_UNAVAILABLE", "message": str(exc)}, ensure_ascii=False),
+                  file=sys.stderr, flush=True)
+    try:
+        outcome = runner.run_loop(
+            args.run_id,
+            executor,
+            max_parallel=resolve_max_parallel(handle, args.max_parallel),
+            poll_seconds=args.poll_seconds,
+            max_rounds=args.max_rounds,
+            timeout_multiplier=args.timeout_multiplier,
+            fanout_warmup_s=args.fanout_warmup_s,
+            **options,
+        )
+    except runner.RunnerAlreadyRunning as exc:
+        return {"run_id": args.run_id, "finished": False,
+                "stop_reason": "RUNNER_BUSY", "errors": [{"message": str(exc)}]}, EXIT_NOT_FINISHED
     return outcome, 0 if outcome.get("finished") else EXIT_NOT_FINISHED
 
 
@@ -101,7 +121,8 @@ def mailbox_command(args) -> dict:
                 **bound_commands(path, session_id, args.context_ref)}
     if args.mailbox_command == "wait":
         return mailbox.wait_request(
-            handle.staging, timeout=args.timeout, include_taken=args.include_taken)
+            handle.staging, timeout=args.timeout, include_taken=args.include_taken,
+            full=bool(getattr(args, "full", False)))
     if args.mailbox_command == "pending":
         return {
             "kind": "PENDING",
@@ -152,6 +173,8 @@ def add_parsers(subparsers) -> None:
     run.add_argument("--executor", choices=("mailbox", "headless"), default="mailbox")
     run.add_argument("--claude-bin", help="headless only: claude CLI path "
                      "(default $AUTORESEARCH_CLAUDE_BIN, PATH, ~/.local/bin/claude)")
+    run.add_argument("--codex-bin", help="headless only (codex run): codex CLI path "
+                     "(default $AUTORESEARCH_CODEX_BIN, PATH, /usr/local/bin/codex)")
     run.add_argument("--max-parallel", type=int)
     from autoresearch.session_agent.config import session_cfg   # session.runner / session.mailbox 缺省
     _rn = session_cfg()["runner"]
@@ -166,6 +189,8 @@ def add_parsers(subparsers) -> None:
     wait.add_argument("--run-id", required=True)
     wait.add_argument("--timeout", type=float, default=session_cfg()["mailbox"]["wait_s"])   # < host Bash 120 s cap
     wait.add_argument("--include-taken", action="store_true")
+    wait.add_argument("--full", action="store_true",
+                      help="回显整份冻结请求(含 prompt 全文);缺省只给宿主视图(省主会话上下文)")
     pending = commands.add_parser("pending")
     pending.add_argument("--run-id", required=True)
     binding = commands.add_parser("bind-access")

@@ -112,8 +112,9 @@ def test_r5_file_header_longer_than_eight_lines_is_red():
 
 
 def test_r5_structured_block_comment_still_obeys_text_rules():
-    mutated = _edit_line(TEXT, '"l3_rank":       { "tier": "critical" },',
-                         '    "l3_rank":       { "tier": "critical" },      // L3 精排(2026-07-06 起 opus)')
+    mutated = _edit_line(TEXT, '"l3_rank":       { "tier": "critical", "consumer": "scan.l3.lint" },',
+                         '    "l3_rank":       { "tier": "critical", "consumer": "scan.l3.lint" },'
+                         '      // L3 精排(2026-07-06 起 opus)')
     assert "R5" in rules(std.lint_text(mutated))
 
 

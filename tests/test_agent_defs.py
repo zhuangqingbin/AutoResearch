@@ -712,6 +712,12 @@ def test_scan_workflow_reads_l3cap_from_gate1_not_a_literal():
 
 
 def test_l3_rank_defers_finalist_count_to_dispatch_cap():
-    """l4.max_cards 改大要真生效:l3-rank 定义里的 7–10 只是默认区间,本场上限以派发给出的为准。"""
+    """l4.max_cards 改大改小都要真生效:finalist 只数只认派发区间(`l3min`~`l3cap`),
+    定义里不得再写死区间——2026-10-04 卡数降到 4 席时,残留的「7–10 只」就是在叫它凑数。"""
+    import re
+
     body = (AGENTS / "l3-rank.md").read_text(encoding="utf-8")
-    assert "以派发给出的上限为准" in body
+    assert "数量按派发给出的区间" in body
+    count_range = re.compile(r"\d+\s*[–~-]\s*\d+\s*只")
+    hardcoded = [ln for ln in body.splitlines() if "finalist" in ln and count_range.search(ln)]
+    assert not hardcoded, f"l3-rank 定义写死了 finalist 只数区间:{hardcoded}"

@@ -1,0 +1,260 @@
+{
+ "schema_version": 1,
+ "provenance": "token_bom calibration seeds, used only until real redline readouts exist. claude = run 20261007T151001404046Z (Opus 5.5 max, research threads only; the mailbox host row is excluded); codex = run 20261008T143002429765Z (headless gpt-5.6-sol, 31 threads, 85 window points). Readouts were built read-only with scan.redline on 2026-10-10.",
+ "coefficients": {
+  "_note": "md_tokens_per_char: claude -p --agent l4-card vs l3-repair first call, 30604-19013 tokens over 10224-411 chars. claude_auto_memory_tokens: l3-repair 19013 with MEMORY.md, 8144 without. codex_trim_tokens: l4_intel open turn 22884 (10-08) vs 16924 (10-10 probe, both trims); split between the two trims by their rendered character share 17267:4626.",
+  "md_tokens_per_char": 1.18,
+  "claude_auto_memory_tokens": 10869,
+  "codex_skills_catalog_tokens": 4700,
+  "codex_project_doc_tokens": 1260
+ },
+ "readouts": [
+  {
+   "engine": "claude",
+   "run_id": "20261007T151001404046Z",
+   "analysis_date": "2026-09-30",
+   "seed": true,
+   "config": {
+    "max_cards": 5,
+    "pinned_cap": 5,
+    "sector_briefs": 9,
+    "intel_enabled": true,
+    "preamble": {
+     "claude_auto_memory": false
+    }
+   },
+   "agent_chars": {
+    "company-intel": 5417,
+    "dossier-init": 2374,
+    "global-intel": 4285,
+    "l3-rank": 4315,
+    "l3-repair": 411,
+    "l4-card": 10224,
+    "l4-intel": 5121,
+    "macro-brief": 2399,
+    "macro-full": 1947,
+    "sector-brief": 2419,
+    "sector-full": 859,
+    "sector-intel": 4523,
+    "stock-full": 3211,
+    "us-intel": 4687
+   },
+   "roles": {
+    "scan.l4.card": {
+     "threads": 9,
+     "usd": 22.6236,
+     "input": 3182836,
+     "calls_median": 6.0,
+     "prefix_median": 20945.0,
+     "output_median": 92616.0
+    },
+    "scan.l4.intel": {
+     "threads": 7,
+     "usd": 6.7922,
+     "input": 2222044,
+     "calls_median": 8.0,
+     "prefix_median": 10330.0,
+     "output_median": 62570.0
+    },
+    "scan.l3": {
+     "threads": 1,
+     "usd": 5.1222,
+     "input": 242388,
+     "calls_median": 5.0,
+     "prefix_median": 12463.0,
+     "output_median": 213585.0
+    },
+    "macro.brief": {
+     "threads": 1,
+     "usd": 0.9403,
+     "input": 78316,
+     "calls_median": 3.0,
+     "prefix_median": 9995.0,
+     "output_median": 34059.0
+    },
+    "sector.brief": {
+     "threads": 9,
+     "usd": 1.6185,
+     "input": 875169,
+     "calls_median": 6.0,
+     "prefix_median": 9904.0,
+     "output_median": 4671.0
+    }
+   },
+   "identity": {
+    "hosts": [
+     "2.1.292"
+    ],
+    "models": {
+     "scan.l4.card": [
+      "claude-opus-5-5"
+     ],
+     "scan.l4.intel": [
+      "claude-sonnet-5-5"
+     ],
+     "scan.l3": [
+      "claude-opus-5-5"
+     ],
+     "macro.brief": [
+      "claude-opus-5-5"
+     ],
+     "sector.brief": [
+      "claude-opus-5-5"
+     ]
+    },
+    "efforts": {
+     "scan.l4.card": [
+      "max"
+     ],
+     "scan.l4.intel": [
+      "max"
+     ],
+     "scan.l3": [
+      "max"
+     ],
+     "macro.brief": [
+      "max"
+     ],
+     "sector.brief": [
+      "xhigh"
+     ]
+    }
+   },
+   "window": {
+    "status": "NOT_APPLICABLE",
+    "primary_points": null
+   }
+  },
+  {
+   "engine": "codex",
+   "run_id": "20261008T143002429765Z",
+   "analysis_date": "2026-10-08",
+   "seed": true,
+   "config": {
+    "max_cards": 5,
+    "pinned_cap": 5,
+    "sector_briefs": 9,
+    "intel_enabled": true,
+    "preamble": {
+     "codex_project_doc_max_bytes": null,
+     "codex_skills_catalog_budget": null
+    }
+   },
+   "agent_chars": {
+    "company-intel": 5417,
+    "dossier-init": 2374,
+    "global-intel": 4285,
+    "l3-rank": 4315,
+    "l3-repair": 411,
+    "l4-card": 10224,
+    "l4-intel": 5121,
+    "macro-brief": 2399,
+    "macro-full": 1947,
+    "sector-brief": 2419,
+    "sector-full": 859,
+    "sector-intel": 4523,
+    "stock-full": 3211,
+    "us-intel": 4687
+   },
+   "roles": {
+    "scan.l4.intel": {
+     "threads": 9,
+     "usd": 0.0,
+     "input": 4193191,
+     "calls_median": 9.0,
+     "prefix_median": 22884.0,
+     "output_median": 7466.0
+    },
+    "scan.l4.card": {
+     "threads": 9,
+     "usd": 0.0,
+     "input": 3593636,
+     "calls_median": 9.0,
+     "prefix_median": 22977.0,
+     "output_median": 10998.0
+    },
+    "scan.l3": {
+     "threads": 1,
+     "usd": 0.0,
+     "input": 255868,
+     "calls_median": 6.0,
+     "prefix_median": 22921.0,
+     "output_median": 16303.0
+    },
+    "scan.l4.review": {
+     "threads": 2,
+     "usd": 0.0,
+     "input": 569932,
+     "calls_median": 7.0,
+     "prefix_median": 22924.0,
+     "output_median": 10450.5
+    },
+    "sector.brief": {
+     "threads": 9,
+     "usd": 0.0,
+     "input": 1124693,
+     "calls_median": 5.0,
+     "prefix_median": 22875.0,
+     "output_median": 1607.0
+    },
+    "macro.brief": {
+     "threads": 1,
+     "usd": 0.0,
+     "input": 140104,
+     "calls_median": 5.0,
+     "prefix_median": 22889.0,
+     "output_median": 2605.0
+    }
+   },
+   "identity": {
+    "hosts": [
+     "0.160.1"
+    ],
+    "models": {
+     "scan.l4.intel": [
+      "gpt-5.6-sol"
+     ],
+     "scan.l4.card": [
+      "gpt-5.6-sol"
+     ],
+     "scan.l3": [
+      "gpt-5.6-sol"
+     ],
+     "scan.l4.review": [
+      "gpt-5.6-sol"
+     ],
+     "sector.brief": [
+      "gpt-5.6-sol"
+     ],
+     "macro.brief": [
+      "gpt-5.6-sol"
+     ]
+    },
+    "efforts": {
+     "scan.l4.intel": [
+      "xhigh"
+     ],
+     "scan.l4.card": [
+      "xhigh"
+     ],
+     "scan.l3": [
+      "xhigh"
+     ],
+     "scan.l4.review": [
+      "xhigh"
+     ],
+     "sector.brief": [
+      "high"
+     ],
+     "macro.brief": [
+      "xhigh"
+     ]
+    }
+   },
+   "window": {
+    "status": "MEASURED",
+    "primary_points": 85.0
+   }
+  }
+ ]
+}

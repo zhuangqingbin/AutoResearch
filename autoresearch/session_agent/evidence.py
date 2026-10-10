@@ -227,6 +227,41 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
                     if item not in _ABANDONED_EXEMPT or (late and item == "transcript")
                 ]
             evidence_kind = None
+            failure = read_failure(handle, task["task_id"], attempt)
+            if (task["kind"] == "INFERENCE" and state != "SUCCEEDED"
+                    and failure is not None
+                    and (failure.get("error") or {}).get("code") == "USAGE_LIMIT"):
+                from autoresearch.session_agent.host_evidence import transcript_refs_for_task
+                from autoresearch.trace.transcripts import TranscriptRef, adapter_for
+                from autoresearch.trace.transcripts.snapshot import snapshot_from_archive_bytes
+                refs = transcript_refs_for_task(handle, task["task_id"], attempt)
+                # Missing/tampered bound transcripts remain required. Only a verified
+                # no-tool thread (or refusal before any thread) cannot have web receipts.
+                no_tools = not refs and not _observed_capacity_context(handle, task["task_id"], attempt)
+                if refs and all(ref["status"] == "PRESENT" for ref in refs):
+                    normalized = []
+                    parse_complete = True
+                    for ref in refs:
+                        path = Path(handle.capsule) / ref["captured_path"]
+                        snapshot = snapshot_from_archive_bytes(path.read_bytes(),
+                                                               engine=ref["engine"], path=path)
+                        parse_complete &= not snapshot.bad_lines and not snapshot.trailing_partial_bytes
+                        view = adapter_for(ref["engine"]).stats_from_rows(
+                            snapshot.rows, TranscriptRef(engine=ref["engine"], path=path,
+                                start_ordinal=ref.get("start_ordinal"),
+                                end_ordinal=ref.get("end_ordinal"))
+                        ).normalized
+                        normalized.append(view)
+                    no_tools = parse_complete and all(view.status in {
+                        "SUCCEEDED", "RETRIED_SUCCEEDED", "INCOMPLETE", "FAILED",
+                    } and not any(
+                        item.kind in {"tool_request", "tool_result"} for item in view.items
+                    ) for view in normalized)
+                if no_tools:
+                    requirements = [item for item in requirements
+                                    if item not in {"tool_results", "source_receipts"}
+                                    and (item != "transcript" or refs)]
+                evidence_kind = "CAPACITY_DEFERRED"
             if task["owner"] == "L4_TASKBOOK":
                 evidence_kind = "OWNER_TICKET"
             elif _stale_orphan(handle, task, attempt, state):
@@ -257,6 +292,31 @@ def build_evidence_plan(handle, *, now: datetime | None = None) -> dict:
     }
     value["evidence_plan_hash"] = evidence_plan_hash(value)
     return validate_evidence_plan(value)
+
+
+def _observed_capacity_context(handle, task_id: str, attempt: int) -> bool:
+    """A failed binder cannot turn a known thread into a before-thread refusal."""
+    dispatch = Path(handle.staging) / "_dispatch"
+    records = list((dispatch / "headless").glob("*.json"))
+    for path in records:
+        try:
+            row = _read_json(path)
+        except (OSError, ValueError):
+            return True  # Unreadable observations cannot establish absence.
+        if row.get("task_id") == task_id and row.get("attempt") == attempt and any(
+                row.get(key) for key in ("thread_id", "session_id", "transcript_path")):
+            return True
+    ledger = dispatch / "ledger.jsonl"
+    if ledger.is_file():
+        for line in ledger.read_text().splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                return True
+            if row.get("task_id") == task_id and row.get("attempt") == attempt and any(
+                    row.get(key) for key in ("context_ref", "transcript_path")):
+                return True
+    return False
 
 
 def _task_root(capsule: Path, task_id: str, attempt: int) -> Path:
@@ -402,6 +462,12 @@ def freeze_abandonment(
 
 def read_abandonment(handle, task_id: str, attempt: int) -> dict | None:
     path = _attempt_record_path(handle, task_id, attempt, "abandoned")
+    return _read_json(path) if path.is_file() else None
+
+
+def read_failure(handle, task_id: str, attempt: int) -> dict | None:
+    """The frozen failure of one attempt (``freeze_failure``), ``None`` if it did not fail."""
+    path = _attempt_record_path(handle, task_id, attempt, "failure")
     return _read_json(path) if path.is_file() else None
 
 
@@ -553,7 +619,7 @@ def _task_evidence(handle, task: dict, key: dict, entry: dict | None) -> dict:
     abandonment = read_abandonment(handle, task["task_id"], key["attempt"])
     if abandonment is not None:                  # the recorded reason travels with it
         atomic_write_json(root / "abandoned.json", abandonment)
-    if key.get("evidence_kind") == "STALE_ORPHAN":
+    if key.get("evidence_kind") in {"STALE_ORPHAN", "CAPACITY_DEFERRED"}:
         atomic_write_json(
             root / "failure.json",
             _read_json(_attempt_record_path(handle, task["task_id"], key["attempt"], "failure")),

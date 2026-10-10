@@ -178,9 +178,18 @@ def test_nightly_close_refreshes_stage_rulers(tmp_path):
     text = _nightly_text()
     assert _nightly_steps(text) == [
         "outcome fill", "ledger_views build", "populations build",
-        "populations rulers", "analyze ledger"]
+        "populations rulers", "analyze ledger", "news flash ingest"]
     assert re.search(
         r'^step "populations rulers"\s+autoresearch\.scan\.populations\s+rulers\s*$',
+        text, re.M)
+
+
+def test_nightly_close_feeds_the_news_catalog_flash_leg():
+    """news_catalog 的夜间快讯腿随 learning/nightly_close.py 一起被删(2026-08-21),
+    此后目录 first_seen 停在 08-20,prelude 天天报「最新 1000+h 前」却没有生产者。"""
+    text = _nightly_text()
+    assert re.search(
+        r'^step "news flash ingest"\s+autoresearch\.news\.catalog\s+ingest-flash\s*$',
         text, re.M)
 
 

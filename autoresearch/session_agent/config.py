@@ -25,7 +25,7 @@ def orchestration_config(handle) -> dict:
 def session_cfg(cfg: dict | None = None) -> dict:
     from autoresearch.scan.user_config import knob
     from autoresearch.session_agent import runner as _runner
-    from autoresearch.session_agent.executors import base as _base, headless_claude as _hl, mailbox as _mb
+    from autoresearch.session_agent.executors import base as _base, headless_claude as _hl, headless_codex as _hx, mailbox as _mb
 
     tm = knob("session", "timeouts", None, {}, cfg) or {}
     if not isinstance(tm, dict):
@@ -36,10 +36,15 @@ def session_cfg(cfg: dict | None = None) -> dict:
     rn = knob("session", "runner", None, {}, cfg) or {}
     if not isinstance(rn, dict):
         rn = {}
+    cx = knob("session", "preamble", None, {}, cfg) or {}
+    if not isinstance(cx, dict):
+        cx = {}
     return {
         "timeouts": {"mailbox": {**dict(_base.DEFAULT_TIMEOUTS), **(tm.get("mailbox") or {})},
                      "headless": {**dict(_hl.HEADLESS_TIMEOUTS), **(tm.get("headless") or {})},
-                     "fallback_s": float(tm.get("fallback_s", _base.FALLBACK_TIMEOUT))},
+                     "fallback_s": float(tm.get("fallback_s", _base.FALLBACK_TIMEOUT)),
+                     # codex headless(2026-10-08):开线程那一轮(拿 thread id)的墙钟,不占角色预算。
+                     "codex_open_s": float(tm.get("codex_open_s", _hx.OPEN_TIMEOUT_S))},
         "max_turns": {**dict(_hl.MAX_TURNS), **(knob("session", "max_turns", None, {}, cfg) or {})},
         "tier_max_turns": {**dict(_hl.TIER_MAX_TURNS), **(knob("session", "tier_max_turns", None, {}, cfg) or {})},
         "default_max_turns": int(knob("session", "default_max_turns", None, _hl.DEFAULT_MAX_TURNS, cfg)),
@@ -52,4 +57,9 @@ def session_cfg(cfg: dict | None = None) -> dict:
                    "max_rounds": int(rn.get("max_rounds", 20000)),
                    "timeout_multiplier": float(rn.get("timeout_multiplier", 1.0)),
                    "fanout_warmup_s": float(rn.get("fanout_warmup_s", 0.0))},
+        # 研究线程前导瘦身:codex 不装 skills 目录 / 不读项目 AGENTS.md,claude 不装自动记忆。
+        "preamble": {"codex_project_doc_max_bytes": int(cx.get("codex_project_doc_max_bytes", _hx.PROJECT_DOC_MAX_BYTES)),
+                    "codex_skills_catalog_budget": int(cx.get("codex_skills_catalog_budget",
+                                                                  _hx.SKILLS_MAX_CONTEXT_TOKENS)),
+                    "claude_auto_memory": bool(cx.get("claude_auto_memory", _hl.AUTO_MEMORY))},
     }

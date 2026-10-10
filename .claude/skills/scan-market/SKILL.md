@@ -61,7 +61,7 @@ uv run --no-sync python -m autoresearch.scan.run_lock check || { scan_lock_statu
 
 显式 `session_v1` 的控制循环、请求样例与 CLI 以 [统一入口](../../../docs/session-agent/README.md) 为准。取数前运行 `uv run --no-sync python -m autoresearch.session_agent.task_access preflight --orchestration session_v1`。`CONFIGURED_UNVERIFIED` 只表示配置可用；真实双宿主验收未齐时仍为 **PILOT**，不自行切换默认入口。旧 Workflow 当前返回 `HOST_CAPABILITY_REQUIRED`，保留为维护参考，不能绕过能力门启动。
 
-可选 runner 入口 `session_agent run --executor mailbox` 仍为 PILOT，宿主循环只见 [统一入口](../../../docs/session-agent/README.md)。
+日常全扫走 headless(2026-10-08 起,两个引擎):宿主后台起 `scripts/scan_run.sh --engine <本宿主引擎> --date <分析日> --skip-readiness`、结束回合、等完成通知后读 `$RPT/_ops/scan_run_<日>.json` 与 `token_usage.md`;宿主自己不派发、不绑定、不轮询(见 [统一入口](../../../docs/session-agent/README.md)「日常全扫」)。mailbox 宿主循环 `session_agent run --executor mailbox` 只作 headless 不可用时的回退,仍为 PILOT。
 
 研究角色只读冻结任务包与角色片段；主会话负责认领、真实身份绑定、提交、恢复和发布。`finish` 后对机器返回的 canonical 报告路径及 run_id 执行 `verify-report --level full`；交付只引用该 VerificationResult，缺项原样披露。
 

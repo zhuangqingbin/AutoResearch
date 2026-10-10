@@ -10,8 +10,8 @@
 
 ```
 L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L4 研究     →  L5 整合
-全A ~5500    top1000    top200     pass1→~40→finalist 7–10   决策卡×(7–10   1 份报告
-(确定性)   (确定性)   (确定性)   (确定性+Opus×1)          +📌保送)    (确定性)
+全A ~5500    top1000    top200     pass1→~40→finalist≤l3cap  决策卡≤max_cards  报告×1
+(确定性)   (确定性)   (确定性)   (确定性+Opus×1)          (+📌保送)     (确定性)
 ```
 
 **两条旁路**(并行算好后喂进主链):**市场研判**(macro-research lite 档,Stage 0 与 L0 并行,`macro-brief` 写 `market_view.md`,L3/L4/L5 三处复用)+ **行业 brief**(sector-research lite 档,L2 后按行业并发 `sector-brief`)。主链之外无其它层:事后闭环、L1 影子漏斗、L4 复用层均已退役(见 negative-results)。
@@ -81,7 +81,7 @@ L2 之后、与 L3 证据取数**并发**:`sector.reuse <date> --apply`(TTL ≤5
 
 ---
 
-## L3 · 精排 —— pass1 确定性分诊 + holistic 单 Opus 深比较(200 → ~40 → finalist tier 7–10)
+## L3 · 精排 —— pass1 确定性分诊 + holistic 单 Opus 深比较(200 → ~40 → finalist tier ≤ `l3cap`)
 
 **📌 保送票也走 L3**:pass1「pinned 全入」→ `l3-rank` 照常独立判(`finalist:false` 不占名额)→ `_inject_pinned_finalists` 把这份判断整段带进 finalists.csv。**保送 ≠ 免判**。
 
@@ -89,8 +89,8 @@ L2 之后、与 L3 证据取数**并发**:`sector.reuse <date> --apply`(TTL ≤5
 1. `harvest_l3_evidence`(龙虎榜/预告/快报)+ `harvest_l3_news`(公告情感,cninfo 兜底)补证据;
 2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned 全入 + composite 前 5 + lowturn 强留 ≤8 + `sector_seat`/composite 证据席强留 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);healthy lane 不再全入;被切的落影子 `_l3_pass1_cut.csv`;
 3. `l3_table_md` 压紧凑表:`pct_1d` 与 `dist_high_60` 两列 + pf 词「今日大涨」(≥9.5)/「贴顶」;presence-gated `seat` 列(🏭 行业席位)+ 图例;
-4. `l3-rank`(max)通看 ~40 只,按 6 维 rubric **比较着选**,给出 finalist tier 7–10 只 + bench(`_l3_bench.csv`);
-5. `L3_judged_full.csv` → `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入)→ ②`lt55`(<55 剔除)→ ③`cap`(=GATE1 回显的 `l3cap` = min(`l4.max_cards`−席位数, 当日 l4_budget),唯一算法 `scan/l4/card_count`)→ ⑦`chase_1d`(`pct_1d`≥9.5 剔除 + bench 回填 `chase_backfill`,≥55 才够格)→ ④`healthy_quota`(现 `HEALTHY_QUOTA_FRAC=0` 不动作)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ ⑧`sector_cap`(同 `sector` >3 席剔最弱 + 回填异行业 `sector_backfill`)→ ⑨`composite_seat`(当日 L2 菜单 composite 最高的 M=3 只强制进 finalists,`guard=composite_seat`/`lane=composite`,与 📌 同级,不占 finalist 名额(计入 `l4.max_cards`)、不受②③约束,剔 📌/ST/`pct_1d≥9.5`)→ ⑩`max_cards`(非 📌 行含席位总数 ≤ `l4.max_cards`,超出按席位优先、conviction 截尾进 bench,`guard=max_cards`)。各守卫的列缺 → 整段 no-op(parity);📌 保送在全部守卫之后注入,不受⑦⑧影响;
+4. `l3-rank`(max)通看 ~40 只,按 6 维 rubric **比较着选**,给出 finalist tier(只数按派发区间 `l3min`~`l3cap`,表内每行都要判)+ bench(`_l3_bench.csv`);
+5. `L3_judged_full.csv` → `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入)→ ②`lt55`(<55 剔除)→ ③`cap`(=GATE1 回显的 `l3cap` = min(`l4.max_cards`−席位数, 当日 l4_budget),唯一算法 `scan/l4/card_count`)→ ⑦`chase_1d`(`pct_1d`≥9.5 剔除 + bench 回填 `chase_backfill`,≥55 才够格)→ ④`healthy_quota`(现 `HEALTHY_QUOTA_FRAC=0` 不动作)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ ⑧`sector_cap`(同 `sector` >3 席剔最弱 + 回填异行业 `sector_backfill`)→ ⑨`composite_seat`(当日 L2 菜单 composite 最高的 M(`l3.composite_seat.m`)只强制进 finalists,`guard=composite_seat`/`lane=composite`,与 📌 同级,不占 finalist 名额(计入 `l4.max_cards`)、不受②③约束,剔 📌/ST/`pct_1d≥9.5`)→ ⑩`max_cards`(非 📌 行含席位总数 ≤ `l4.max_cards`,超出按席位优先、conviction 截尾进 bench,`guard=max_cards`)。各守卫的列缺 → 整段 no-op(parity);📌 保送在全部守卫之后注入,不受⑦⑧影响;
 6. 注入:策略师地形段。
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制 + 明日买家,写不出不选)与行为化 conviction(≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只;50-69 = 值得 L4 验不背书)。

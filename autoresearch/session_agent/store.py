@@ -160,6 +160,14 @@ def claim(
             raise TaskConflict("task already succeeded")
         if entry["state"] == "BLOCKED":
             raise TaskConflict("blocked task requires explicit recovery")
+        if ((entry.get("error") or {}).get("code") == "USAGE_LIMIT"
+                and not recovery_authorized(entry)):
+            raise TaskConflict("usage limit requires explicit recovery")
+        if recovery_authorized(entry):
+            def identities(rows):
+                return {row["artifact_id"]: row["sha256"] for row in rows}
+            if identities(input_snapshots or []) != identities(entry["claim_receipt"]["input_snapshots"]):
+                raise TaskConflict("recovery input snapshots changed")
         if expected_attempt != entry["attempt"] + 1:
             raise TaskConflict("expected attempt does not match next attempt")
         for dependency in entry["spec"]["dependencies"]:
@@ -414,6 +422,39 @@ def mark_failed(
         atomic_write_json(target, payload)
 
 
+def recovery_authorized(entry: dict) -> bool:
+    """A grant applies only to the exact still-failed attempt/error/input receipt."""
+    grants = entry.get("recovery_authorizations") or []
+    if not grants or entry["state"] != "FAILED":
+        return False
+    grant = grants[-1]
+    return (grant["failed_attempt"] == entry["attempt"]
+            and grant["next_attempt"] == entry["attempt"] + 1
+            and grant["failure_hash"] == _submission_digest(entry["error"])
+            and grant["claim_hash"] == _submission_digest(entry["claim_receipt"]))
+
+
+def authorize_recovery(path: Path | str, task_id: str, failed_attempt: int, reason: str) -> dict:
+    from datetime import datetime, timezone
+    target = Path(path)
+    with _locked(target):
+        payload = _load(target)
+        entry = payload["tasks"][task_id]
+        if entry["state"] != "FAILED" or entry["attempt"] != failed_attempt:
+            raise TaskConflict("recovery failed attempt mismatch")
+        if recovery_authorized(entry):
+            return entry["recovery_authorizations"][-1]
+        grant = {
+            "failed_attempt": failed_attempt, "next_attempt": failed_attempt + 1,
+            "reason": reason, "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "failure_hash": _submission_digest(entry["error"]),
+            "claim_hash": _submission_digest(entry["claim_receipt"]),
+        }
+        entry.setdefault("recovery_authorizations", []).append(grant)
+        atomic_write_json(target, payload)
+        return grant
+
+
 def supersede_optional_failure(
     path: Path | str,
     task_ids: list[str],
@@ -448,7 +489,8 @@ def supersede_optional_failure(
         atomic_write_json(target, payload)
 
 
-def prepare_l4_retry(path: Path | str, code: str, previous_attempt: int) -> None:
+def prepare_l4_retry(path: Path | str, code: str, previous_attempt: int,
+                     *, retained_task_ids: list[str] | None = None) -> None:
     """Retire one failed child subtree while its replacement remains auditable."""
     target = Path(path)
     with _locked(target):
@@ -462,9 +504,16 @@ def prepare_l4_retry(path: Path | str, code: str, previous_attempt: int) -> None
         ]
         if any(entry["state"] == "RUNNING" for entry in matching):
             raise TaskConflict("L4 retry requires every previous child to be quiescent")
+        retained = set(retained_task_ids or [])
+        eligible = {entry["spec"]["task_id"] for entry in matching
+                    if entry["state"] == "SUCCEEDED"}
+        if not retained <= eligible:
+            raise TaskConflict("retained L4 evidence must be accepted children of the previous attempt")
         matched = False
         for entry in matching:
             matched = True
+            if entry["spec"]["task_id"] in retained:
+                continue
             if (entry["spec"].get("expected_output_contract") == "research.card.initial.v1"
                     and entry["state"] == "SUCCEEDED"):
                 continue

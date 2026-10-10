@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from autoresearch.trace import usage_harvest as U
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
 
@@ -155,3 +157,215 @@ def test_collect_run_without_headless_records_is_unchanged(tmp_path, monkeypatch
                         lambda engine: ClaudeTranscriptAdapter(projects_root=projects))
     rows = U.collect_run("R", engine="claude")
     assert len(rows) == 1 and "dispatcher" not in rows[0]
+
+
+THREAD = "019a2c1e-7b6a-7c3b-9f1d-5c2f3a4b6d7e"
+
+
+def _codex_staging(tmp_path: Path, *, transcript_path: str | None = None) -> Path:
+    staging = tmp_path / "staging"
+    folder = staging / "_dispatch" / "headless"
+    folder.mkdir(parents=True)
+    (folder / "scan.l4.card.600000.a1.json").write_text(json.dumps({
+        "schema_version": 1, "engine": "codex", "transport": "codex exec", "run_id": "R",
+        "task_id": "scan.l4.card.600000", "attempt": 1, "role": "scan.l4.card", "agent_type": "L4 card",
+        "state": "EXITED", "exit_code": 0, "thread_id": THREAD, "session_id": THREAD,
+        "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 9},
+        "transcript_path": transcript_path,
+    }), encoding="utf-8")
+    return staging
+
+
+def _codex_rollout(tmp_path: Path) -> Path:
+    fixture = Path(__file__).parent / "fixtures" / "codex" / "rollout.jsonl"
+    target = tmp_path / "sessions" / "2026" / "10" / "08" / f"rollout-2026-10-08T10-00-00-{THREAD}.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(fixture.read_bytes())
+    return target
+
+
+def test_codex_headless_records_are_metered_from_the_thread_rollout(tmp_path, monkeypatch):
+    """2026-10-08:codex headless 记录(engine=codex)按线程 id 反查 rollout,用 Codex 适配器计量。"""
+    rollout = _codex_rollout(tmp_path)
+    monkeypatch.setattr(U, "CODEX_SESSIONS_ROOT", tmp_path / "sessions")
+    rows = U.collect_headless(_codex_staging(tmp_path))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["dispatcher"] == "headless" and row["engine"] == "codex" and row["agent"] == "L4 card"
+    assert row["status"] != "UNMEASURED" and row["weighted_in"] > 0
+    assert row["cost_source"] == "estimate"          # codex exec reports no total_cost_usd
+    assert row["session_id"] == THREAD
+    assert U.find_codex_rollout(THREAD, tmp_path / "sessions") == rollout
+    assert U.find_codex_rollout("missing", tmp_path / "sessions") is None
+
+
+def test_codex_headless_record_without_a_rollout_is_unmeasured_not_free(tmp_path, monkeypatch):
+    monkeypatch.setattr(U, "CODEX_SESSIONS_ROOT", tmp_path / "sessions")
+    rows = U.collect_headless(_codex_staging(tmp_path))
+    assert rows[0]["status"] == "UNMEASURED" and rows[0]["engine"] == "codex"
+    assert rows[0]["estimated_usd"] is None and rows[0]["cost_source"] is None
+
+
+def _run_with_refs(tmp_path, monkeypatch, staging, refs):
+    from autoresearch.trace import capsule
+    from autoresearch.trace.transcripts.codex import CodexTranscriptAdapter
+
+    adapter = CodexTranscriptAdapter()
+    monkeypatch.setattr(adapter, "locate", lambda identity: refs)
+    monkeypatch.setattr(U.ws, "find_run_root", lambda run_id: tmp_path)
+    monkeypatch.setattr(capsule, "load_run", lambda run_id: SimpleNamespace(
+        staging=staging, contract=SimpleNamespace(session_ref="host")))
+    monkeypatch.setattr(U, "adapter_for", lambda engine: adapter)
+    return U.collect_run("R", engine="codex")
+
+
+@pytest.mark.parametrize("spans", [[(None, None)], [(0, 6)], [(0, 8), (5, 13)], [(0, 6), (7, 13)]])
+def test_bound_and_headless_coverage_counts_the_rollout_once(tmp_path, monkeypatch, spans):
+    from autoresearch.trace.transcripts.base import TranscriptRef
+
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    expected = U.usage_of(rollout, engine="codex")
+    refs = [TranscriptRef(engine="codex", path=rollout, role="l4-card",
+                          invocation_id=f"bound-{index}", start_ordinal=start, end_ordinal=end)
+            for index, (start, end) in enumerate(spans)]
+    rows = _run_with_refs(tmp_path, monkeypatch, staging, refs)
+    assert len(rows) == 1
+    assert rows[0]["dispatcher"] == "headless"
+    assert rows[0]["task_id"] == "scan.l4.card.600000"
+    assert rows[0]["input"] == expected["input"]
+    assert rows[0]["output"] == expected["output"]
+    assert {item["invocation_id"] for item in rows[0]["bound_invocations"]} == {
+        ref.invocation_id for ref in refs}
+
+
+def test_same_rollout_across_resumed_attempts_has_one_total_and_both_attempts(tmp_path, monkeypatch):
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    first = staging / U.HEADLESS_RECORDS / "scan.l4.card.600000.a1.json"
+    doc = json.loads(first.read_text())
+    (first.parent / "scan.l4.card.600000.a2.json").write_text(json.dumps({**doc, "attempt": 2}))
+    rows = _run_with_refs(tmp_path, monkeypatch, staging, [])
+    assert len(rows) == 1
+    assert rows[0]["output"] == U.usage_of(rollout, engine="codex")["output"]
+    assert {item["attempt"] for item in rows[0]["headless_attempts"]} == {1, 2}
+
+
+def test_identical_token_values_from_distinct_rollouts_are_not_deduplicated(tmp_path, monkeypatch):
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    first = staging / U.HEADLESS_RECORDS / "scan.l4.card.600000.a1.json"
+    doc = json.loads(first.read_text())
+    second_rollout = rollout.with_name("different-thread.jsonl")
+    second_rollout.write_bytes(rollout.read_bytes())
+    (first.parent / "scan.l4.card.600000.a2.json").write_text(json.dumps({
+        **doc, "attempt": 2, "session_id": "other", "transcript_path": str(second_rollout)}))
+    rows = _run_with_refs(tmp_path, monkeypatch, staging, [])
+    assert len(rows) == 2
+    assert sum(row["output"] for row in rows) == 2 * U.usage_of(rollout, engine="codex")["output"]
+
+
+def test_domain_rejection_is_a_failure_even_when_cli_exit_succeeded(tmp_path, monkeypatch):
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    (staging / "_dispatch" / "ledger.jsonl").write_text(json.dumps({
+        "task_id": "scan.l4.card.600000", "attempt": 1, "kind": "INFERENCE",
+        "outcome": "FAILED:DOMAIN_VALIDATION", "error_class": "DOMAIN_VALIDATION",
+        "session_ref": THREAD,
+    }) + "\n")
+    row = _run_with_refs(tmp_path, monkeypatch, staging, [])[0]
+    assert row["exit_code"] == 0
+    assert row["task_outcome"] == "FAILED:DOMAIN_VALIDATION"
+    assert row["domain_failure_count"] == 1
+    assert row["failure_count"] >= 1
+    assert row["discarded"] is True
+
+
+def test_l4_expanded_attempt_is_counted_as_retry_without_cli_failure(tmp_path, monkeypatch):
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    first = staging / U.HEADLESS_RECORDS / "scan.l4.card.600000.a1.json"
+    doc = json.loads(first.read_text())
+    first.write_text(json.dumps({**doc, "task_id": "l4.600000.a2.card"}))
+    row = _run_with_refs(tmp_path, monkeypatch, staging, [])[0]
+    assert row["task_retry_count"] == 1
+    assert row["retry_count"] >= 1
+
+
+def test_codex_price_scope_never_claims_claude_prices_or_subscription_zero(tmp_path):
+    rollout = _codex_rollout(tmp_path)
+    rows = U.collect_headless(_codex_staging(tmp_path, transcript_path=str(rollout)))
+    ledger = U.build_ledger(rows)
+    assert ledger["totals"]["estimated_usd"] is None
+    assert "subscription" in ledger["pricing"]["scope"]
+    assert ledger["pricing"]["source"] is None
+    md = U.render(rows)
+    assert "Claude API standard" not in md
+    assert "Codex" in md and "$0.0000" not in md
+
+
+def test_capacity_limit_is_distinct_from_rejected_research(tmp_path):
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    (staging / "_dispatch" / "ledger.jsonl").write_text(json.dumps({
+        "task_id": "scan.l4.card.600000", "attempt": 1, "kind": "INFERENCE",
+        "outcome": "FAILED:USAGE_LIMIT", "error_class": "USAGE_LIMIT",
+    }) + "\n")
+    rows = U.collect_headless(staging)
+    assert rows[0]["capacity_failure_count"] == 1
+    assert rows[0]["domain_failure_count"] == 0
+    assert U.build_ledger(rows)["totals"]["capacity_failure_count"] == 1
+
+
+def test_late_result_notice_does_not_erase_final_domain_rejection(tmp_path):
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    task = {"task_id": "scan.l4.card.600000", "attempt": 1, "kind": "INFERENCE"}
+    (staging / "_dispatch" / "ledger.jsonl").write_text("\n".join(json.dumps(row) for row in [
+        {**task, "outcome": "FAILED:DOMAIN_VALIDATION", "error_class": "DOMAIN_VALIDATION"},
+        {**task, "outcome": "LATE_RESULT", "error_class": None},
+    ]) + "\n")
+    assert U.collect_headless(staging)[0]["domain_failure_count"] == 1
+
+
+def test_cross_source_dedup_uses_one_snapshot_and_canonical_paths(tmp_path, monkeypatch):
+    from autoresearch.trace.transcripts.base import TranscriptRef
+
+    rollout = _codex_rollout(tmp_path)
+    staging = _codex_staging(tmp_path, transcript_path=str(rollout))
+    alias = tmp_path / "alias.jsonl"
+    alias.symlink_to(rollout)
+    captures = []
+    capture = U.capture_snapshot
+
+    def counted(path, **kwargs):
+        captures.append(path)
+        return capture(path, **kwargs)
+
+    monkeypatch.setattr(U, "capture_snapshot", counted)
+    rows = _run_with_refs(tmp_path, monkeypatch, staging, [
+        TranscriptRef(engine="codex", path=alias, invocation_id="alias", role="l4-card")])
+    assert len(rows) == 1 and len(captures) == 1
+
+
+def test_missing_source_is_not_silently_deduplicated(tmp_path, monkeypatch):
+    from autoresearch.trace.transcripts.base import TranscriptRef
+
+    staging = _codex_staging(tmp_path, transcript_path=str(tmp_path / "missing.jsonl"))
+    rows = _run_with_refs(tmp_path, monkeypatch, staging, [
+        TranscriptRef(engine="codex", path=tmp_path / "missing.jsonl", status="GONE")])
+    assert all(row["status"] == "UNMEASURED" for row in rows)
+    assert U.build_ledger(rows)["totals"]["estimated_usd"] is None
+
+
+def test_same_source_cli_cost_is_unknown_if_attempt_windows_are_not_known(tmp_path):
+    staging = _staging(tmp_path)
+    source = staging / U.HEADLESS_RECORDS / "scan.l3.a1.json"
+    doc = json.loads(source.read_text())
+    (source.parent / "scan.l3.a2.json").write_text(json.dumps({**doc, "attempt": 2}))
+    rows = U.collect_headless(staging)
+    l3 = next(row for row in rows if row["task_id"] == "scan.l3")
+    assert len(rows) == 3
+    assert len(l3["headless_attempts"]) == 2
+    assert l3["estimated_usd"] is None
+    assert l3["pricing_reason"] == "shared_source_cost_coverage_unknown"

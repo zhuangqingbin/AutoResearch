@@ -99,7 +99,7 @@ def test_nightly_close_runs_all_steps_when_no_scan_holds_the_lock(tmp_path):
     assert _modules(calls) == [
         "autoresearch.scan.run_lock", "autoresearch.scan.outcome", "autoresearch.scan.ledger_views",
         "autoresearch.scan.populations", "autoresearch.scan.populations",
-        "autoresearch.analyze.ledger"]
+        "autoresearch.analyze.ledger", "autoresearch.news.catalog"]
 
 
 def test_nightly_close_waits_for_a_running_scan_then_runs_everything(tmp_path):
@@ -118,6 +118,7 @@ def test_nightly_close_skips_the_scan_ledger_steps_while_a_scan_still_runs(tmp_p
     assert not any(module.startswith(("autoresearch.scan.outcome", "autoresearch.scan.ledger",
                                       "autoresearch.scan.populations")) for module in modules)
     assert "autoresearch.analyze.ledger" in modules              # independent of the scan
+    assert "autoresearch.news.catalog" in modules                # atomic catalog writes, no scan ledger
     assert "跳过" in proc.stdout + proc.stderr
 
 
@@ -167,3 +168,23 @@ def test_templates_carry_no_credentials(path):
     """Only the engine is pinned in launchd's environment; tokens stay in .env / profile."""
     env = _plist(path).get("EnvironmentVariables") or {}
     assert set(env) == {"AUTORESEARCH_ENGINE"}
+
+
+def test_scan_run_script_takes_an_explicit_engine_and_strips_the_flag(tmp_path):
+    """2026-10-08:`--engine codex` 钉死 codex 引擎(交互会话里由宿主按自己的引擎传),其余参数原样转发。"""
+    fake = tmp_path / "bin" / "uv"
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done > "$UV_LOG"\n'
+                    'echo "engine=$AUTORESEARCH_ENGINE" >> "$UV_LOG"\n', encoding="utf-8")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    log = tmp_path / "uv.log"
+    env = {"PATH": f"{fake.parent}:/usr/bin:/bin", "HOME": str(tmp_path), "UV_LOG": str(log)}
+    proc = subprocess.run(["/bin/zsh", "-f", str(SCRIPT), "--engine", "codex", "--date", "2026-09-28",
+                           "--skip-readiness"], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert lines[5:8] == ["--date", "2026-09-28", "--skip-readiness"] and "--engine" not in lines
+    assert "engine=codex" in lines
+    proc = subprocess.run(["/bin/zsh", "-f", str(SCRIPT), "--engine=gemini"], env=env,
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 2 and "claude|codex" in proc.stderr

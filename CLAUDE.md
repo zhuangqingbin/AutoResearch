@@ -7,10 +7,23 @@
 - **数据层**走项目自己的免费工具（yfinance / FRED / akshare / tushare，keyless + `FRED_API_KEY` / `TUSHARE_TOKEN`）；**LLM 层由 Claude（本 session）替代**框架原本计费的多 agent 调用。
 - 所有取数/组装是确定性脚本（零 LLM），统一收进 `autoresearch` 包，用 `uv run --no-sync python -m autoresearch.<...>` 调用。**产物按引擎分根**（2026-08-11 裁定）：Claude 会话落 `reports_claude/`、`context_claude/`，Codex 落 `reports_codex/`、`context_codex/`（python 侧按 `AUTORESEARCH_ENGINE`/`CLAUDECODE` 自动判定，Claude 下无需设置）；**唯一共享的是数据湖 `lake/`**。均已 gitignore。
 
+### 开发红线:token 性价比(2026-10-10 用户裁定,所有开发遵守)
+
+规则、机器件与命令的唯一真身是 `docs/dev-redline.md`(八条红线,每条有会红的机器件:回放门、场后 redline + 断路器、
+静态成本清单、档位锁、预算线只降不升、角色消费者)。动手前的五条守则:
+
+1. 新增 LLM 角色 / 工具回合 / prompt 段落前,先写「线程 × 调用 × 上下文」与消费者;agent 文件先登记字符预算。
+2. 量法脚本首次使用就进 `autoresearch/research/`,读数进 `docs/research/`,先查再量。
+3. 读大文件用范围,日志看尾,全量测试只看摘要。
+4. 子 agent 只派可拆的大块任务并写明理由;复审派一个。
+5. 计划稿给实施者的部分一屏以内,推演放附录。
+
 ### 统一 session_v1 编排
 
-五类入口现在共用 `uv run --no-sync python -m autoresearch.session_agent`。显式设置
-`AUTORESEARCH_ENGINE=claude` 后，宿主循环为
+五类入口现在共用 `uv run --no-sync python -m autoresearch.session_agent`。**全扫的日常路径是 headless**
+(2026-10-08 起,两个引擎):主会话后台起 `scripts/scan_run.sh --engine claude --date <分析日> --skip-readiness`,
+等完成后读 `$RPT/_ops/scan_run_<日>.json`,自己不进研究回路(见 `docs/session-agent/README.md`「日常全扫」)。
+显式设置 `AUTORESEARCH_ENGINE=claude` 后，回退的宿主循环为
 `begin → next → claim → execute/Claude 推理 → submit → finish`。冻结计划、artifact、attempt、
 回执和发布由 Python 验证，推理仍发生在本 Claude Code 订阅会话。C4 下旧 Workflow 缺少任务绑定，
 研究启动前返回 `HOST_CAPABILITY_REQUIRED`；新入口仍须显式选 PILOT。取数前运行

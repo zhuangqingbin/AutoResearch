@@ -4,7 +4,7 @@ description: scan-market L4 前置活体情报员(sonnet·max)。一只 finalist
 model: claude-sonnet-5-5
 effort: max
 tools: Write, WebSearch, WebFetch
-maxTurns: 64
+maxTurns: 35
 omitClaudeMd: true
 ---
 

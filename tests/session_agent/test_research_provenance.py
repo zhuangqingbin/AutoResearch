@@ -3,7 +3,8 @@ import json
 import pytest
 
 
-def test_portable_deep_proof_revalidates_actual_transcript_and_tamper(tmp_path, monkeypatch):
+@pytest.mark.parametrize("relative_workspace", [False, True])
+def test_portable_deep_proof_revalidates_actual_transcript_and_tamper(tmp_path, monkeypatch, relative_workspace):
     from autoresearch.session_agent import artifacts, dispatch, host_evidence, service
     from autoresearch.session_agent.research_provenance import freeze_read_proof
     from autoresearch.trace.read_observation import verify_read_bundle
@@ -58,11 +59,16 @@ def test_portable_deep_proof_revalidates_actual_transcript_and_tamper(tmp_path, 
         context_source="SUBAGENT",
         handle_loader=lambda _: handle,
     )
+    if relative_workspace:
+        monkeypatch.chdir(tmp_path)
+        handle.workspace = handle.workspace.relative_to(tmp_path)
     target = tmp_path / "exported-proof"
     proof = freeze_read_proof(
         handle, service._task(handle, "inference.one"), 1, "stock.deep", target
     )
     value = json.loads((target / "proof.json").read_text())
+    assert value["dispatch_manifest"] is not None
+    assert value["dispatch_request"] is not None
     result = verify_read_bundle(value, read_bytes=lambda rel: (target / rel).read_bytes())
     assert result["call_id"] == "deep-full" and proof["sha256"]
     # The lower research reader consumes the complete proof without importing session_agent.
@@ -181,3 +187,54 @@ def test_collector_retry_preserves_bytes_and_rejects_changed_accepted_input(tmp_
     source.write_text("changed later")
     with pytest.raises((ValueError, RuntimeError), match="changed|content|identity"):
         collect_and_freeze(handle)
+
+
+def test_collector_reads_frozen_dispatch_with_relative_workspace(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from autoresearch.session_agent import artifacts, task_access
+    from autoresearch.session_agent.research_provenance import collect_and_freeze
+    from tests.session_agent.test_service import _handle
+    from tests.session_agent.test_task_access import request
+
+    handle = _handle(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    handle.workspace = handle.workspace.relative_to(tmp_path)
+    handle.staging = handle.staging.relative_to(tmp_path)
+    handle.capsule = handle.capsule.relative_to(tmp_path)
+    task = {
+        "task_id": "l4.600000.a1.card",
+        "role": "scan.l4.card",
+        "subject": "600000",
+        "expected_output_contract": "stock.lite.v1",
+        "input_artifact_ids": ["scan.l4.600000.a1.slim"],
+        "output_artifact_ids": [],
+        "parent_task": {"attempt": 1},
+    }
+    source = handle.staging / "slim.md"
+    source.write_text("accepted slim facts")
+    artifacts.register_artifact(handle, task["input_artifact_ids"][0], source, "READ")
+    session = handle.workspace / "session"
+    (session / "tasks.json").write_text(json.dumps({
+        "schema_version": 1,
+        "engine": handle.engine,
+        "run_id": handle.run_id,
+        "tasks": {task["task_id"]: {"spec": task, "state": "FAILED", "attempt": 1}},
+    }))
+    (session / "request.json").write_text(json.dumps({"card_research_profile": "single-stage-v1"}))
+    output = handle.staging / "session_outputs/attempts" / task["task_id"] / "a0001/outputs/card.md"
+    dispatched = replace(
+        request(tmp_path),
+        run_id=handle.run_id,
+        task_id=task["task_id"],
+        role=task["role"],
+        subject=task["subject"],
+        input_paths={task["input_artifact_ids"][0]: str(source.resolve())},
+        output_paths={"card": str(output.resolve())},
+    )
+    dispatch_path = session / "dispatch" / f"{task['task_id']}-a1.json"
+    task_access.freeze_access(dispatched, dispatch_path)
+
+    value = json.loads(collect_and_freeze(handle).read_text())
+
+    assert [row["artifact_id"] for row in value["base_inputs"]] == ["card.600000.slim"]

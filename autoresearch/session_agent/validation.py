@@ -173,11 +173,12 @@ def _research_card_semantics(handle, text: str, task: dict, *, scan: bool = Fals
             card = card_from_text(text, code=code, analysis_date=handle.analysis_date,
                                   holding=holding, rules_version=version)
         if version == CURRENT_CARD_RULES:
+            from autoresearch.analyze.assemble import DECISION_ARTIFACT_ID
             from autoresearch.news.card_claims import registered_card_semantics
             from autoresearch.trace.completeness import card_rating_bands_from_capsule
             output_ids = task.get("output_artifact_ids", [])
             artifact_id = output_ids[0] if len(output_ids) == 1 else (
-                "stock.full.4_decision.decision" if task.get("task_id") == "stock.pm" else "stock.card.output")
+                DECISION_ARTIFACT_ID if task.get("task_id") == "stock.pm" else "stock.card.output")
             registered_card_semantics(handle, text, subject=card["subject"], frame=frame,
                 frame_hash=artifacts.snapshot_artifact(handle, "research.frame")["sha256"],
                 task=task, artifact_id=artifact_id, holding=holding,

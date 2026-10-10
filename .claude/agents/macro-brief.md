@@ -4,7 +4,7 @@ description: macro-research lite 档市场研判写手(首席策略师)。scan-m
 model: claude-opus-5-5
 effort: max
 tools: Read, Write, Grep, Glob, WebSearch, WebFetch
-maxTurns: 50
+maxTurns: 10
 omitClaudeMd: true
 ---
 

@@ -31,6 +31,8 @@ MAX_ATTEMPTS = 2
 #: 任务簿重试口径的单一真身在 `contracts/retry.py`(与情报再搜口径**故意不同**:
 #: 这里含 STALE_TASK 而不含 ENOTFOUND,理由见那边)。
 TRANSIENT_ERRORS = _retry.TASK_ATTEMPT
+#: 票据可再来一次的全部口径 = 瞬时错误 + 领域校验拒绝(带校验原话重做,2026-10-08)。
+RETRYABLE_ERRORS = _retry.TASK_ATTEMPT | _retry.VALIDATION_REPAIR
 # 帽的键集与缺省从注册表转出(contracts/scan_config.DEFAULT_CONCURRENCY):l4_stock = 派发帽
 # (64 = 事实无上限,Wave11 C1);tushare = prepare_slim 的操作级信号量。2026-09-27 删掉的
 # web_search / web_fetch 两帽从未有过执行点(只校验不执行 = 假参数)。
@@ -880,19 +882,19 @@ def preflight(
             }
         if status == "FAILED":
             error_class = str(task.get("last_error_class") or "")
-            if error_class not in TRANSIENT_ERRORS or int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
+            if error_class not in RETRYABLE_ERRORS or int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
                 task["status"] = "BLOCKED"
                 task["updated_at"] = stamp
                 book_hash = _atomic_write(path, payload)
                 terminal_event = (
                     "TASK_FAILED"
-                    if error_class in TRANSIENT_ERRORS
+                    if error_class in RETRYABLE_ERRORS
                     and int(task["attempt"]) >= tasks_cfg()["max_attempts"]
                     else "TASK_BLOCKED"
                 )
                 already_recorded_exhaustion = (
                     old_status == "FAILED"
-                    and error_class in TRANSIENT_ERRORS
+                    and error_class in RETRYABLE_ERRORS
                     and int(task["attempt"]) >= tasks_cfg()["max_attempts"]
                 )
                 if not already_recorded_exhaustion:
@@ -974,7 +976,7 @@ def mark_failure(
             )
         terminal_status = (
             "FAILED"
-            if kind in TRANSIENT_ERRORS and authoritative_attempt < tasks_cfg()["max_attempts"]
+            if kind in RETRYABLE_ERRORS and authoritative_attempt < tasks_cfg()["max_attempts"]
             else "BLOCKED"
         )
         terminal_error = error or kind
@@ -1006,7 +1008,7 @@ def mark_failure(
                 payload.get("rate_limit_failures") or 0
             ) + 1
         book_hash = _atomic_write(path, payload)
-        if kind not in TRANSIENT_ERRORS:
+        if kind not in RETRYABLE_ERRORS:
             event_type = "TASK_BLOCKED"
         elif int(task["attempt"]) >= tasks_cfg()["max_attempts"]:
             event_type = "TASK_FAILED"
@@ -1567,7 +1569,7 @@ def dispatch_batches(
             if task["status"] in {"PENDING", "FAILED"}:
                 if (
                     task["status"] == "FAILED"
-                    and task.get("last_error_class") not in TRANSIENT_ERRORS
+                    and task.get("last_error_class") not in RETRYABLE_ERRORS
                 ):
                     continue
                 if int(task.get("attempt") or 0) >= tasks_cfg()["max_attempts"]:

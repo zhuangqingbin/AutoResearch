@@ -18,7 +18,7 @@ def setup_card(tmp_path, subject, venue, text):
     atomic_write_json(handle.workspace / "session/request.json", dict(_request(), subject=subject))
     path = handle.staging / "decision.md"
     path.write_text(text)
-    artifacts.register_artifact(handle, "stock.full.4_decision.decision", path, "WRITE")
+    artifacts.register_artifact(handle, "stock.full.4_portfolio.decision", path, "WRITE")
     artifacts.register_artifact(handle, "stock.card.output", path, "WRITE")
     from autoresearch.common.execution_math import build_decision_frame
 
@@ -39,9 +39,9 @@ def setup_card(tmp_path, subject, venue, text):
     task = {
         "task_id": "stock.pm",
         "subject": subject,
-        "output_artifact_ids": ["stock.full.4_decision.decision"],
+        "output_artifact_ids": ["stock.full.4_portfolio.decision"],
     }
-    submission = {"outputs": [{"artifact_id": "stock.full.4_decision.decision"}]}
+    submission = {"outputs": [{"artifact_id": "stock.full.4_portfolio.decision"}]}
     return handle, task, submission
 
 
