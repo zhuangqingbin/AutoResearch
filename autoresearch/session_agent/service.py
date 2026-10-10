@@ -578,7 +578,7 @@ def fail(
     if not kind or not message:
         raise ValueError("error_class and message are required")
     # 瞬时错误原样重来;领域校验拒绝带着校验原话重来(dispatch.repair_hint)。都受 max_attempts 封顶。
-    retryable = kind in TASK_ATTEMPT or kind in VALIDATION_REPAIR
+    retryable = kind in TASK_ATTEMPT or kind in VALIDATION_REPAIR or kind == "USAGE_LIMIT"
     store.mark_failed(
         _store_path(handle),
         task_id,
@@ -599,7 +599,8 @@ def fail(
         task_id,
         {"code": kind, "message": message},
     )
-    if task["parent_task"] is not None and task.get("role") != "scan.l4.review":
+    if (task["parent_task"] is not None and task.get("role") != "scan.l4.review"
+            and kind != "USAGE_LIMIT"):
         from autoresearch.session_agent import legacy_scan
 
         parent = task["parent_task"]
@@ -612,6 +613,38 @@ def fail(
         )
     current = status(run_id, handle_loader=lambda unused: handle, command="fail")
     current["result"] = {"task_id": task_id, "attempt": attempt, "error_class": kind}
+    return current
+
+
+def recover_task(run_id: str, task_id: str, failed_attempt: int, reason: str, *,
+                 handle_loader: Callable[[str], object] | None = None) -> dict:
+    """Authorize exactly one fresh attempt of a capacity/idempotent-operation failure.
+
+    Research rejection, accepted output and frozen terminal runs are never reopened.
+    The automatic retry cap is unchanged; this is an explicit operator action.
+    """
+    from autoresearch.trace.capsule import require_active_run
+    handle = (handle_loader or require_active_run)(run_id)
+    task = _task(handle, task_id)
+    entry = store.read_entry(_store_path(handle), task_id)
+    if entry["attempt"] != failed_attempt:
+        raise RuntimeError("recovery failed attempt mismatch")
+    code = (entry.get("error") or {}).get("code")
+    capacity = task["kind"] == "INFERENCE" and code == "USAGE_LIMIT"
+    operation = (task["kind"] == "DETERMINISTIC"
+                 and code in {"OPERATION_ERROR", "OPERATION_FAILED"}
+                 and executor.operation_spec(task["operation"])["idempotent"])
+    if task["owner"] != "SESSION" or entry["state"] != "FAILED" or not (capacity or operation):
+        raise RuntimeError("task is not eligible for explicit recovery")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("recovery reason is required")
+    _verify_frozen_inputs(handle, task, entry)
+    authorization = store.authorize_recovery(_store_path(handle), task_id,
+                                             failed_attempt, reason.strip())
+    _freeze_json(Path(handle.capsule) / "agents/session/recovery_authorizations"
+                 / f"{task_id}-a{failed_attempt + 1}.json", authorization)
+    current = status(run_id, handle_loader=lambda unused: handle, command="recover-task")
+    current["result"] = {"authorization": authorization}
     return current
 
 
@@ -663,35 +696,68 @@ def retry_l4(
     if any(states.get(task["task_id"]) == "RUNNING" for task in previous_tasks):
         raise RuntimeError("L4 retry requires every previous child to be quiescent")
     request = _read_json(_session_dir(handle) / "request.json")
-    intel_enabled = any(task.get("role") == "scan.l4.intel" for task in previous_tasks)
-    initial_tasks = [task for task in previous_tasks
-                     if task["expected_output_contract"] == "research.card.initial.v1"]
-    successful_initials = [task for task in initial_tasks if states.get(task["task_id"]) == "SUCCEEDED"]
-    retained_initial = successful_initials[0] if successful_initials else None
-    prompt_snapshot = artifacts.snapshot_artifact(handle, f"scan.l4.{code6}.a1.prompt")
-    snapshots = [{"artifact_id": prompt_snapshot["artifact_id"], "sha256": prompt_snapshot["sha256"]}]
-    if retained_initial is not None:
-        for artifact_id in [*retained_initial["input_artifact_ids"], *retained_initial["output_artifact_ids"]]:
-            frozen = artifacts.snapshot_artifact(handle, artifact_id)
-            snapshots.append({"artifact_id": artifact_id, "sha256": frozen["sha256"]})
-    expansion = l4_retry_expansion(
-        frozen_plan,
-        code6,
-        expected_attempt,
-        snapshots,
-        intel_enabled=intel_enabled,
-        retained_initial=retained_initial,
-        holding=any(any(key.endswith(".deep") for key in task["input_artifact_ids"])
-                    for task in initial_tasks),
-    )
-    from autoresearch.session_agent.decision_frame import attach_expansion, frame_in_plan
-    # Same rule as workflows.expansions_after_task: a frozen frame rides on every expansion, so
-    # a retried card keeps its decision window, card contract and claim population.
-    if frame_in_plan(frozen_plan):
-        expansion = attach_expansion(expansion, artifacts.snapshot_artifact(handle, "research.frame"))
     root = _session_dir(handle) / "recoveries"
     root.mkdir(parents=True, exist_ok=True)
-    path = root / f"{expansion['expansion_id']}.json"
+    # Admission belongs to the first immutable freeze. A repeat after midnight
+    # or after retiring the prior card must restore that graph, not choose anew.
+    existing_recoveries = [
+        (path, _read_json(path)) for path in sorted(root.glob("*.json"))
+    ]
+    existing_recoveries = [(path, value) for path, value in existing_recoveries
+                           if any(task["task_id"] == f"l4.{code6}.a{expected_attempt}"
+                                  for task in value["tasks"])]
+    if len(existing_recoveries) > 1:
+        raise RuntimeError("multiple frozen L4 recoveries for the same attempt")
+    if existing_recoveries:
+        path, expansion = existing_recoveries[0]
+        for snapshot in expansion["input_artifacts"]:
+            current = artifacts.snapshot_artifact(handle, snapshot["artifact_id"])
+            if current["sha256"] != snapshot["sha256"]:
+                raise RuntimeError("frozen L4 recovery input changed")
+        original_intel = f"l4.{code6}.a{previous_attempt}.intel"
+        original_status = f"l4.{code6}.a{previous_attempt}.intel_status"
+        reused = any(task.get("operation") == "scan.l4.intel.status"
+                     and {original_intel, original_status} <= set(task["dependencies"])
+                     for task in expansion["tasks"])
+        retained_intel = ({"intel_task_id": original_intel, "status_task_id": original_status}
+                          if reused else None)
+    else:
+        intel_enabled = any(task.get("role") == "scan.l4.intel" for task in previous_tasks)
+        initial_tasks = [task for task in previous_tasks
+                         if task["expected_output_contract"] == "research.card.initial.v1"]
+        successful_initials = [task for task in initial_tasks if states.get(task["task_id"]) == "SUCCEEDED"]
+        retained_initial = successful_initials[0] if successful_initials else None
+        from autoresearch.session_agent.intel_reuse import accepted_retry_intel
+        retained_intel = accepted_retry_intel(
+            handle, code6, previous_attempt, last_class, previous_tasks,
+        ) if intel_enabled else None
+        prompt_snapshot = artifacts.snapshot_artifact(handle, f"scan.l4.{code6}.a1.prompt")
+        snapshots = [{"artifact_id": prompt_snapshot["artifact_id"], "sha256": prompt_snapshot["sha256"]}]
+        if retained_intel is not None:
+            snapshots.extend(item for item in retained_intel["snapshots"]
+                             if item["artifact_id"] != prompt_snapshot["artifact_id"])
+        if retained_initial is not None:
+            for artifact_id in [*retained_initial["input_artifact_ids"], *retained_initial["output_artifact_ids"]]:
+                frozen = artifacts.snapshot_artifact(handle, artifact_id)
+                snapshots.append({"artifact_id": artifact_id, "sha256": frozen["sha256"]})
+        snapshots = list({item["artifact_id"]: item for item in snapshots}.values())
+        expansion = l4_retry_expansion(
+            frozen_plan,
+            code6,
+            expected_attempt,
+            snapshots,
+            intel_enabled=intel_enabled,
+            retained_initial=retained_initial,
+            retained_intel=retained_intel,
+            holding=any(any(key.endswith(".deep") for key in task["input_artifact_ids"])
+                        for task in initial_tasks),
+        )
+        from autoresearch.session_agent.decision_frame import attach_expansion, frame_in_plan
+        # Same rule as workflows.expansions_after_task: a frozen frame rides on every expansion, so
+        # a retried card keeps its decision window, card contract and claim population.
+        if frame_in_plan(frozen_plan):
+            expansion = attach_expansion(expansion, artifacts.snapshot_artifact(handle, "research.frame"))
+        path = root / f"{expansion['expansion_id']}.json"
     existing_tasks = _all_tasks(handle, frozen_plan)
     if path.is_file():
         if canonical_json(_read_json(path)) != canonical_json(expansion):
@@ -700,7 +766,11 @@ def retry_l4(
         plan_service.apply_expansion(frozen_plan, expansion, existing_tasks=existing_tasks)
         atomic_write_json(path, expansion)
     _sync_expansion(handle, request, expansion)
-    store.prepare_l4_retry(_store_path(handle), code6, previous_attempt)
+    store.prepare_l4_retry(
+        _store_path(handle), code6, previous_attempt,
+        retained_task_ids=([retained_intel["intel_task_id"], retained_intel["status_task_id"]]
+                           if retained_intel is not None else None),
+    )
     current = status(run_id, handle_loader=lambda unused: handle, command="retry-l4")
     current["result"] = {
         "code": code6,
@@ -1555,6 +1625,7 @@ __all__ = [
     "next",
     "precheck",
     "resume",
+    "recover_task",
     "retry_l4",
     "status",
     "submit",

@@ -2170,7 +2170,8 @@ def _normalize_intel(scan_dir: Path, code: str) -> None:
     write_normalization(scan_dir, normalization)
 
 
-def scan_l4_intel_status(handle=None, *, code: str | None = None, claim_sources=None) -> dict:
+def scan_l4_intel_status(handle=None, *, code: str | None = None, claim_sources=None,
+                         intel_artifact_id: str | None = None) -> dict:
     current = handle or _active_handle()
     code6 = _require_code(code)
     from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
@@ -2182,7 +2183,20 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None, claim_sources=
     # dir and is never rewritten; the canonical file is this attempt's working copy, which
     # the guard trims/normalizes in place exactly as the legacy flow does.
     bound_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
-    if bound_intel.is_file():
+    owner_path = Path(current.workspace) / "session/tasks.json"
+    if intel_artifact_id is None and owner_path.is_file():
+        from autoresearch.session_agent import store
+        task = store.read_entry(owner_path, f"l4.{code6}.a{attempt}.intel_status")["spec"]
+        candidates = [aid for aid in task["input_artifact_ids"] if aid.endswith(".intel")]
+        if len(candidates) != 1:
+            raise ValueError("intel status requires exactly one declared raw intel input")
+        intel_artifact_id = candidates[0]
+    if intel_artifact_id is not None:
+        # A validation retry may read an earlier accepted raw artifact. Its own
+        # guard still runs and only its guarded output belongs to the new attempt.
+        _write_if_changed(scan_dir / f"_l4_intel_{code6}.md",
+                          artifacts.read_bytes(current, intel_artifact_id))
+    elif bound_intel.is_file():
         _write_if_changed(scan_dir / f"_l4_intel_{code6}.md", bound_intel.read_bytes())
     if claim_sources is None:
         from autoresearch.session_agent.source_fields import intel_source_context

@@ -207,6 +207,13 @@ def safe_record_stage_result(scan_dir: Path | str, **kwargs) -> Path | None:
             ):
                 raise ValueError("StageResult date/contract does not match ambient run")
 
+            report_kwargs = {"report_dir": report_dir}
+            if (report_dir is not None and compat_kwargs["stage"] == "assemble"
+                    and Path(report_dir).absolute().is_relative_to(handle.staging.absolute())):
+                # Session assembly prepares a candidate before transactional
+                # publication. The checkpoint validates this separate opt-in.
+                report_kwargs = {"staged_report_dir": report_dir}
+
             checkpoint(
                 run_id,
                 compat_kwargs["stage"],
@@ -214,7 +221,7 @@ def safe_record_stage_result(scan_dir: Path | str, **kwargs) -> Path | None:
                 compat_kwargs.get("artifacts") or [],
                 compat_kwargs.get("metrics") or {},
                 error=compat_kwargs.get("error"),
-                report_dir=report_dir,
+                **report_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 — 取证故障不能改业务返回值
             print(

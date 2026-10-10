@@ -40,6 +40,10 @@ launchctl list | grep nightly-close        # 只应剩 …nightly-close.claude(�
 
 ## 无人值守扫描(headless · launchd 交易日 21:20 · PILOT;交互会话同一条路)
 
+2026-10-09 更新：额度耗尽与可恢复组装失败保留 ACTIVE run；用 `recover-task` 精确授权后，
+`scripts/scan_run.sh --engine codex --resume-run-id <RUN_ID>` 继续原运行。步骤和证据边界见
+[额度暂停与单任务恢复](scan-recovery.md)。其余不可恢复失败维持原收口策略。
+
 `scripts/scan_run.sh [--engine claude|codex] …` → `python -m autoresearch.scan.scan_run`,流程全在 Python(macOS 无 `flock(1)`/`timeout(1)`)。
 2026-10-08 起这也是交互会话「分析全市场」的日常路径:宿主后台起它、等完成、读摘要,自己不进研究回路
 (`docs/session-agent/README.md`「日常全扫」)。`--engine` 缺省 claude(launchd 定时场);Codex 会话传 `--engine codex`,

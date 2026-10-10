@@ -344,6 +344,103 @@ def test_safe_stage_result_resolves_multifile_and_report_root_specs(
         assert (handle.capsule / row["captured_path"]).is_file()
 
 
+def test_assemble_checkpoint_captures_report_candidate_inside_same_run_staging(
+    tmp_path, monkeypatch, capsys
+):
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    candidate = handle.staging / "session_outputs/report_build/scan.assemble/a1/candidate"
+    candidate.mkdir(parents=True)
+    summary = candidate / "summary.md"
+    summary.write_text("assembled candidate", encoding="utf-8")
+    safe_record_stage_result(handle.staging, stage="assemble", status="SUCCEEDED",
+                             artifacts=["summary"], metrics={}, warnings=[], error=None,
+                             report_dir=candidate)
+    assert "checkpoint 失败" not in capsys.readouterr().err
+    rows = json.loads((handle.capsule / "stages/assemble/attempt-1/outputs.json").read_text())["artifacts"]
+    assert [(row["logical_id"], row["root"], row["path"], row["status"]) for row in rows] == [
+        ("summary", "report", "summary.md", "PRESENT")]
+    assert (handle.capsule / rows[0]["captured_path"]).read_bytes() == summary.read_bytes()
+
+
+def test_explicit_staged_candidate_also_captures_literal_report_artifact(tmp_path, monkeypatch):
+    from autoresearch.trace.capsule import checkpoint
+
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    candidate = handle.staging / "session_outputs/report_build/candidate"
+    candidate.mkdir(parents=True)
+    summary = candidate / "summary.md"
+    summary.write_text("literal candidate", encoding="utf-8")
+    checkpoint(handle.run_id, "assemble", "SUCCEEDED", [summary], {},
+               staged_report_dir=candidate)
+    rows = json.loads((handle.capsule / "stages/assemble/attempt-1/outputs.json").read_text())["artifacts"]
+    assert rows[0]["root"] == "report" and rows[0]["path"] == "summary.md"
+
+
+@pytest.mark.parametrize("stage", ["gate1", "l4", "post_run"])
+def test_staged_report_optin_is_restricted_to_assemble(tmp_path, monkeypatch, stage):
+    from autoresearch.trace.capsule import checkpoint
+
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    candidate = handle.staging / "candidate"
+    candidate.mkdir()
+    with pytest.raises(ValueError, match="assemble"):
+        checkpoint(handle.run_id, stage, "SUCCEEDED", ["summary"], {},
+                   staged_report_dir=candidate)
+    assert not (handle.capsule / f"stages/{stage}").exists()
+
+
+@pytest.mark.parametrize("escape", ["outside", "parent", "staging-root", "symlink"])
+def test_staged_report_rejects_escape_root_and_symlink_before_capture(
+    tmp_path, monkeypatch, escape
+):
+    from autoresearch.trace.capsule import checkpoint
+
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if escape == "outside":
+        candidate = outside
+    elif escape == "parent":
+        candidate = handle.staging / ".." / "staging" / "candidate"
+        (handle.staging / "candidate").mkdir()
+    elif escape == "staging-root":
+        candidate = handle.staging
+    else:
+        candidate = handle.staging / "linked"
+        candidate.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="staging|symlink|travers"):
+        checkpoint(handle.run_id, "assemble", "SUCCEEDED", ["summary"], {},
+                   staged_report_dir=candidate)
+    assert not (handle.capsule / "stages/assemble").exists()
+
+
+def test_report_candidate_never_qualifies_as_published_report_dir(tmp_path, monkeypatch):
+    from autoresearch.trace.capsule import checkpoint, _validate_report_dir
+
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    candidate = handle.staging / "candidate"
+    candidate.mkdir()
+    with pytest.raises(ValueError, match="reports root"):
+        _validate_report_dir(candidate)
+    with pytest.raises(ValueError, match="reports root"):
+        checkpoint(handle.run_id, "assemble", "SUCCEEDED", ["summary"], {},
+                   report_dir=candidate)
+
+
+def test_checkpoint_report_and_candidate_roots_are_mutually_exclusive(tmp_path, monkeypatch):
+    from autoresearch.trace.capsule import checkpoint
+
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    candidate = handle.staging / "candidate"
+    candidate.mkdir()
+    published = tmp_path / "reports_codex/scan/published"
+    published.mkdir(parents=True)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        checkpoint(handle.run_id, "assemble", "SUCCEEDED", ["summary"], {},
+                   report_dir=published, staged_report_dir=candidate)
+
+
 def test_safe_stage_result_rejects_ambient_run_bound_to_other_staging(
     tmp_path, monkeypatch, capsys
 ):

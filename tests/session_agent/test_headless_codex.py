@@ -235,6 +235,21 @@ def test_open_without_a_thread_id_fails_without_binding(tmp_path, fake_env, monk
     assert fake_env["bound"] == [] and _record(tmp_path)["state"] == "OPEN_FAILED"
 
 
+def test_quota_during_open_preserves_observed_thread_and_rollout(tmp_path, fake_env, monkeypatch):
+    monkeypatch.setenv("FAKE_OPEN_BODY", '''
+        mkdir -p "$FAKE_SESSIONS/2026/10/08"
+        printf '{"type":"session_meta","payload":{"id":"%s"}}\\n' "$FAKE_THREAD" > "$FAKE_SESSIONS/2026/10/08/rollout-2026-10-08T10-00-00-$FAKE_THREAD.jsonl"
+        printf '{"type":"thread.started","thread_id":"%s"}\\n' "$FAKE_THREAD"
+        echo '{"type":"turn.failed","error":{"message":"usage limit reached"}}'
+        exit 1
+    ''')
+    result = _executor(tmp_path, _fake_codex(tmp_path)).dispatch(_request(tmp_path))
+    assert not result.ok and result.error_class == "USAGE_LIMIT"
+    assert result.context_ref == THREAD and Path(result.transcript_path).is_file()
+    assert _record(tmp_path)["thread_id"] == THREAD
+    assert fake_env["bound"] == []
+
+
 def test_open_exit_nonzero_reports_stderr_and_is_classified(tmp_path, fake_env, monkeypatch):
     monkeypatch.setenv("FAKE_OPEN_BODY", 'echo "stream error: 503 service unavailable" >&2; exit 1')
     ex = _executor(tmp_path, _fake_codex(tmp_path))

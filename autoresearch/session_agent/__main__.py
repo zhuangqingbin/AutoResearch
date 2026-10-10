@@ -100,6 +100,11 @@ def _parser(*, read_only=False):
     retry_l4.add_argument("--run-id", required=True)
     retry_l4.add_argument("--code", required=True)
     retry_l4.add_argument("--expected-attempt", required=True, type=int)
+    recover = subparsers.add_parser("recover-task")
+    recover.add_argument("--run-id", required=True)
+    recover.add_argument("--task-id", required=True)
+    recover.add_argument("--failed-attempt", required=True, type=int)
+    recover.add_argument("--reason", required=True)
     verify_report = subparsers.add_parser("verify-report")
     verify_report.add_argument("--report-path", required=True)
     verify_report.add_argument("--expected-run-id")
@@ -276,6 +281,8 @@ def main(argv=None):
             )
         elif args.command == "retry-l4":
             value = service.retry_l4(args.run_id, args.code, args.expected_attempt)
+        elif args.command == "recover-task":
+            value = service.recover_task(args.run_id, args.task_id, args.failed_attempt, args.reason)
         elif args.command == "verify-report":
             from autoresearch.trace.verification import verify_report
 

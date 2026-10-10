@@ -54,7 +54,7 @@ def freeze_read_proof(handle, task, attempt, artifact_id, target):
         "dispatch_manifest": None,
         "dispatch_request": None,
     }
-    request = Path(handle.workspace) / "session/dispatch" / f"{task['task_id']}-a{attempt}.json"
+    request = Path(handle.workspace).resolve() / "session/dispatch" / f"{task['task_id']}-a{attempt}.json"
     try:
         access._load_manifest(request)
     except (OSError, ValueError, KeyError, TypeError):
@@ -225,7 +225,7 @@ def collect_and_freeze(handle):
         from autoresearch.session_agent import task_access as access
 
         dispatch = (
-            Path(handle.workspace)
+            Path(handle.workspace).resolve()
             / "session/dispatch"
             / f"{task['task_id']}-a{entry['attempt']}.json"
         )

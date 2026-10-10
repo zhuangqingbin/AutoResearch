@@ -471,6 +471,7 @@ def l4_retry_expansion(
     *,
     intel_enabled: bool,
     retained_initial: dict | None = None,
+    retained_intel: dict | None = None,
     holding: bool = False,
 ) -> dict:
     """Create a fresh child subtree for one retryable taskbook attempt."""
@@ -508,7 +509,12 @@ def l4_retry_expansion(
             parent_task=parent,
         ),
     ]
-    if intel_enabled:
+    if intel_enabled and retained_intel is not None:
+        status_dependencies = [retained_intel["intel_task_id"], retained_intel["status_task_id"]]
+        status_inputs = ["scan.l4.source.bundle", retained_intel["intel_artifact_id"],
+                         retained_intel["status_artifact_id"]]
+        status_operation = "scan.l4.intel.status"
+    elif intel_enabled:
         tasks.append(
             _task(
                 f"{prefix}.intel",

@@ -1105,6 +1105,30 @@ def _reject_symlink_components(base: Path, path: Path, *, label: str) -> None:
             raise ValueError(f"{label} contains a symlink: {current}")
 
 
+def _validate_staged_report_dir(handle: RunHandle, candidate_dir: Path | str) -> Path:
+    """A checkpoint-only candidate must be a real descendant of this run's staging."""
+    candidate = Path(candidate_dir)
+    staging = handle.staging
+    if ".." in candidate.parts:
+        raise ValueError(f"staged report directory traverses staging: {candidate}")
+    try:
+        relative = candidate.absolute().relative_to(staging.absolute())
+    except ValueError as exc:
+        raise ValueError(f"staged report directory escapes run staging: {candidate}") from exc
+    if not relative.parts:
+        raise ValueError("staged report directory cannot be the staging root")
+    if staging.is_symlink():
+        raise ValueError(f"staging root is a symlink: {staging}")
+    _reject_symlink_components(staging, candidate, label="staged report directory")
+    if not candidate.is_dir():
+        raise ValueError(f"staged report directory is not an existing directory: {candidate}")
+    try:
+        candidate.resolve(strict=True).relative_to(staging.resolve(strict=True))
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(f"staged report directory escapes run staging: {candidate}") from exc
+    return candidate
+
+
 def _literal_artifact(
     handle: RunHandle,
     value: Path | str,
@@ -1130,6 +1154,11 @@ def _literal_artifact(
             candidates.append((root_name, root, positioned))
         except ValueError:
             pass
+    # An explicitly admitted staged report root is nested in the scan root.
+    # The more specific root owns absolute files beneath that candidate.
+    if (len(candidates) == 2 and report_dir is not None
+            and report_dir.absolute().is_relative_to(handle.staging.absolute())):
+        candidates = [item for item in candidates if item[0] == "report"]
     if not candidates and not raw.is_absolute():
         relative_candidates = [
             (root_name, root, root / raw) for root_name, root in roots
@@ -1237,8 +1266,10 @@ def _resolve_artifacts(
     artifacts: Sequence[Path | str],
     *,
     report_dir: Path | str | None,
+    staged_report_dir: Path | str | None = None,
 ) -> list[dict]:
-    report = _validate_report_dir(report_dir)
+    report = (_validate_staged_report_dir(handle, staged_report_dir)
+              if staged_report_dir is not None else _validate_report_dir(report_dir))
     rows = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
@@ -1416,16 +1447,24 @@ def checkpoint(
     error: str | None = None,
     *,
     report_dir: Path | str | None = None,
+    staged_report_dir: Path | str | None = None,
 ) -> Checkpoint:
     """Persist one immutable attempt and its two facts.
 
     Concurrent pairs may interleave globally; consumers join them by
     ``(stage, attempt)``.  Within each pair the terminal event is always appended
     before ``CHECKPOINT_WRITTEN`` and each appears exactly once.
+    ``staged_report_dir`` admits a same-run assembly candidate for capture only;
+    it does not change the published-report or finalization directory policy.
     """
     handle = require_active_run(run_id)
     resolved_stage = _validate_stage(stage)
     resolved_status = _validate_status(status)
+    if report_dir is not None and staged_report_dir is not None:
+        raise ValueError("report_dir and staged_report_dir are mutually exclusive")
+    if staged_report_dir is not None and (resolved_stage != "assemble"
+                                          or handle.contract.run_kind != "scan-market"):
+        raise ValueError("staged report directories are only allowed for scan assemble checkpoints")
     if isinstance(artifacts, (str, bytes)) or not isinstance(artifacts, Sequence):
         raise TypeError("artifacts must be a sequence of paths")
     if not isinstance(metrics, Mapping):
@@ -1434,7 +1473,7 @@ def checkpoint(
         raise TypeError("error must be a string or None")
     normalized_metrics = json.loads(canonical_json(dict(metrics)))
     normalized_artifacts = _resolve_artifacts(
-        handle, artifacts, report_dir=report_dir
+        handle, artifacts, report_dir=report_dir, staged_report_dir=staged_report_dir
     )
 
     attempt, attempt_path, product_stage_root = _allocate_attempt(
@@ -1515,6 +1554,8 @@ def checkpoint(
         "error": error,
         "status": resolved_status,
     }
+    if staged_report_dir is not None:
+        event_payload["report_source_kind"] = "STAGED_CANDIDATE"
     append_event(
         event_path,
         run_id=handle.run_id,

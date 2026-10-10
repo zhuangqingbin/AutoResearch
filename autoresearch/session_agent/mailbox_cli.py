@@ -67,16 +67,20 @@ def run_command(args) -> tuple[dict, int]:
     handle = _handle(args.run_id)
     executor, timeouts = _build_executor(args, handle)
     options = {"timeouts": timeouts} if timeouts is not None else {}
-    outcome = runner.run_loop(
-        args.run_id,
-        executor,
-        max_parallel=resolve_max_parallel(handle, args.max_parallel),
-        poll_seconds=args.poll_seconds,
-        max_rounds=args.max_rounds,
-        timeout_multiplier=args.timeout_multiplier,
-        fanout_warmup_s=args.fanout_warmup_s,
-        **options,
-    )
+    try:
+        outcome = runner.run_loop(
+            args.run_id,
+            executor,
+            max_parallel=resolve_max_parallel(handle, args.max_parallel),
+            poll_seconds=args.poll_seconds,
+            max_rounds=args.max_rounds,
+            timeout_multiplier=args.timeout_multiplier,
+            fanout_warmup_s=args.fanout_warmup_s,
+            **options,
+        )
+    except runner.RunnerAlreadyRunning as exc:
+        return {"run_id": args.run_id, "finished": False,
+                "stop_reason": "RUNNER_BUSY", "errors": [{"message": str(exc)}]}, EXIT_NOT_FINISHED
     return outcome, 0 if outcome.get("finished") else EXIT_NOT_FINISHED
 
 

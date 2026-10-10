@@ -33,8 +33,10 @@ TASK_KEY_FIELDS = frozenset({
 #:   executed or accepted — evidenced by its frozen claim; its children carry the rest.
 #: - ``STALE_ORPHAN``: an operator ``fail --error-class STALE_TASK`` on a deterministic
 #:   attempt whose command never completed; the frozen failure records why.
+#: - ``CAPACITY_DEFERRED``: subscription refusal; the frozen failure and every
+#:   observed transcript/tool leg remain, successful retries keep normal requirements.
 TASK_KEY_OPTIONAL_FIELDS = frozenset({"evidence_kind"})
-EVIDENCE_KINDS = frozenset({"OWNER_TICKET", "STALE_ORPHAN"})
+EVIDENCE_KINDS = frozenset({"OWNER_TICKET", "STALE_ORPHAN", "CAPACITY_DEFERRED"})
 _OWNER_TICKET_LEGS = frozenset({"claim", "input_snapshot"})
 TASK_EVIDENCE_FIELDS = frozenset({
     "schema_version", "engine", "run_id", "task_id", "attempt", "owner", "subject",
@@ -275,6 +277,10 @@ def _validate_task_key(value: dict) -> dict:
         or (value["state"] != "NOT_REACHED" and "claim" not in requirements)
     ):
         raise ValueError("OWNER_TICKET key must be an L4_TASKBOOK claim-only key")
+    if kind == "CAPACITY_DEFERRED" and (value["owner"] != "SESSION"
+            or value["state"] not in {"FAILED", "SUPERSEDED", "CANCELLED"}
+            or "claim" not in requirements):
+        raise ValueError("CAPACITY_DEFERRED must retain a failed SESSION claim")
     return value
 
 

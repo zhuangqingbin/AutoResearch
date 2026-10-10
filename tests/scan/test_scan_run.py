@@ -162,6 +162,83 @@ def test_success_runs_begin_runner_verify_and_delivers_the_compat_brief(roots):
     assert summary["delivery"]["status"] == "SENT"
 
 
+@pytest.mark.parametrize("stop", ["USAGE_LIMIT", "BLOCKED", "FINISH_FAILED"])
+def test_recoverable_stop_preserves_active_capsule(roots, stop):
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": stop,
+                   "recoverable": True, "recovery_tasks": [{"task_id": "scan.assemble", "attempt": 2}],
+                   "errors": [], "dispatches": []})
+    assert _run(roots, steps) == scan_run.EXIT_FAILED
+    assert steps.finalized == [] and steps.swept == [RUN_ID]
+    summary = _summary(roots)
+    assert summary["result"] == "RECOVERABLE" and summary["run_id"] == RUN_ID
+    assert summary["recovery_tasks"] == steps.outcome["recovery_tasks"]
+    assert "--resume-run-id" in summary["resume_command"]
+
+
+def test_resume_uses_existing_run_and_skips_readiness_begin(roots):
+    from dataclasses import replace
+    steps = _Steps(roots, live=[{"run_id": RUN_ID}])
+    resumes = []
+    injected = replace(steps.as_steps(), resume=lambda rid: resumes.append(rid) or DATE)
+    log = scan_run.OpsLog(roots / "reports_claude/_ops/resume.log")
+    try:
+        assert scan_run.run_once(_args(resume_run_id=RUN_ID), injected, log=log) == 0
+    finally:
+        log.close()
+    assert resumes == [RUN_ID]
+    assert "begin" not in steps.calls and "wait_ready" not in steps.calls
+    assert "run" in steps.calls and _summary(roots)["resumed"]
+
+
+def test_resume_refuses_live_own_runner_before_mutation(roots, monkeypatch):
+    import fcntl
+
+    from autoresearch.trace import capsule
+    workspace = roots / "context_claude/scan_runs" / RUN_ID
+    staging = workspace / "staging" / DATE
+    lock = staging / "_dispatch/runner.lock"
+    lock.parent.mkdir(parents=True)
+    (workspace / "session").mkdir()
+    (workspace / "state.json").write_text(json.dumps({"business_status": "ACTIVE"}))
+    (workspace / "session/request.json").write_text(json.dumps({"host_profile": {
+        "engine": "claude", "session_ref": "headless-test"}}))
+    handle = SimpleNamespace(workspace=workspace, staging=staging, engine="claude",
+                             analysis_date=DATE, contract=SimpleNamespace(run_kind="scan-market"))
+    monkeypatch.setattr(capsule, "load_run", lambda _: handle)
+    monkeypatch.setattr(scan_run, "_call", lambda *a, **k: pytest.fail("mutated live run"))
+    with lock.open("a+") as owner:
+        fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="live runner"):
+            scan_run.default_steps(_args(resume_run_id=RUN_ID), None).resume(RUN_ID)
+    assert scan_run.default_steps(_args(resume_run_id=RUN_ID), None).resume(RUN_ID) == DATE
+
+
+def test_timeout_preserves_durable_quota_failure(roots, monkeypatch):
+    root = roots / "context_claude/scan_runs" / RUN_ID
+    (root / "session").mkdir(parents=True)
+    (root / "session/tasks.json").write_text(json.dumps({
+        "run_id": RUN_ID, "engine": "claude", "tasks": {"intel": {
+            "state": "FAILED", "attempt": 1, "error": {"code": "USAGE_LIMIT"},
+            "spec": {"operation": None}}}}))
+    monkeypatch.setattr(ws, "find_run_root", lambda _: root)
+    monkeypatch.setattr(scan_run, "_call", lambda *a, **k: (None, ""))
+    monkeypatch.setattr(scan_run, "_terminate_inflight_headless", lambda _: [])
+    outcome = scan_run.default_steps(_args(), None).run(RUN_ID, 1)
+    assert outcome["recoverable"] and outcome["recovery_tasks"][0]["task_id"] == "intel"
+
+
+def test_resume_lock_race_does_not_stop_or_finalize_live_runner(roots):
+    from dataclasses import replace
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": "RUNNER_BUSY"})
+    log = scan_run.OpsLog(roots / "reports_claude/_ops/race.log")
+    try:
+        assert scan_run.run_once(_args(resume_run_id=RUN_ID),
+            replace(steps.as_steps(), resume=lambda rid: DATE), log=log) == run_lock.EXIT_HELD
+    finally:
+        log.close()
+    assert steps.swept == [] and steps.finalized == []
+
+
 def _summary(roots, date: str = DATE) -> dict:
     return json.loads((roots / "reports_claude" / "_ops" / f"scan_run_{date}.json")
                       .read_text(encoding="utf-8"))

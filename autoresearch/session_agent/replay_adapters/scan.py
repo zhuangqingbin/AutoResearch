@@ -297,6 +297,13 @@ def _execute_compute(context):
             if operation in subject_operations
             else {}
         )
+        if operation == "scan.l4.intel.status":
+            raw_ids = [ref["artifact_id"] for ref in context.unit["input_refs"]
+                       if ref["artifact_id"].endswith(".intel")]
+            if len(raw_ids) > 1:
+                raise ValueError("intel status replay has ambiguous frozen raw intel input")
+            if raw_ids:
+                kwargs["intel_artifact_id"] = raw_ids[0]
         if operation == "scan.l4.intel.status" and any(ref["artifact_id"] == "claim.source_context" for ref in context.unit["input_refs"]):
             from autoresearch.session_agent.source_fields import restore_replay_context
             kwargs["claim_sources"] = restore_replay_context(context)

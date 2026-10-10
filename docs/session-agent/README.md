@@ -1,5 +1,9 @@
 # Subscription Session Agent 使用指南
 
+2026-10-09：全扫 headless 支持容量暂停、精确 `recover-task` 授权与原 run 恢复，
+详情见 [运行恢复](../ops/scan-recovery.md)。研究档位与技能目录的隔离实验见
+[实验入口](scan-efficiency-experiments.md)。生产入口仍为 PILOT。
+
 `session_v1` 把本项目的五类研究统一成可恢复任务图，同时继续在 Codex 或 Claude Code 的官方订阅会话里完成模型推理。Python 只负责数据、计划、任务所有权、校验、证据和发布，不调用 OpenAI、Anthropic 或其他模型 API，也不读取订阅凭据。
 
 ## 支持的入口

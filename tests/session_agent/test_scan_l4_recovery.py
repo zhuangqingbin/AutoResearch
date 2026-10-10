@@ -149,7 +149,8 @@ def test_taskbook_projects_only_the_current_attempt_as_authoritative(tmp_path):
     }
 
 
-def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
+@pytest.mark.parametrize("retained_reuse,crash_before_sync", [(False, False), (True, False), (True, True)])
+def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path, monkeypatch, retained_reuse, crash_before_sync):
     handle = context(tmp_path / "context_codex/scan_runs/20260913T010203000000Z")
     handle.workspace.mkdir(parents=True)
     handle.staging.mkdir(parents=True)
@@ -189,7 +190,7 @@ def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
         {"mode": "FULL"},
         [{"code": "600519"}],
         [{"artifact_id": "scan.finalists", "sha256": "f" * 64}],
-        intel_enabled=False,
+        intel_enabled=retained_reuse,
     )
     plan_service.persist_expansion(
         session, plan, expansion, existing_tasks=[*plan["tasks"], gate2]
@@ -206,7 +207,38 @@ def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
     )
     legacy_scan.initialize_tickets(handle, ["600519"])
     legacy_scan.claim_ticket(handle, "600519", 1)
-    legacy_scan.fail_ticket(handle, "600519", 1, "TIMEOUT", "lost response")
+    legacy_scan.fail_ticket(handle, "600519", 1,
+                            "DOMAIN_VALIDATION" if retained_reuse else "TIMEOUT", "lost response")
+    if retained_reuse:
+        prefix = "scan.l4.600519.a1"
+        retained = {"intel_task_id": "l4.600519.a1.intel",
+                    "status_task_id": "l4.600519.a1.intel_status",
+                    "intel_artifact_id": prefix + ".intel",
+                    "status_artifact_id": prefix + ".intel_status", "snapshots": []}
+        for artifact_id in (retained["intel_artifact_id"], retained["status_artifact_id"]):
+            path = artifacts.declared_path(handle, artifact_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("accepted old evidence")
+            frozen = artifacts.bind_artifact_hash(handle, artifact_id)
+            retained["snapshots"].append({"artifact_id": artifact_id, "sha256": frozen["sha256"]})
+        owner_path = session / "tasks.json"
+        owner = json.loads(owner_path.read_text())
+        for task_id in (retained["intel_task_id"], retained["status_task_id"]):
+            owner["tasks"][task_id]["state"] = "SUCCEEDED"
+        owner_path.write_text(json.dumps(owner))
+        monkeypatch.setattr("autoresearch.session_agent.intel_reuse.accepted_retry_intel",
+                            lambda *args, **kwargs: retained)
+
+    if crash_before_sync:
+        original_sync = service._sync_expansion
+        def crash(*args):
+            raise RuntimeError("interrupted after immutable expansion freeze")
+        monkeypatch.setattr(service, "_sync_expansion", crash)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            service.retry_l4(handle.run_id, "600519", 2, handle_loader=lambda _: handle)
+        monkeypatch.setattr(service, "_sync_expansion", original_sync)
+        monkeypatch.setattr("autoresearch.session_agent.intel_reuse.accepted_retry_intel",
+                            lambda *args, **kwargs: pytest.fail("recomputed frozen admission after crash"))
 
     result = service.retry_l4(
         handle.run_id,
@@ -219,6 +251,14 @@ def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
     assert service._task(handle, "l4.600519.a2.card")["parent_task"]["attempt"] == 2
     assert store.read_entry(session / "tasks.json", "l4.600519.a1.card")["state"] == "WAITING_RETRY"
     assert (session / "recoveries").is_dir()
+    if retained_reuse:
+        frozen_files = {path.name: path.read_bytes() for path in (session / "recoveries").glob("*.json")}
+        monkeypatch.setattr("autoresearch.session_agent.intel_reuse.accepted_retry_intel",
+                            lambda *args, **kwargs: pytest.fail("recomputed frozen reuse admission"))
+        repeated = service.retry_l4(handle.run_id, "600519", 2, handle_loader=lambda _: handle)
+        assert repeated["result"]["expansion"] == result["result"]["expansion"]
+        assert {path.name: path.read_bytes() for path in (session / "recoveries").glob("*.json")} == frozen_files
+        assert store.read_entry(session / "tasks.json", retained["intel_task_id"])["state"] == "SUCCEEDED"
 
     retry_card = handle.staging / "session_attempts/600519/a2/card.md"
     retry_card.parent.mkdir(parents=True)

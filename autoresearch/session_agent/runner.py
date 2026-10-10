@@ -414,6 +414,18 @@ class Runner:
                 rounds += 1
                 progressed = self._harvest()
                 self._bind_late_evidence()
+                capacity = self._capacity_pending()
+                if capacity:
+                    # Drain already-paid work, but never fan out or automatically retry
+                    # while the subscription cannot serve new inference.
+                    if not self._inflight:
+                        state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
+                        outcome = self._outcome(state, rounds, "USAGE_LIMIT")
+                        break
+                    self._beat()
+                    if not progressed:
+                        self._sleep(self.poll_seconds)
+                    continue
                 if self._det_busy():
                     # A deterministic execute may be mid-expansion (expansion file on disk,
                     # store/artifacts not yet synced): read the graph only between executes.
@@ -481,6 +493,22 @@ class Runner:
             "errors": [*(state or {}).get("errors", []), *self._errors],
             "finish": finish,
         }
+        entries = store.read_entries(service._store_path(self.handle))
+        recoveries = []
+        for task_id, entry in entries.items():
+            code = (entry.get("error") or {}).get("code")
+            spec = entry["spec"]
+            if (entry["state"] == "FAILED" and
+                    (code == "USAGE_LIMIT" or
+                     (spec.get("operation") == "scan.assemble"
+                      and code in {"OPERATION_ERROR", "OPERATION_FAILED"}))):
+                recoveries.append({"task_id": task_id, "attempt": entry["attempt"],
+                                   "error_class": code})
+        value["recoverable"] = (not finished and any(
+            row["error_class"] == "USAGE_LIMIT" for row in recoveries)) or (
+                                stop_reason in {"USAGE_LIMIT", "FINISH_FAILED"}
+                                or (stop_reason == "BLOCKED" and bool(recoveries)))
+        value["recovery_tasks"] = recoveries
         self._event("RUNNER_STOPPED", stop_reason=stop_reason, status=value["status"],
                     finished=finished)
         return json.loads(json.dumps(value, default=str))
@@ -520,21 +548,25 @@ class Runner:
         retries = []
         for task_id, entry in store.read_entries(service._store_path(self.handle)).items():
             spec = entry["spec"]
+            authorized = store.recovery_authorized(entry)
+            code = (entry.get("error") or {}).get("code")
             if (spec.get("role") == "scan.l4.review"
+                    and code != "USAGE_LIMIT"
                     and entry["state"] in {"FAILED", "BLOCKED"}
                     and (entry["state"] == "BLOCKED" or int(entry["attempt"]) >= _session_max_attempts())):
                 self._review_failed(spec, (entry.get("error") or {}).get("code", "UNKNOWN"),
                                     (entry.get("error") or {}).get("message", ""))
             if (
                 entry["state"] != "FAILED"
-                or (spec.get("parent_task") is not None and spec.get("role") != "scan.l4.review")
+                or (spec.get("parent_task") is not None
+                    and spec.get("role") != "scan.l4.review" and not authorized)
                 or task_id in self._inflight
                 or task_id in self._skip
-                or int(entry["attempt"]) >= _session_max_attempts()
+                or (int(entry["attempt"]) >= _session_max_attempts() and not authorized)
             ):
                 continue
-            code = (entry.get("error") or {}).get("code")
-            if spec["kind"] == "INFERENCE" and code not in TASK_ATTEMPT and code not in VALIDATION_REPAIR:
+            if (spec["kind"] == "INFERENCE" and code not in TASK_ATTEMPT
+                    and code not in VALIDATION_REPAIR and not authorized):
                 continue
             if spec.get("parent_task") is not None:
                 from autoresearch.session_agent import legacy_scan
@@ -545,6 +577,12 @@ class Runner:
                     continue
             retries.append((spec, int(entry["attempt"]) + 1))
         return retries
+
+    def _capacity_pending(self) -> list[dict]:
+        return [entry for entry in store.read_entries(service._store_path(self.handle)).values()
+                if entry["state"] == "FAILED"
+                and (entry.get("error") or {}).get("code") == "USAGE_LIMIT"
+                and not store.recovery_authorized(entry)]
 
     def _launch(self, ready: list[dict], retries: list[tuple[dict, int]] = ()) -> bool:
         launched = False
@@ -634,6 +672,8 @@ class Runner:
         if not can_dispatch():
             return
         self._harvest()
+        if self._capacity_pending():
+            return
         state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
         self._preflight()
         candidates = list(self._session_retries())
@@ -651,6 +691,8 @@ class Runner:
 
     def _start(self, task: dict, attempt: int, *, can_dispatch=None) -> bool:
         task_id = task["task_id"]
+        if self._capacity_pending():
+            return False
         if task["kind"] == "DETERMINISTIC":
             try:
                 params = _params_for(task, self._request())

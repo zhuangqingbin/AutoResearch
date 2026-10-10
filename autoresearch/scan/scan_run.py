@@ -20,7 +20,7 @@ design: docs/superpowers/specs/2026-09-26-daily-engine-consolidation-design.md �
    (缺省 01:00,只管定时场))—— 硬截止前不足 10 分钟就不 begin。
 8. 成功 → ``verify-report --level full`` → 送达 brief(``scan.delivery``),摘要
    ``result=FINISHED`` + 独立的 ``delivery.status``;未完成 → 停在飞 ``claude -p`` →
-   ``capsule finalize FAILED`` + 推「FAILED · 阶段 · 一句原因 · 日志路径」。
+   可恢复容量/组装/发布失败保留 run，其他失败 ``capsule finalize FAILED``。
    **不自动改代码、不自动重跑第二场。**
 
 收尾不留孤儿(复审 M1/M7):SIGTERM/SIGHUP/SIGINT(``launchctl bootout``、``kickstart -k``、
@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 import signal
@@ -256,6 +257,58 @@ def _unknown_channel() -> str:
     return "unknown"
 
 
+def _resume_unavailable(run_id: str) -> str:
+    raise RuntimeError("resume validation is unavailable")
+
+
+def _recoverable_tasks(run_id: str) -> list[dict]:
+    """Read durable failure facts after a killed runner; no task state is changed."""
+    root = ws.find_run_root(run_id)
+    if root is None:
+        return []
+    try:
+        payload = json.loads((root / "session/tasks.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if payload.get("run_id") != run_id or payload.get("engine") != ws.ENGINE:
+        return []
+    rows = []
+    for task_id, entry in payload.get("tasks", {}).items():
+        code = (entry.get("error") or {}).get("code")
+        if entry.get("state") == "FAILED" and (code == "USAGE_LIMIT" or
+                (entry["spec"].get("operation") == "scan.assemble"
+                 and code in {"OPERATION_ERROR", "OPERATION_FAILED"})):
+            rows.append({"task_id": task_id, "attempt": entry["attempt"], "error_class": code})
+    return rows
+
+
+def _validate_resume(run_id: str):
+    from autoresearch.trace.capsule import load_run
+    handle = load_run(run_id)
+    if handle.engine != ws.ENGINE or handle.contract.run_kind != "scan-market":
+        raise ValueError("resume requires a same-engine scan-market run")
+    state = json.loads((Path(handle.workspace) / "state.json").read_text())
+    if state["business_status"] != "ACTIVE":
+        from autoresearch.trace.publication import load_publication_journal
+        if state["business_status"] != "SUCCEEDED" or load_publication_journal(
+                handle.workspace)["state"] not in {"VIEWS_APPLIED", "COMMITTED"}:
+            raise RuntimeError("resume requires ACTIVE run or resumable publication transaction")
+    request = json.loads((Path(handle.workspace) / "session/request.json").read_text())
+    host = request["host_profile"]
+    if host["engine"] != ws.ENGINE or not host["session_ref"].startswith("headless-"):
+        raise ValueError("resume requires the original headless host profile")
+    lock = Path(handle.staging) / "_dispatch/runner.lock"
+    if lock.is_file():
+        with lock.open("r") as stream:
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("resume refused: this run still has a live runner") from None
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    return handle
+
+
 @dataclass
 class Steps:
     """每一个外部动作一个可注入的步骤(测试里全换成假的:不取数、不起 claude、不推送)。"""
@@ -277,6 +330,8 @@ class Steps:
     missed_date: Callable[[datetime], str | None] = _no_missed
     #: 当前送达渠道(``scan_config`` delivery.channel)。
     channel: Callable[[], str] = _unknown_channel
+    #: Validate engine, headless owner, frozen request and resumable business state.
+    resume: Callable[[str], str] = _resume_unavailable
 
 
 class ScanRunInterrupted(BaseException):
@@ -490,7 +545,29 @@ def default_steps(args, log: OpsLog | None) -> Steps:
             raise RuntimeError(f"session_agent begin exit={code}: {detail}")
         return str(doc["run_id"])
 
+    def resume(run_id: str) -> str:
+        return _validate_resume(run_id).analysis_date
+
     def run(run_id: str, timeout_s: float) -> dict | None:
+        if getattr(args, "resume_run_id", None):
+            try:
+                handle = _validate_resume(run_id)
+            except RuntimeError as exc:
+                if "live runner" in str(exc):
+                    return {"finished": False, "stop_reason": "RUNNER_BUSY",
+                            "errors": [{"message": str(exc)}]}
+                raise
+            state = json.loads((Path(handle.workspace) / "state.json").read_text())
+            command = "finish" if state["business_status"] != "ACTIVE" else "resume"
+            code, out = _call(_session_agent(command, "--run-id", run_id), env=_env(run_id),
+                              timeout=timeout_s, stderr=stream)
+            if command == "finish" or code != 0:
+                result = _last_json(out) or {}
+                publication = (result.get("result") or {}).get("publication") or {}
+                ok = code == 0 and bool(publication.get("canonical_path"))
+                return {"finished": ok, "stop_reason": "FINISHED" if ok else "FINISH_FAILED",
+                        "recoverable": not ok, "errors": result.get("errors", []),
+                        "finish": {"canonical_path": publication.get("canonical_path")}}
         argv = _session_agent("run", "--run-id", run_id, "--executor", "headless")
         if claude_bin and ws.ENGINE == "claude":
             argv += ["--claude-bin", str(claude_bin)]
@@ -501,9 +578,11 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         code, out = _call(argv, env=_env(run_id), timeout=timeout_s, stderr=stream)
         if code is None:
             killed = _terminate_inflight_headless(run_id)
+            recoveries = _recoverable_tasks(run_id)
             return {"finished": False, "stop_reason": "RUN_TIMEOUT", "errors": [{
                 "message": f"runner 超过 {timeout_s / 60:.0f} 分钟未结束,已终止"
-                           f"(连同 {len(killed)} 个在飞 claude -p)"}]}
+                           f"(连同 {len(killed)} 个在飞 claude -p)"}],
+                    "recoverable": bool(recoveries), "recovery_tasks": recoveries}
         return _last_json(out)
 
     def verify(canonical: str, run_id: str) -> dict:
@@ -540,7 +619,7 @@ def default_steps(args, log: OpsLog | None) -> Steps:
                  begin=begin, run=run, verify=verify, locate_brief=locate_brief,
                  deliver=deliver, finalize_failed=finalize_failed, notify=notify,
                  sweep=_terminate_inflight_headless, now=datetime.now,
-                 missed_date=missed_date, channel=channel)
+                 missed_date=missed_date, channel=channel, resume=resume)
 
 
 # ── orchestration ───────────────────────────────────────────────────────────────
@@ -574,9 +653,13 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
             result = {"status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
         log.line(f"notify · {title} · {result.get('status')}")
 
-    def abort(stage: str, reason: str, result: str, stop: str) -> int:
-        """收口:停在飞 claude -p → capsule FAILED(有 run 时)→ 推送 → 摘要。"""
+    def abort(stage: str, reason: str, result: str, stop: str, *,
+              recoverable: bool = False, recovery_tasks: list | None = None) -> int:
+        """Stop in-flight work; preserve recoverable runs, seal other failures."""
         run_id = state["run_id"]
+        if run_id and not recoverable:
+            recovery_tasks = _recoverable_tasks(run_id)
+            recoverable = bool(recovery_tasks)
         if run_id:
             try:
                 stopped = steps.sweep(run_id)
@@ -585,12 +668,18 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
                 log.line(f"停在飞 claude -p 失败:{type(exc).__name__}: {exc}")
             if stopped:
                 log.line(f"已停 {len(stopped)} 个在飞 claude -p 进程组")
-            try:
-                steps.finalize_failed(run_id, {"stage": stage, "stop_reason": stop,
-                                               "message": reason, "log": str(log.path)})
-            except Exception as exc:  # noqa: BLE001
-                log.line(f"capsule finalize FAILED 失败:{type(exc).__name__}: {exc}")
-        tell(f"扫描 {summary.get('date') or '?'} FAILED",
+            if not recoverable:
+                try:
+                    steps.finalize_failed(run_id, {"stage": stage, "stop_reason": stop,
+                                                   "message": reason, "log": str(log.path)})
+                except Exception as exc:  # noqa: BLE001
+                    log.line(f"capsule finalize FAILED 失败:{type(exc).__name__}: {exc}")
+        if recoverable:
+            summary.update(recovery_tasks=recovery_tasks or [],
+                           resume_command=f"scripts/scan_run.sh --engine {ws.ENGINE} --resume-run-id {run_id}")
+            result = "RECOVERABLE"
+            log.line("保留 ACTIVE run 与已接受产物;恢复前逐个 recover-task 授权失败 attempt")
+        tell(f"扫描 {summary.get('date') or '?'} {'RECOVERABLE' if recoverable else 'FAILED'}",
              f"阶段 {stage} · {reason}" + (f" · run {run_id}" if run_id else "")
              + f" · 日志 {log.path}")
         return finish(EXIT_FAILED, result, stage=stage, reason=reason, stop_reason=stop)
@@ -612,6 +701,13 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
 def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
           finish, tell, abort) -> int:
     explicit = getattr(args, "date", None)
+    resume_id = getattr(args, "resume_run_id", None)
+    if resume_id:
+        state["stage"] = "resume_validation"
+        resumed_date = steps.resume(resume_id)
+        if explicit and explicit != resumed_date:
+            raise ValueError("--date conflicts with resumed run")
+        explicit = resumed_date
     deadline = getattr(args, "deadline", readiness.DEADLINE)
     fired = steps.now()
     if not explicit and not in_window(fired, deadline):
@@ -637,7 +733,7 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
     log.line(f"date={date}")
 
     def live_manual_run() -> int | None:
-        live = steps.live_runs()
+        live = [item for item in steps.live_runs() if item["run_id"] != resume_id]
         if not live:
             return None
         ids = ", ".join(item["run_id"] for item in live)
@@ -651,7 +747,7 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
         return held
 
     state["stage"] = "readiness"
-    if not getattr(args, "skip_readiness", False) and not steps.wait_ready(date, deadline):
+    if not resume_id and not getattr(args, "skip_readiness", False) and not steps.wait_ready(date, deadline):
         tell(f"扫描 {date} 未开",
              f"tushare stk_factor_pro 截至 {deadline} 未灌齐 · 日志 {log.path}")
         return finish(EXIT_FAILED, "NOT_READY")
@@ -674,16 +770,20 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
                  f"已过夜间硬截止 {stop_at:%H:%M}(就绪等待期间本机可能睡眠)· 日志 {log.path}")
             return finish(EXIT_FAILED, "PAST_HARD_STOP")
 
-    state["stage"] = "begin"
-    request_path = ops_dir() / f"scan_run_{date}.request.json"
-    atomic_write_json(request_path, build_headless_request(date))
-    try:
-        run_id = steps.begin(request_path)
-    except Exception as exc:  # noqa: BLE001
-        reason = f"{type(exc).__name__}: {exc}"[:300]
-        log.line(f"begin 失败:{reason}")
-        tell(f"扫描 {date} FAILED", f"阶段 begin · {reason} · 日志 {log.path}")
-        return finish(EXIT_FAILED, "BEGIN_FAILED", stage="begin", reason=reason)
+    if resume_id:
+        run_id = resume_id
+        summary["resumed"] = True
+    else:
+        state["stage"] = "begin"
+        request_path = ops_dir() / f"scan_run_{date}.request.json"
+        atomic_write_json(request_path, build_headless_request(date))
+        try:
+            run_id = steps.begin(request_path)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{type(exc).__name__}: {exc}"[:300]
+            log.line(f"begin 失败:{reason}")
+            tell(f"扫描 {date} FAILED", f"阶段 begin · {reason} · 日志 {log.path}")
+            return finish(EXIT_FAILED, "BEGIN_FAILED", stage="begin", reason=reason)
     state["run_id"] = summary["run_id"] = run_id
 
     state["stage"] = "runner"
@@ -692,11 +792,16 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
         budget = max(60.0, min(run_cap, (stop_at - steps.now()).total_seconds()))
     log.line(f"run_id={run_id} · runner 启动(--executor headless · 墙钟 {budget / 60:.0f} 分钟)")
     outcome = steps.run(run_id, budget)
+    if (outcome or {}).get("stop_reason") == "RUNNER_BUSY":
+        tell(f"扫描 {date} 未开", f"run {run_id} 仍有 runner;本次恢复未执行")
+        return finish(run_lock.EXIT_HELD, "LIVE_RUN", stage="runner")
     if not (outcome or {}).get("finished"):
         stage, reason = failure_point(outcome)
         stop = (outcome or {}).get("stop_reason") or "NO_OUTCOME"
         log.line(f"runner 未完成 · {stop} · 阶段 {stage} · {reason}")
-        return abort(stage, reason, "FAILED", stop)
+        return abort(stage, reason, "FAILED", stop,
+                     recoverable=(outcome or {}).get("recoverable") is True,
+                     recovery_tasks=(outcome or {}).get("recovery_tasks"))
 
     state["stage"] = "verify"
     canonical = ((outcome.get("finish") or {}).get("canonical_path"))
@@ -753,6 +858,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autoresearch.scan.scan_run",
                                  description="无人值守一场全 A 扫描(headless;launchd 21:20)")
     ap.add_argument("--date", help="显式数据日(须为交易日;缺省 = 今天,非交易日静默退出)")
+    ap.add_argument("--resume-run-id", help="恢复原 ACTIVE headless run;不重新 begin 或取数")
     ap.add_argument("--deadline", default=readiness.DEADLINE, help="湖就绪等待截止 HH:MM")
     ap.add_argument("--skip-readiness", action="store_true", help="不等 stk_factor_pro(补跑用)")
     ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude;claude 场)")

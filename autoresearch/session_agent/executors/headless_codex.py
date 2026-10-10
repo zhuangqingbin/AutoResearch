@@ -41,12 +41,13 @@ import json
 import os
 import subprocess
 import time
-import tomllib
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
+
+import tomllib
 
 from autoresearch.common.atomic import atomic_write_json, sha256_bytes
 from autoresearch.session_agent.executors.base import (
@@ -54,6 +55,7 @@ from autoresearch.session_agent.executors.base import (
     DispatchRequest,
     DispatchResult,
     ExecutorTimeout,
+    classify_error,
 )
 from autoresearch.session_agent.executors.headless_claude import (
     _TRANSIENT_API,
@@ -291,6 +293,8 @@ class HeadlessCodexExecutor:
             error = f"codex exec error: {' | '.join(events['errors'])}"
         else:
             return None, None
+        if classify_error(error) == "USAGE_LIMIT":
+            return error, "USAGE_LIMIT"
         return error, ("CONNECTION" if _TRANSIENT_API.search(error) else None)
 
     # ── dispatch ────────────────────────────────────────────────────────────────
@@ -391,10 +395,15 @@ class HeadlessCodexExecutor:
                                             open_out.read_text(encoding="utf-8", errors="replace"),
                                             open_err.read_text(encoding="utf-8", errors="replace"))
             error = error or "codex exec open: no thread.started event in the --json stream"
+            transcript = find_rollout(thread_id, self.sessions_root) if thread_id else None
             record.update(state="OPEN_FAILED", exit_code=open_exit, ended_at=_now(),
-                          elapsed_s=round(time.monotonic() - started, 1), error=error)
+                          elapsed_s=round(time.monotonic() - started, 1), error=error,
+                          thread_id=thread_id, session_id=thread_id, transcript_path=transcript)
             save()
-            return DispatchResult(ok=False, error=error, error_class=declared)
+            return DispatchResult(ok=False, error=error, error_class=declared,
+                                  session_ref=thread_id, context_ref=thread_id,
+                                  parent_context_ref=request.host_session_ref,
+                                  transcript_path=transcript)
         record.update(thread_id=thread_id, session_id=thread_id)
         save()
 
