@@ -4,7 +4,7 @@ description: scan-market L3 比较式精排。通读本 run 候选表与地形�
 model: claude-opus-5-5
 effort: max
 tools: Read, Write, Grep, Glob
-maxTurns: 64
+maxTurns: 12
 omitClaudeMd: true
 ---
 

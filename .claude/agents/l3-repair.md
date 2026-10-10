@@ -4,7 +4,7 @@ description: 只修复 L3 repair pack 点名的结构或数字错误。
 model: claude-opus-5-5
 effort: medium
 tools: Read, Write
-maxTurns: 30
+maxTurns: 10
 omitClaudeMd: true
 ---
 

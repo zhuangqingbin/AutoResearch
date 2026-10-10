@@ -4,7 +4,7 @@ description: sector-research lite 档行业 brief 写手。scan-market Stage 1(�
 model: claude-opus-5-5
 effort: xhigh
 tools: Read, Write, Grep, Glob, WebSearch, WebFetch
-maxTurns: 30
+maxTurns: 12
 omitClaudeMd: true
 ---
 
