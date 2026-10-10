@@ -13,7 +13,7 @@
 
 | # | 红线 | 起因 | 机器件(住哪) | 会红的量 |
 |---|---|---|---|---|
-| R1 | 推理之前先零推理回放 | 10-03 r4、10-07 r5:研究花完才死在校验 | `scan.replay_gate`:开场前用当前校验器重验上一场已接受产物 | 回归 > 0 → `REFUSED_REPLAY` |
+| R1 | 推理之前先零推理回放 | 10-03 r4、10-07 r5:研究花完才死在校验 | `session_agent.replay_gate`:开场前用当前校验器重验最近一场有决策卡的 run 的已接受产物 | 回归 > 0 → `REFUSED_REPLAY` |
 | R2 | 宿主零研究 | 10-07 主会话占 62% / 84–90% | `scan.redline` 宿主行 | 宿主加权输入 > `budgets.envelope.host_weighted_max` → FAIL |
 | R3 | 档位只能带着等价读数改 | 10-03 别名静默换代,同 effort 输出 1.9 万 → 5.1 万 | `contracts/tier_lock.json` + lint R12;redline 对实际模型 | 配置 ≠ 锁、变更缺 `equivalence_ref`、实际模型不在锁里 → 红 |
 | R4 | 每笔推理花费要有决策消费者 | FN-1 家族;intel 死票门 0 命中 | `agents.<role>.consumer` + lint R14;redline 消费图 | 缺消费者 → 红;连续 5 场无人消费 → 待裁清单 |
@@ -28,7 +28,8 @@
 ## 命令
 
 ```bash
-# 场后读数(scan_run 已自动跑;手动重算 / 只看不写)
+# 场后读数(scan_run 已自动跑;手动补一份带消费图的读数 / 只看不写)
+uv run --no-sync python -m autoresearch.session_agent.redline_post --run-id <RUN_ID>
 uv run --no-sync python -m autoresearch.scan.redline build --run-id <RUN_ID> --no-write
 uv run --no-sync python -m autoresearch.scan.redline status          # 当前断路器
 scripts/scan_run.sh --engine <claude|codex> --ack-redline <RUN_ID>   # 看过后放行下一场
@@ -38,7 +39,7 @@ scripts/scan_run.sh --engine <e> --resume-run-id <RUN_ID> --ack-redline <RUN_ID>
 uv run --no-sync python -m autoresearch.scan.config_standard --hook  # R2–R14 + 一行成本估算
 uv run --no-sync python -m autoresearch.scan.token_bom               # 当前配置下一场的估算
 uv run --no-sync python -m autoresearch.scan.token_rules lock --add-missing   # 新角色补档位锁第一条
-uv run --no-sync python -m autoresearch.scan.replay_gate             # 手动跑回放门
+uv run --no-sync python -m autoresearch.session_agent.replay_gate    # 手动跑回放门
 
 # 周账本(两引擎 · 按项目 · 生产 / 开发)
 uv run --no-sync python -m autoresearch.research.token_ledger --since <YYYY-MM-DD>
