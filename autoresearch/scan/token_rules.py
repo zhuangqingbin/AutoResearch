@@ -177,8 +177,10 @@ def lint_declared_ratchet(cfg: dict, path: Path, *, repo_root: Path = REPO) -> l
 # ── R14 ──────────────────────────────────────────────────────────────────────────
 
 def lint_role_consumers(cfg: dict, *, repo_root: Path = REPO) -> list[tuple[str, str, str]]:
+    from autoresearch.contracts.agent_roles import dispatch_mapping
     from autoresearch.contracts.operation_replay import OPERATION_REPLAY_CLASSIFICATION
-    from autoresearch.session_agent.executors.base import ROLE_DISPATCH
+
+    ROLE_DISPATCH = dispatch_mapping()
 
     out = []
     for role, spec in sorted((cfg.get("agents") or {}).items()):

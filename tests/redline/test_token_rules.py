@@ -53,7 +53,7 @@ def test_switching_intel_off_drops_its_cost(live_cfg):
 
 def test_turning_claude_auto_memory_back_on_costs_more(live_cfg):
     cfg = json.loads(json.dumps(live_cfg))
-    cfg["session"]["context"]["claude_auto_memory"] = True
+    cfg["session"]["preamble"]["claude_auto_memory"] = True
     assert token_bom.estimate("claude", cfg)["total"] > token_bom.estimate("claude", live_cfg)["total"]
 
 

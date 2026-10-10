@@ -437,7 +437,7 @@ def test_context_trims_follow_the_session_config_knob(tmp_path, monkeypatch):
     from autoresearch.session_agent import config as session_config
     monkeypatch.setattr(session_config, "session_cfg", lambda cfg=None: {
         "timeouts": {"codex_open_s": 42.0},
-        "context": {"codex_project_doc_max_bytes": 7, "codex_skills_catalog_budget": 2000,
+        "preamble": {"codex_project_doc_max_bytes": 7, "codex_skills_catalog_budget": 2000,
                     "claude_auto_memory": False}})
     ex = _executor(tmp_path, _fake_codex(tmp_path))
     request = _request(tmp_path)

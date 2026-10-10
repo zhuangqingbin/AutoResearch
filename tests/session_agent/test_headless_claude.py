@@ -800,7 +800,7 @@ def test_auto_memory_is_off_unless_the_session_config_turns_it_on(tmp_path, monk
     from autoresearch.session_agent import config as session_config
     real = session_config.session_cfg()
     monkeypatch.setattr(session_config, "session_cfg",
-                        lambda cfg=None: {**real, "context": {**real["context"], "claude_auto_memory": True}})
+                        lambda cfg=None: {**real, "preamble": {**real["preamble"], "claude_auto_memory": True}})
     ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
     ex.dispatch(_request(tmp_path))
     argv = (tmp_path / "bin" / "argv.txt").read_text(encoding="utf-8").splitlines()

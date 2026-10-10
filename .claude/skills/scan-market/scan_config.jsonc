@@ -503,7 +503,7 @@
       "timeout_multiplier": 1.0,       // 超时倍率
       "fanout_warmup_s": 0             // 同一角色首份派发后其余等几秒(prompt 缓存预热;0 = 关)
     },
-    "context": {                       // 研究线程前导瘦身(仅 session_agent)
+    "preamble": {                      // 研究线程前导瘦身(仅 session_agent)
       "codex_project_doc_max_bytes": 0,          // codex exec 读项目 AGENTS.md 的字节上限;0 = 研究线程不读
       "codex_skills_catalog_budget": 1000,       // codex exec 的 skills 目录预算(token);研究角色不用 skills
       "claude_auto_memory": false      // claude -p 研究线程是否装自动记忆(MEMORY.md);false = 不装

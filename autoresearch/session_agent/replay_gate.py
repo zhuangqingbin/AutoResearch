@@ -57,16 +57,23 @@ def replay(run_id: str) -> dict:
             row.update(now="CRASH", reason=f"{type(exc).__name__}: {exc}"[:300])
         results.append(row)
     regressions = [row for row in results if row["now"] != "ACCEPT"]
-    return {"run_id": run_id, "checked": len(results), "regressions": regressions}
+    roles: dict[str, int] = {}
+    for row in results:
+        roles[str(row["role"])] = roles.get(str(row["role"]), 0) + 1
+    return {"run_id": run_id, "checked": len(results), "roles": roles, "regressions": regressions}
 
 
 def gate(*, acknowledged=None) -> dict:
-    """最近一场有已接受推理产物的 run 做回放;``acknowledged(run_id) -> bool`` 已确认则放行。"""
+    """从最近一场往回回放,直到覆盖一场有已接受决策卡的 run(最多看 5 场);任一场有未确认的回归即 FAIL。
+
+    ``acknowledged(run_id) -> bool`` 已确认的 run 不再拦。卡片是契约事故的高发处,只有策略师 / 行业 brief
+    的那种早夭场(10-08 第 2 场撞额度)不足以证明当前代码还认昨晚的卡。
+    """
     from autoresearch.scan import redline
 
     acknowledged = acknowledged or (lambda run_id: redline.ack_path(run_id).is_file())
-    skipped = []
-    for run_id in candidate_runs():
+    skipped, replayed = [], []
+    for run_id in candidate_runs()[:5]:
         try:
             result = replay(run_id)
         except Exception as exc:  # noqa: BLE001 - an unreadable old workspace is not a regression
@@ -75,22 +82,30 @@ def gate(*, acknowledged=None) -> dict:
         if result["checked"] == 0:
             skipped.append({"run_id": run_id, "reason": "没有已接受的推理产物"})
             continue
-        verdict = "FAIL" if result["regressions"] else "PASS"
-        if verdict == "FAIL" and acknowledged(run_id):
-            verdict = "ACKNOWLEDGED"
-        return {"schema_version": SCHEMA_VERSION, "verdict": verdict, **result,
-                "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "skipped": skipped[:5]}
-    return {"schema_version": SCHEMA_VERSION, "verdict": "SKIPPED", "run_id": None, "checked": 0,
-            "regressions": [], "skipped": skipped[:5]}
+        replayed.append(result)
+        if (result.get("roles") or {}).get("scan.l4.card"):
+            break
+    if not replayed:
+        return {"schema_version": SCHEMA_VERSION, "verdict": "SKIPPED", "run_id": None, "checked": 0,
+                "regressions": [], "runs": [], "skipped": skipped[:5]}
+    failing = [result for result in replayed if result["regressions"] and not acknowledged(result["run_id"])]
+    acked = [result for result in replayed if result["regressions"] and acknowledged(result["run_id"])]
+    verdict = "FAIL" if failing else ("ACKNOWLEDGED" if acked else "PASS")
+    focus = (failing or acked or replayed)[0]
+    return {"schema_version": SCHEMA_VERSION, "verdict": verdict, "run_id": focus["run_id"],
+            "checked": sum(result["checked"] for result in replayed),
+            "regressions": [dict(row, run_id=result["run_id"]) for result in (failing or acked) for row in result["regressions"]],
+            "runs": [{key: result[key] for key in ("run_id", "checked", "roles")} for result in replayed],
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "skipped": skipped[:5]}
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m autoresearch.scan.replay_gate", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m autoresearch.session_agent.replay_gate", description=__doc__.splitlines()[0])
     ap.add_argument("--run-id", help="只回放这一场(缺省:最近一场有已接受产物的)")
+    ap.add_argument("--json-line", action="store_true", help="单行 JSON(scan_run 子进程解析用)")
     args = ap.parse_args(argv)
     result = replay(args.run_id) if args.run_id else gate()
-    print(json.dumps(result, ensure_ascii=False, indent=1))
+    print(json.dumps(result, ensure_ascii=False) if args.json_line else json.dumps(result, ensure_ascii=False, indent=1))
     return 1 if result.get("regressions") and result.get("verdict", "FAIL") == "FAIL" else 0
 
 

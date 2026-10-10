@@ -203,7 +203,7 @@ class HeadlessCodexExecutor:
         agents_dir: Path | str | None = None,
         kill_grace_seconds: float = 5.0,
         open_timeout_seconds: float | None = None,
-        context: Mapping[str, int] | None = None,
+        preamble: Mapping[str, int] | None = None,
     ):
         self.staging = Path(staging)
         self.codex_bin = resolve_codex_bin(codex_bin)
@@ -211,17 +211,17 @@ class HeadlessCodexExecutor:
         self.sessions_root = Path(sessions_root) if sessions_root is not None else default_sessions_root()
         self.agents_dir = Path(agents_dir) if agents_dir is not None else self.cwd / DEFAULT_AGENTS_DIR
         self.kill_grace_seconds = float(kill_grace_seconds)
-        if open_timeout_seconds is None or context is None:
+        if open_timeout_seconds is None or preamble is None:
             from autoresearch.session_agent.config import session_cfg
 
             _sc = session_cfg()
             if open_timeout_seconds is None:
                 open_timeout_seconds = _sc["timeouts"]["codex_open_s"]
-            if context is None:
-                context = _sc.get("context") or {}
+            if preamble is None:
+                preamble = _sc.get("preamble") or {}
         self.open_timeout_seconds = float(open_timeout_seconds)
-        self.project_doc_max_bytes = int(context.get("codex_project_doc_max_bytes", PROJECT_DOC_MAX_BYTES))
-        self.skills_max_context_tokens = int(context.get("codex_skills_catalog_budget", SKILLS_MAX_CONTEXT_TOKENS))
+        self.project_doc_max_bytes = int(preamble.get("codex_project_doc_max_bytes", PROJECT_DOC_MAX_BYTES))
+        self.skills_max_context_tokens = int(preamble.get("codex_skills_catalog_budget", SKILLS_MAX_CONTEXT_TOKENS))
 
     # ── helpers ─────────────────────────────────────────────────────────────────
     def _record_dir(self) -> Path:

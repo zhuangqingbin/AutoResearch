@@ -68,8 +68,11 @@ def locate_capsule(run_id: str) -> Path | None:
 
 def _agent_roles() -> dict[str, str]:
     """agent 名(claude agent type / codex 角色名)→ scan role;只收 scan 角色,先到先得。"""
-    from autoresearch.session_agent.executors.base import CODEX_AGENT_NAMES, ROLE_DISPATCH
+    from autoresearch.contracts.agent_roles import PHYSICAL_AGENTS, dispatch_mapping
 
+    ROLE_DISPATCH = dispatch_mapping()
+    CODEX_AGENT_NAMES = {config_role: names[1] for config_role, names in PHYSICAL_AGENTS.items()
+                         if isinstance(names, (tuple, list)) and len(names) > 1}
     table: dict[str, str] = {}
     for role in SCAN_ROLES:
         agent_type, config_role = ROLE_DISPATCH.get(role, (None, None))
@@ -260,18 +263,18 @@ def budgets_sha256(cfg: dict | None = None) -> str:
 
 def config_snapshot(cfg: dict | None = None) -> dict:
     """决定线程数与前导的配置项(token_bom 用它把历史读数折到当前配置)。"""
-    from autoresearch.session_agent.config import session_cfg
+    from autoresearch.contracts.agent_roles import MAX_TURNS
 
     raw = _cfg(cfg)
     sector = raw.get("sector") or {}
-    session = session_cfg(raw)
+    session = raw.get("session") or {}
     return {
         "max_cards": int((raw.get("l4") or {}).get("max_cards", 13)),
         "pinned_cap": int((raw.get("pinned") or {}).get("cap", 5)),
         "sector_briefs": int(sector.get("max_briefs", 6)) + (3 if sector.get("healthy_top3_extra", True) else 0),
         "intel_enabled": bool((raw.get("l4_intel") or {}).get("enabled", False)),
-        "context": dict(session.get("context") or {}),
-        "max_turns": dict(session.get("max_turns") or {}),
+        "preamble": dict(session.get("preamble") or {}),
+        "max_turns": {**dict(MAX_TURNS), **dict(session.get("max_turns") or {})},
     }
 
 
@@ -289,7 +292,7 @@ def _median(values: list[float]) -> float | None:
 
 
 def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
-          sessions_root: Path | None = None) -> dict:
+          sessions_root: Path | None = None, consumption: dict[str, list[str]] | None = None) -> dict:
     """读 capsule 用量账本 → 每角色线程 / 调用 / 前导 / 输出 / 成本 + 宿主行 + 窗口点数。"""
     capsule = capsule or locate_capsule(run_id)
     meta = {}
@@ -357,9 +360,9 @@ def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
     for slot in roles.values():
         slot.update(calls_max=max(slot["calls"], default=0), calls_median=_median(slot["calls"]),
                     output_median=_median(slot["outputs"]), prefix_median=_median(slot["prefixes"]))
-    consumption = consumption_graph(run_id)
+    # 消费图由会话层算好传进来(``session_agent.redline_post``);本层不 import 会话层。没传 = 没量到。
     for role, slot in roles.items():
-        slot["consumers"] = consumption.get(role) if consumption is not None else None
+        slot["consumers"] = consumption.get(role, []) if consumption is not None else None
     totals = usage.get("totals") or {}
     readout.update(
         usage_status="MEASURED", roles=roles, host=host,
@@ -374,35 +377,6 @@ def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
                 if readout["engine"] == "codex" else {"status": "NOT_APPLICABLE"}),
     )
     return readout
-
-
-def consumption_graph(run_id: str) -> dict[str, list[str]] | None:
-    """冻结任务图里:每个推理角色已接受的产物被哪些下游任务(操作名 / 角色)声明为输入。
-
-    这是「生产者有没有接线」(FN-1 家族)的机械证据,不是决策影响:下游拿到 ≠ 改变了结论。
-    读不到工作区 = ``None``(没量到),不是「没人消费」。
-    """
-    try:
-        from autoresearch.session_agent import service, store
-        from autoresearch.trace.capsule import load_run
-
-        entries = store.read_entries(service._store_path(load_run(run_id)))
-    except Exception:  # noqa: BLE001 - an archived run without a readable workspace
-        return None
-    produced: dict[str, str] = {}
-    for entry in entries.values():
-        spec = entry.get("spec") or {}
-        if spec.get("kind") == "INFERENCE" and entry.get("state") == "SUCCEEDED":
-            for artifact in entry.get("accepted_artifacts") or spec.get("output_artifact_ids") or []:
-                produced[str(artifact)] = str(spec.get("role"))
-    graph: dict[str, set] = {role: set() for role in produced.values()}
-    for entry in entries.values():
-        spec = entry.get("spec") or {}
-        for artifact in spec.get("input_artifact_ids") or []:
-            role = produced.get(str(artifact))
-            if role is not None:
-                graph[role].add(str(spec.get("operation") or spec.get("role")))
-    return {role: sorted(consumers) for role, consumers in graph.items()}
 
 
 # ── 判定 ─────────────────────────────────────────────────────────────────────────
@@ -541,9 +515,11 @@ def evaluate(readout: dict, *, cfg: dict | None = None, previous: dict | None = 
 
 
 def _lock_findings(readout: dict, cfg: dict | None) -> list[dict]:
+    from autoresearch.contracts.agent_roles import dispatch_mapping
     from autoresearch.scan import token_rules
-    from autoresearch.session_agent.executors.base import ROLE_DISPATCH
     from autoresearch.trace.pricing import canonical_model_id
+
+    ROLE_DISPATCH = dispatch_mapping()
 
     engine = readout.get("engine")
     lock = token_rules.read_lock().get("entries") or {}
@@ -636,10 +612,11 @@ def write(readout: dict, *, cfg: dict | None = None) -> Path:
     return path
 
 
-def post_run(run_id: str, *, cfg: dict | None = None) -> dict:
-    """scan_run 场后调用:build → evaluate → write。绝不抛异常(返回 ``verdict=ERROR``)。"""
+def post_run(run_id: str, *, cfg: dict | None = None, consumption: dict[str, list[str]] | None = None) -> dict:
+    """场后:build → evaluate → write。绝不抛异常(返回 ``verdict=ERROR``)。生产入口是会话层的
+    ``python -m autoresearch.session_agent.redline_post``(它先算消费图);scan_run 以子进程调用。"""
     try:
-        readout = build(run_id, cfg=cfg)
+        readout = build(run_id, cfg=cfg, consumption=consumption)
         evaluate(readout, cfg=cfg, previous=previous_readout(run_id, readout.get("engine")))
         path = write(readout, cfg=cfg)
         return {"verdict": readout["verdict"], "path": str(path), "line": readout.get("line"),

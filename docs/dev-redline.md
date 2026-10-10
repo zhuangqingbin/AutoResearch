@@ -19,7 +19,7 @@
 | R4 | 每笔推理花费要有决策消费者 | FN-1 家族;intel 死票门 0 命中 | `agents.<role>.consumer` + lint R14;redline 消费图 | 缺消费者 → 红;连续 5 场无人消费 → 待裁清单 |
 | R5 | 预算是契约不是告警 | 10-08 第 2 场撞额度 | lint R11(静态成本清单)+ redline 场线 + 断路器 | 超 `budgets.declared` → 改动时 exit 2 / 场后 FAIL → 下一场 `REFUSED_BUDGET` |
 | R6 | 失败隔离到最小单元,不回退整场重跑 | 10-02~10-07 一个契约错 = 整场重来 | 补丁 04、`recover-task`、`--resume-run-id`;redline 记同日重跑 | 同日第 2 场起 `SAME_DATE_RERUN` |
-| R7 | 上下文只传指针与增量,前导与 agent 文件有预算 | 09-15 研究 agent 翻源码;AGENTS.md / MEMORY.md 注入每次调用 | `session.context`;`session.max_turns`;lint R10;redline 前导指纹 + 场中前导守卫 | agent 文件超 `budgets.agent_chars` → 红;前导 ×2 → 停派 `PREFIX_DRIFT` |
+| R7 | 上下文只传指针与增量,前导与 agent 文件有预算 | 09-15 研究 agent 翻源码;AGENTS.md / MEMORY.md 注入每次调用 | `session.preamble`;`session.max_turns`;lint R10;redline 前导指纹 + 场中前导守卫 | agent 文件超 `budgets.agent_chars` → 红;前导 ×2 → 停派 `PREFIX_DRIFT` |
 | R8 | 计量先于优化,估算不入台账,开发会话也算钱 | 账本 62 行重复;诊断量错对象;10-09 周额度 93% | `research.token_ledger` 周账本;复审规则 | 降本改动无前后真计量 → 复审拒 |
 
 预算线只降不升(lint R13,对 git HEAD):agent 不能自己抬线,人改 `budgets.declared` 那一行并提交即可。

@@ -640,9 +640,10 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         return delivery.notify(title, body)
 
     def redline_post(run_id: str) -> dict:
-        from autoresearch.scan import redline
-
-        return redline.post_run(run_id)
+        # 会话层入口(先算冻结任务图的消费图);scan 不 import session_agent,与 begin / run 同走子进程。
+        code, out = _call([sys.executable, "-m", "autoresearch.session_agent.redline_post", "--run-id", run_id],
+                          env=_env(), timeout=runner_cfg()["subprocess_timeout_s"], stderr=stream)
+        return _last_json(out) or {"verdict": "ERROR", "error": f"redline_post exit={code}"}
 
     def breaker() -> dict | None:
         from autoresearch.scan import redline
@@ -655,9 +656,10 @@ def default_steps(args, log: OpsLog | None) -> Steps:
         return redline.acknowledge(run_id, reason="scan_run --ack-redline")
 
     def replay_gate_step() -> dict:
-        from autoresearch.scan import replay_gate
-
-        return replay_gate.gate()
+        # 回放门要读会话层的任务库与校验器:子进程调用;FAIL 时它退出 1,结论以 JSON 为准。
+        code, out = _call([sys.executable, "-m", "autoresearch.session_agent.replay_gate", "--json-line"],
+                          env=_env(), timeout=runner_cfg()["subprocess_timeout_s"], stderr=stream)
+        return _last_json(out) or {"verdict": "ERROR", "error": f"replay_gate exit={code}"}
 
     return Steps(resolve_date=resolve_date, live_runs=live_scan_runs, wait_ready=wait_ready,
                  begin=begin, run=run, verify=verify, locate_brief=locate_brief,

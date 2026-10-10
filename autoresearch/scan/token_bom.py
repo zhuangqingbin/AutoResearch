@@ -72,7 +72,7 @@ def _driver(role: str, config: dict) -> float:
 def _prefix_tokens(engine: str, role: str, config: dict, chars: dict, coef: dict) -> float:
     """前导里会随配置 / agent 文件变的那部分 token(常量部分比差时相消)。"""
     tokens = coef["md_tokens_per_char"] * float(chars.get(ROLE_AGENT.get(role, ""), 0))
-    context = config.get("context") or {}
+    context = config.get("preamble") or {}
     if engine == "claude":
         if context.get("claude_auto_memory", False):
             tokens += coef["claude_auto_memory_tokens"]

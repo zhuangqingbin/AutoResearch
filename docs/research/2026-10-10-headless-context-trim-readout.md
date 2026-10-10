@@ -1,7 +1,7 @@
 # headless 研究线程前导瘦身读数(2026-10-10)
 
 两个引擎的 headless 研究线程都带着研究角色用不到的前导。量法全部零推理或单轮 `只回复 OK`;改动是
-`session.context` 三个键(注册表 + `session_cfg` + 两个执行器 + 测试),不碰模型、effort、评级、契约。
+`session.preamble` 三个键(注册表 + `session_cfg` + 两个执行器 + 测试),不碰模型、effort、评级、契约。
 
 ## Codex(`codex debug prompt-input`,零推理;开线程那一轮的模型可见输入)
 

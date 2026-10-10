@@ -48,7 +48,7 @@ launchctl list | grep nightly-close        # 只应剩 …nightly-close.claude(�
 2026-10-08 起这也是交互会话「分析全市场」的日常路径:宿主后台起它、等完成、读摘要,自己不进研究回路
 (`docs/session-agent/README.md`「日常全扫」)。`--engine` 缺省 claude(launchd 定时场);Codex 会话传 `--engine codex`,
 runner 以 `codex exec` 起每个推理任务(`executors/headless_codex.py`,开线程 → 绑定 → resume 三步,见 README「headless 执行器」)。
-两个引擎的研究线程都做了前导瘦身(`session.context`:codex 不读 AGENTS.md、skills 目录 1000 token;claude 不装自动记忆),
+两个引擎的研究线程都做了前导瘦身(`session.preamble`:codex 不读 AGENTS.md、skills 目录 1000 token;claude 不装自动记忆),
 改前改后的零推理读数在 `docs/research/2026-10-10-headless-context-trim-readout.md`。
 
 1. **锁** `$CTX/.scan_run.lock`(fcntl,进程死锁即放):被占 → 立刻退出、打印持锁 pid、推「未开」。

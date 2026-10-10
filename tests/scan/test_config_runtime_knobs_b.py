@@ -27,7 +27,7 @@ def test_session_cfg_follows_config(tmp_path, monkeypatch):
                                              "default_max_turns": 9,
                                              "mailbox": {"never_taken_factor": 2.0, "dead_heartbeats": 1},
                                              "max_attempts": 4, "runner": {"poll_seconds": 1.5},
-                                             "context": {"codex_skills_catalog_budget": 2000}}})
+                                             "preamble": {"codex_skills_catalog_budget": 2000}}})
     s = sc.session_cfg()
     assert s["timeouts"]["mailbox"]["scan.l3"] == 10 and s["timeouts"]["mailbox"]["scan.l4.card"] == 1800.0
     assert s["timeouts"]["headless"] == dict(headless_claude.HEADLESS_TIMEOUTS) and s["timeouts"]["fallback_s"] == 7
@@ -38,7 +38,7 @@ def test_session_cfg_follows_config(tmp_path, monkeypatch):
     assert s["mailbox"] == {"never_taken_factor": 2.0, "wait_s": 90.0, "dead_heartbeats": 1,
                             "by_reference": False}
     # 2026-10-10:研究线程前导瘦身三键,缺省 = 执行器常量(codex 不读 AGENTS.md、skills 目录 1000、claude 不装记忆)。
-    assert s["context"] == {"codex_project_doc_max_bytes": 0, "codex_skills_catalog_budget": 2000,
+    assert s["preamble"] == {"codex_project_doc_max_bytes": 0, "codex_skills_catalog_budget": 2000,
                             "claude_auto_memory": False}
     assert s["max_attempts"] == 4 and s["runner"] == {"poll_seconds": 1.5, "max_rounds": 20000,
                                                       "timeout_multiplier": 1.0, "fanout_warmup_s": 0.0}

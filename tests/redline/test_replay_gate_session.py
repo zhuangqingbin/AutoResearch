@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from autoresearch.common import workspace as ws
-from autoresearch.scan import replay_gate
+from autoresearch.session_agent import replay_gate
 
 
 def test_gate_takes_the_newest_readable_run_and_fails_on_regressions(monkeypatch):
@@ -13,7 +13,8 @@ def test_gate_takes_the_newest_readable_run_and_fails_on_regressions(monkeypatch
     def replay(run_id):
         if run_id == "r3":
             raise FileNotFoundError("not a session_v1 workspace")
-        return {"run_id": run_id, "checked": 4, "regressions": [{"task_id": "l4.x.card", "now": "REJECT"}]}
+        return {"run_id": run_id, "checked": 4, "roles": {"scan.l4.card": 4},
+                "regressions": [{"task_id": "l4.x.card", "now": "REJECT"}]}
 
     monkeypatch.setattr(replay_gate, "replay", replay)
     result = replay_gate.gate(acknowledged=lambda run_id: False)
@@ -24,7 +25,7 @@ def test_gate_takes_the_newest_readable_run_and_fails_on_regressions(monkeypatch
 def test_gate_passes_on_a_clean_replay_and_skips_runs_without_accepted_outputs(monkeypatch):
     monkeypatch.setattr(replay_gate, "candidate_runs", lambda: ["r2", "r1"])
     monkeypatch.setattr(replay_gate, "replay", lambda run_id: {"run_id": run_id, "checked": 0 if run_id == "r2" else 7,
-                                                               "regressions": []})
+                                                               "roles": {"scan.l4.card": 7}, "regressions": []})
     result = replay_gate.gate(acknowledged=lambda run_id: False)
     assert (result["verdict"], result["run_id"], result["checked"]) == ("PASS", "r1", 7)
 
@@ -60,3 +61,19 @@ def test_a_broken_validator_turns_every_accepted_output_into_a_regression(monkey
     monkeypatch.setattr(validation, "validate_registered_domain_contract", reject)
     broken = replay_gate.replay(run_id)
     assert len(broken["regressions"]) == broken["checked"] == clean["checked"]
+
+
+def test_gate_keeps_going_back_until_it_has_replayed_a_run_with_cards(monkeypatch):
+    # 10-08 #2 died seven minutes in with only the strategist accepted: not enough to vouch for the cards
+    monkeypatch.setattr(replay_gate, "candidate_runs", lambda: ["quota", "full", "older"])
+    calls = []
+
+    def replay(run_id):
+        calls.append(run_id)
+        roles = {"macro.brief": 1} if run_id == "quota" else {"scan.l4.card": 7, "scan.l4.intel": 7}
+        return {"run_id": run_id, "checked": sum(roles.values()), "roles": roles, "regressions": []}
+
+    monkeypatch.setattr(replay_gate, "replay", replay)
+    result = replay_gate.gate(acknowledged=lambda run_id: False)
+    assert calls == ["quota", "full"] and result["verdict"] == "PASS" and result["checked"] == 15
+    assert [run["run_id"] for run in result["runs"]] == ["quota", "full"]

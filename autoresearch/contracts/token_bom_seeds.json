@@ -19,7 +19,7 @@
     "pinned_cap": 5,
     "sector_briefs": 9,
     "intel_enabled": true,
-    "context": {
+    "preamble": {
      "claude_auto_memory": false
     }
    },
@@ -135,7 +135,7 @@
     "pinned_cap": 5,
     "sector_briefs": 9,
     "intel_enabled": true,
-    "context": {
+    "preamble": {
      "codex_project_doc_max_bytes": null,
      "codex_skills_catalog_budget": null
     }

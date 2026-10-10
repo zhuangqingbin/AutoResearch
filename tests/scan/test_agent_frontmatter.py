@@ -60,7 +60,7 @@ def test_intel_roles_stay_on_sonnet_and_judgement_roles_on_opus():
     assert want["l4-card"] == {"model": "claude-opus-5-5", "effort": "max", "maxTurns": "80",
                                "omitClaudeMd": "true", "roles": ["l4_card", "ens_review"]}
     assert want["l4-intel"]["model"] == "claude-sonnet-5-5"
-    assert want["sector-brief"] == {"model": "claude-opus-5-5", "effort": "xhigh", "maxTurns": "30",
+    assert want["sector-brief"] == {"model": "claude-opus-5-5", "effort": "xhigh", "maxTurns": "12",
                                     "omitClaudeMd": "true", "roles": ["sector_brief"]}
     assert want["l3-repair"]["effort"] == "medium"
 
@@ -237,11 +237,12 @@ def test_cli_checks_both_engines_by_default(tmp_path, capsys):
 
 @pytest.mark.parametrize("agent,turns", [
     ("l4-card", "80"),        # scan.l4.card / scan.l4.review / stock.card 取最大
-    ("l4-intel", "64"),
-    ("sector-brief", "30"),
-    ("l3-repair", "30"),
-    ("macro-brief", "50"),
-    ("l3-rank", "64"),
+    # 2026-10-10 M5:session.max_turns 按历史 p95×1.5 封顶(剔除 09-14/09-15 自验失控场),frontmatter 同源。
+    ("l4-intel", "35"),
+    ("sector-brief", "12"),
+    ("l3-repair", "10"),
+    ("macro-brief", "10"),
+    ("l3-rank", "12"),
 ])
 def test_max_turns_mirror_the_headless_role_caps(agent, turns):
     assert af.expected(_prod())[agent]["maxTurns"] == turns
@@ -270,5 +271,5 @@ def test_write_inserts_keys_the_frontmatter_does_not_have_yet(tmp_path):
     assert "l4-intel.md" in af.write(_prod(), agents_dir=agents)
 
     front = path.read_text(encoding="utf-8").split("\n---", 1)[0]
-    assert "\nmaxTurns: 64" in front and "\nomitClaudeMd: true" in front
+    assert "\nmaxTurns: 35" in front and "\nomitClaudeMd: true" in front
     assert af.check(_prod(), agents_dir=agents) == []

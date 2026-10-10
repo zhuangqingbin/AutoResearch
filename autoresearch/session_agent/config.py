@@ -36,7 +36,7 @@ def session_cfg(cfg: dict | None = None) -> dict:
     rn = knob("session", "runner", None, {}, cfg) or {}
     if not isinstance(rn, dict):
         rn = {}
-    cx = knob("session", "context", None, {}, cfg) or {}
+    cx = knob("session", "preamble", None, {}, cfg) or {}
     if not isinstance(cx, dict):
         cx = {}
     return {
@@ -58,7 +58,7 @@ def session_cfg(cfg: dict | None = None) -> dict:
                    "timeout_multiplier": float(rn.get("timeout_multiplier", 1.0)),
                    "fanout_warmup_s": float(rn.get("fanout_warmup_s", 0.0))},
         # 研究线程前导瘦身:codex 不装 skills 目录 / 不读项目 AGENTS.md,claude 不装自动记忆。
-        "context": {"codex_project_doc_max_bytes": int(cx.get("codex_project_doc_max_bytes", _hx.PROJECT_DOC_MAX_BYTES)),
+        "preamble": {"codex_project_doc_max_bytes": int(cx.get("codex_project_doc_max_bytes", _hx.PROJECT_DOC_MAX_BYTES)),
                     "codex_skills_catalog_budget": int(cx.get("codex_skills_catalog_budget",
                                                                   _hx.SKILLS_MAX_CONTEXT_TOKENS)),
                     "claude_auto_memory": bool(cx.get("claude_auto_memory", _hl.AUTO_MEMORY))},

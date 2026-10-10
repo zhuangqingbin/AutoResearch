@@ -241,7 +241,7 @@ class HeadlessClaudeExecutor:
         self.max_turns = {**MAX_TURNS, **_sc["max_turns"], **dict(max_turns or {})}
         self.kill_grace_seconds = float(kill_grace_seconds)
         if auto_memory is None:
-            auto_memory = (_sc.get("context") or {}).get("claude_auto_memory", AUTO_MEMORY)
+            auto_memory = (_sc.get("preamble") or {}).get("claude_auto_memory", AUTO_MEMORY)
         self.auto_memory = bool(auto_memory)
 
     # ── helpers ─────────────────────────────────────────────────────────────────
