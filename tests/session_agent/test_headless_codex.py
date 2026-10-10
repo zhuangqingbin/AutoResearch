@@ -419,3 +419,33 @@ def test_cli_build_executor_picks_the_codex_transport_for_a_codex_run(tmp_path):
     assert isinstance(executor, hx.HeadlessCodexExecutor)
     assert executor.codex_bin == "/opt/codex"
     assert executor.open_timeout_seconds == 180.0 and timeouts == dict(hx.HEADLESS_CODEX_TIMEOUTS)
+
+
+def test_both_turns_trim_the_skills_catalog_and_the_project_doc_as_bare_toml_ints(tmp_path, fake_env):
+    # 2026-10-10 zero-inference render (`codex debug prompt-input`): the skills catalog (17k chars)
+    # and the project AGENTS.md (6k chars) sat in every call of every research thread; no research
+    # role uses either.  Codex type-checks `-c` values, so the ints must be bare, never "0".
+    ex = _executor(tmp_path, _fake_codex(tmp_path))
+    ex.dispatch(_request(tmp_path))
+    for mode in ("open", "work"):
+        argv = _argv(tmp_path, mode)
+        assert "project_doc_max_bytes=0" in argv and "skills.max_context_tokens=1000" in argv, (mode, argv)
+    assert hx.PROJECT_DOC_MAX_BYTES == 0 and hx.SKILLS_MAX_CONTEXT_TOKENS == 1000
+
+
+def test_context_trims_follow_the_session_config_knob(tmp_path, monkeypatch):
+    from autoresearch.session_agent import config as session_config
+    monkeypatch.setattr(session_config, "session_cfg", lambda cfg=None: {
+        "timeouts": {"codex_open_s": 42.0},
+        "context": {"codex_project_doc_max_bytes": 7, "codex_skills_catalog_budget": 2000,
+                    "claude_auto_memory": False}})
+    ex = _executor(tmp_path, _fake_codex(tmp_path))
+    request = _request(tmp_path)
+    assert _override(ex.argv_open(request), "skills.max_context_tokens") == 2000
+    assert _override(ex.argv_work(request, THREAD, "p", tmp_path / "l.md"), "project_doc_max_bytes") == 7
+
+
+def test_toml_value_keeps_ints_and_bools_bare_so_codex_type_checks_pass():
+    assert hx.toml_value(0) == "0" and hx.toml_value(1000) == "1000"
+    assert hx.toml_value(True) == "true" and hx.toml_value(False) == "false"
+    assert hx.toml_value("0") == '"0"'

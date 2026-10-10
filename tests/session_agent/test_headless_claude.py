@@ -115,6 +115,8 @@ def test_argv_carries_the_required_flags_and_never_skips_permissions(tmp_path):
     assert argv[argv.index("--effort") + 1] == "max"
     assert "--model" not in argv                       # model=None: frontmatter decides
     assert "--dangerously-skip-permissions" not in argv
+    # 2026-10-10: research threads never load the auto-memory (MEMORY.md = user rulings + readouts).
+    assert json.loads(argv[argv.index("--settings") + 1]) == {"autoMemoryEnabled": False}
     assert argv[-1] == "执行 details/_l4_prompt_600000.md 的任务包,写决策卡"
 
 
@@ -791,3 +793,15 @@ def test_group_cancellation_stays_unconfirmed_without_observed_absence(tmp_path,
     assert ex._kill_group(Leader()) is (False if observable else None)
     assert hc.signal.SIGKILL in calls
     assert 5 <= clock[0] <= 5.2
+
+
+def test_auto_memory_is_off_unless_the_session_config_turns_it_on(tmp_path, monkeypatch):
+    from autoresearch.session_agent import config as session_config
+    real = session_config.session_cfg()
+    monkeypatch.setattr(session_config, "session_cfg",
+                        lambda cfg=None: {**real, "context": {**real["context"], "claude_auto_memory": True}})
+    ex = _executor(tmp_path, _fake_claude(tmp_path, _success_body(tmp_path)))
+    ex.dispatch(_request(tmp_path))
+    argv = (tmp_path / "bin" / "argv.txt").read_text(encoding="utf-8").splitlines()
+    assert "--settings" not in argv
+    assert hc.AUTO_MEMORY is False

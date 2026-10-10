@@ -189,11 +189,17 @@ intel 15m / card·复核 30m,**从 `.taken` 起算**;没人领的请求 4× 后�
 [--claude-bin <path>] [--codex-bin <path>]`:同一个 runner,推理任务不交宿主会话,按 run 的引擎选传输:
 
 - **claude run**:每个 attempt 起一个 `claude -p --agent <agent_type> --output-format json --permission-mode
-  bypassPermissions --session-id <uuid> --max-turns N [--effort] [--model]` 子进程(独立顶级会话 = 独立上下文;
-  项目 agent 定义与 hook 照常装载,见 `docs/research/2026-09-26-headless-driver-probes.md`)。
+  bypassPermissions --session-id <uuid> --max-turns N --settings '{"autoMemoryEnabled":false}' [--effort] [--model]`
+  子进程(独立顶级会话 = 独立上下文;项目 agent 定义与 hook 照常装载,见
+  `docs/research/2026-09-26-headless-driver-probes.md`)。`--settings` 关掉自动记忆:缺省它把 MEMORY.md 整个放进
+  研究线程的系统提示(l3-repair 实测 19,013 → 8,144 token;记忆是用户裁定与实跑读数,研究角色按 C4 不该看见),
+  开关 `session.context.claude_auto_memory`(缺省关)。
 - **codex run**(`executors/headless_codex.py`):每个 attempt 一个 `codex exec` 线程,分三步 —— ① 开线程:
   `codex exec --json -C <仓库根> --sandbox read-only -c approval_policy=never -c model=<角色档>
-  -c model_reasoning_effort=<角色档> -c developer_instructions=<.codex/agents/<role>.toml 原文> "<只回复 OK>"`,
+  -c model_reasoning_effort=<角色档> -c project_doc_max_bytes=0 -c skills.max_context_tokens=1000
+  -c developer_instructions=<.codex/agents/<role>.toml 原文> "<只回复 OK>"`(两个前导瘦身键两轮同声明:
+  研究线程不读项目 AGENTS.md、skills 目录压到最小,`codex debug prompt-input` 零推理实测开线程前导
+  35,955 → 14,062 字符;键 `session.context.codex_*`,读数 `docs/research/2026-10-10-headless-context-trim-readout.md`),
   从首个事件 `thread.started` 取 `thread_id`;② 按 `thread_id` 做 session 级 C4 绑定(hook 负载的 `session_id`
   就是线程 id,顶级线程没有 `agent_id`);③ 干活:`codex exec --json -o <末消息> --sandbox workspace-write resume
   -c approval_policy=never -c model=… -c model_reasoning_effort=… [-c web_search=live]

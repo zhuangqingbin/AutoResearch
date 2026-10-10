@@ -73,6 +73,11 @@ from autoresearch.trace.process_probe import owns_group, stop_group
 #: 开线程那一轮只为拿 thread id:档位与干活轮**必须相同**(换档会被注入 ``<model_switch>`` 基础提示词)。
 OPEN_PROMPT = "这是一个即将接收冻结研究任务的线程。现在只回复 OK;不要调用任何工具,不要读任何文件。"
 OPEN_TIMEOUT_S = 180.0
+#: 研究线程前导瘦身(零推理渲染 ``codex debug prompt-input`` 实测):skills 目录 17k 字符 + 项目 AGENTS.md
+#: 6k 字符躺在每个研究线程的每一次调用里,研究角色都用不到。两轮同声明,记录原样。
+#: 配置键叫 ``codex_skills_catalog_budget``:法证层把含 ``token`` 的键名一律当密钥拒绝(``identity._SECRET_KEY_RE``)。
+PROJECT_DOC_MAX_BYTES = 0
+SKILLS_MAX_CONTEXT_TOKENS = 1000
 #: Codex 侧每个角色的墙钟与 Claude headless 同一张表(``session.timeouts.headless`` 可逐 role 覆盖)。
 HEADLESS_CODEX_TIMEOUTS: Mapping[str, float] = MappingProxyType(dict(HEADLESS_TIMEOUTS))
 #: 订阅登录以外的任何计费 / 路由开关都不传给子进程(与 ``headless_claude.child_env`` 叠加)。
@@ -92,8 +97,13 @@ def codex_child_env(parent: Mapping[str, str] | None = None) -> tuple[dict[str, 
     return env, sorted(set(dropped) | set(extra))
 
 
-def toml_value(value: str) -> str:
-    """``-c key=<value>``:TOML basic string(``json.dumps`` 的转义集是 TOML basic string 的子集)。"""
+def toml_value(value: str | int | bool) -> str:
+    """``-c key=<value>``:bool / int 裸写(Codex 按 TOML 类型校验,``"0"`` 会被拒),其余 TOML basic
+    string(``json.dumps`` 的转义集是 TOML basic string 的子集)。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
     return json.dumps(str(value), ensure_ascii=True)
 
 
@@ -193,6 +203,7 @@ class HeadlessCodexExecutor:
         agents_dir: Path | str | None = None,
         kill_grace_seconds: float = 5.0,
         open_timeout_seconds: float | None = None,
+        context: Mapping[str, int] | None = None,
     ):
         self.staging = Path(staging)
         self.codex_bin = resolve_codex_bin(codex_bin)
@@ -200,11 +211,17 @@ class HeadlessCodexExecutor:
         self.sessions_root = Path(sessions_root) if sessions_root is not None else default_sessions_root()
         self.agents_dir = Path(agents_dir) if agents_dir is not None else self.cwd / DEFAULT_AGENTS_DIR
         self.kill_grace_seconds = float(kill_grace_seconds)
-        if open_timeout_seconds is None:
+        if open_timeout_seconds is None or context is None:
             from autoresearch.session_agent.config import session_cfg
 
-            open_timeout_seconds = session_cfg()["timeouts"]["codex_open_s"]
+            _sc = session_cfg()
+            if open_timeout_seconds is None:
+                open_timeout_seconds = _sc["timeouts"]["codex_open_s"]
+            if context is None:
+                context = _sc.get("context") or {}
         self.open_timeout_seconds = float(open_timeout_seconds)
+        self.project_doc_max_bytes = int(context.get("codex_project_doc_max_bytes", PROJECT_DOC_MAX_BYTES))
+        self.skills_max_context_tokens = int(context.get("codex_skills_catalog_budget", SKILLS_MAX_CONTEXT_TOKENS))
 
     # ── helpers ─────────────────────────────────────────────────────────────────
     def _record_dir(self) -> Path:
@@ -226,9 +243,14 @@ class HeadlessCodexExecutor:
             values["model_reasoning_effort"] = str(request.effort)
         return values
 
-    def open_overrides(self, request: DispatchRequest) -> dict[str, str]:
-        """``-c`` overrides of the open turn: the role's tier and its developer instructions."""
-        values = {"approval_policy": "never", **self._tier(request)}
+    def _context_overrides(self) -> dict[str, int]:
+        """前导瘦身,两轮同声明:研究线程不装 skills 目录、不读项目 AGENTS.md(角色契约走 developer_instructions)。"""
+        return {"project_doc_max_bytes": self.project_doc_max_bytes,
+                "skills.max_context_tokens": self.skills_max_context_tokens}
+
+    def open_overrides(self, request: DispatchRequest) -> dict[str, str | int]:
+        """``-c`` overrides of the open turn: the role's tier, its developer instructions, the context trims."""
+        values = {"approval_policy": "never", **self._tier(request), **self._context_overrides()}
         instructions = developer_instructions(self.agents_dir, request.config_role)
         if instructions:
             values["developer_instructions"] = instructions
@@ -240,9 +262,9 @@ class HeadlessCodexExecutor:
             argv += ["-c", f"{key}={toml_value(value)}"]
         return [*argv, OPEN_PROMPT]
 
-    def overrides(self, request: DispatchRequest) -> dict[str, str]:
+    def overrides(self, request: DispatchRequest) -> dict[str, str | int]:
         """``-c`` overrides of the work turn, in a fixed order (recorded verbatim)."""
-        values = {"approval_policy": "never", **self._tier(request)}
+        values = {"approval_policy": "never", **self._tier(request), **self._context_overrides()}
         web = request.agent_spec.get("web_search")
         if web:
             values["web_search"] = str(web)
