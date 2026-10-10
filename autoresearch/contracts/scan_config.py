@@ -437,6 +437,13 @@ KEYS: tuple[Key, ...] = (
     Key("budgets", "relative", kind=KIND_GROUP, type="dict", default=None,
         children=("window", "min_runs", "warn_ratio", "alarm_ratio"),
         consumers=("autoresearch.scan.budget:_relative_policy",)),
+    Key("budgets", "declared", kind=KIND_GROUP, type="dict", default=None,
+        children=("claude_run_usd", "codex_run_window_points"),
+        consumers=("autoresearch.scan.budget:_declared_policy", "autoresearch.scan.redline:evaluate")),
+    Key("budgets", "envelope", kind=KIND_GROUP, type="dict", default=None,
+        children=("host_weighted_max", "prefix_drift_warn", "prefix_drift_fail", "output_drift_warn",
+                  "ratchet_margin", "idle_runs"),
+        consumers=("autoresearch.scan.budget:_envelope_policy", "autoresearch.scan.redline:evaluate")),
     # ── prelude ──
     Key("prelude", "skip_steps", kind=KIND_DATA, type="str_list", default=None,
         consumers=("autoresearch.scan.prelude:configured_skip_steps",)),

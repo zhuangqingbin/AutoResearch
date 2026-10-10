@@ -871,3 +871,95 @@ def test_headless_request_matches_the_documented_scan_request_contract():
     varying = {"analysis_date", "host_profile", "force_full"}
     assert {k: v for k, v in request.items() if k not in varying} == {
         k: v for k, v in example.items() if k not in varying}
+
+
+# ── 2026-10-10 token growth guard: post-run redline readout + opening breaker (M3 / M4) ──────
+
+def _guarded(steps: _Steps, *, redline=None, breaker=None, acked=None):
+    import dataclasses
+
+    acked = acked if acked is not None else []
+
+    def record(run_id):
+        steps.calls.append("redline")
+        if isinstance(redline, Exception):
+            raise redline
+        return redline or {"verdict": "PASS", "findings": []}
+
+    def ack(run_id):
+        steps.calls.append("ack")
+        acked.append(run_id)
+
+    built = steps.as_steps()
+    return dataclasses.replace(built, redline=record, breaker=lambda: breaker, ack_breaker=ack)
+
+
+def _run_guarded(tmp_path, steps, guarded, **arg_changes) -> int:
+    log = scan_run.OpsLog(tmp_path / "reports_claude" / "_ops" / "scan_run_test.log")
+    try:
+        return scan_run.run_once(_args(**arg_changes), guarded, log=log)
+    finally:
+        log.close()
+
+
+def test_success_records_the_redline_after_verify_without_changing_the_outcome(roots):
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, redline={"verdict": "FAIL", "findings": ["FAIL:RUN_OVER_LINE"]}))
+    assert code == scan_run.EXIT_OK                                  # a readout never blocks delivery
+    assert steps.calls.index("verify") < steps.calls.index("redline") < steps.calls.index("deliver")
+    summary = _summary(roots)
+    assert summary["result"] == "FINISHED" and summary["redline"]["verdict"] == "FAIL"
+
+
+def test_sealed_failure_is_measured_too_but_a_recoverable_stop_is_not(roots):
+    steps = _Steps(roots, outcome={"finished": False, "stop_reason": "BLOCKED", "errors": [], "dispatches": []})
+    _run_guarded(roots, steps, _guarded(steps))
+    assert steps.calls.index("finalize_failed") < steps.calls.index("redline")
+    paused = _Steps(roots, outcome={"finished": False, "stop_reason": "USAGE_LIMIT", "recoverable": True,
+                                    "recovery_tasks": [], "errors": [], "dispatches": []})
+    _run_guarded(roots, paused, _guarded(paused))
+    assert "redline" not in paused.calls                             # the run is not over yet
+
+
+def test_a_crashing_readout_is_logged_not_raised(roots):
+    steps = _Steps(roots)
+    assert _run_guarded(roots, steps, _guarded(steps, redline=RuntimeError("boom"))) == scan_run.EXIT_OK
+    assert _summary(roots)["redline"]["verdict"] == "ERROR"
+
+
+def test_an_unacknowledged_breaker_refuses_a_new_run_before_waiting_for_the_lake(roots):
+    breaker = {"run_id": "20261009T130000000000Z", "readout": "/x.json",
+               "findings": [{"level": "FAIL", "code": "PREFIX_DRIFT"}]}
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, breaker=breaker))
+    assert code == scan_run.EXIT_FAILED
+    assert "wait_ready" not in steps.calls and "begin" not in steps.calls
+    summary = _summary(roots)
+    assert summary["result"] == "REFUSED_BUDGET" and summary["breaker"]["run_id"] == breaker["run_id"]
+    [(title, body)] = steps.notified
+    assert "--ack-redline 20261009T130000000000Z" in body and "PREFIX_DRIFT" in body
+
+
+def test_ack_redline_for_that_run_releases_the_breaker(roots):
+    breaker = {"run_id": "20261009T130000000000Z", "findings": []}
+    steps, acked = _Steps(roots), []
+    code = _run_guarded(roots, steps, _guarded(steps, breaker=breaker, acked=acked),
+                        ack_redline="20261009T130000000000Z")
+    assert code == scan_run.EXIT_OK and acked == ["20261009T130000000000Z"] and "begin" in steps.calls
+
+
+def test_ack_for_another_run_does_not_release_it(roots):
+    breaker = {"run_id": "20261009T130000000000Z", "findings": []}
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, breaker=breaker), ack_redline="20260101T000000000000Z")
+    assert code == scan_run.EXIT_FAILED and "ack" not in steps.calls
+
+
+def test_resume_with_ack_for_the_same_run_acknowledges_before_resuming(roots):
+    steps, acked = _Steps(roots), []
+    guarded = _guarded(steps, acked=acked)
+    import dataclasses
+
+    guarded = dataclasses.replace(guarded, resume=lambda run_id: DATE)
+    _run_guarded(roots, steps, guarded, resume_run_id=RUN_ID, ack_redline=RUN_ID)
+    assert acked == [RUN_ID] and "begin" not in steps.calls

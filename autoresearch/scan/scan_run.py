@@ -257,6 +257,18 @@ def _unknown_channel() -> str:
     return "unknown"
 
 
+def _no_redline(run_id: str) -> dict:
+    return {"verdict": "SKIPPED"}
+
+
+def _no_breaker() -> dict | None:
+    return None
+
+
+def _no_ack(run_id: str):
+    return None
+
+
 def _resume_unavailable(run_id: str) -> str:
     raise RuntimeError("resume validation is unavailable")
 
@@ -332,6 +344,12 @@ class Steps:
     channel: Callable[[], str] = _unknown_channel
     #: Validate engine, headless owner, frozen request and resumable business state.
     resume: Callable[[str], str] = _resume_unavailable
+    #: 场后真计量红线(``scan.redline.post_run``):本场判定,FAIL 写断路器;绝不改退出码。
+    redline: Callable[[str], dict] = _no_redline
+    #: 未确认的断路器(上一场 redline FAIL)→ 本场开场拒开。
+    breaker: Callable[[], dict | None] = _no_breaker
+    #: ``--ack-redline <run_id>``:确认断路器后放行。
+    ack_breaker: Callable[[str], object] = _no_ack
 
 
 class ScanRunInterrupted(BaseException):
@@ -615,11 +633,27 @@ def default_steps(args, log: OpsLog | None) -> Steps:
 
         return delivery.notify(title, body)
 
+    def redline_post(run_id: str) -> dict:
+        from autoresearch.scan import redline
+
+        return redline.post_run(run_id)
+
+    def breaker() -> dict | None:
+        from autoresearch.scan import redline
+
+        return redline.active_breaker()
+
+    def ack_breaker(run_id: str):
+        from autoresearch.scan import redline
+
+        return redline.acknowledge(run_id, reason="scan_run --ack-redline")
+
     return Steps(resolve_date=resolve_date, live_runs=live_scan_runs, wait_ready=wait_ready,
                  begin=begin, run=run, verify=verify, locate_brief=locate_brief,
                  deliver=deliver, finalize_failed=finalize_failed, notify=notify,
                  sweep=_terminate_inflight_headless, now=datetime.now,
-                 missed_date=missed_date, channel=channel, resume=resume)
+                 missed_date=missed_date, channel=channel, resume=resume,
+                 redline=redline_post, breaker=breaker, ack_breaker=ack_breaker)
 
 
 # ── orchestration ───────────────────────────────────────────────────────────────
@@ -674,6 +708,7 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
                                                    "message": reason, "log": str(log.path)})
                 except Exception as exc:  # noqa: BLE001
                     log.line(f"capsule finalize FAILED 失败:{type(exc).__name__}: {exc}")
+                record_redline(run_id)
         if recoverable:
             summary.update(recovery_tasks=recovery_tasks or [],
                            resume_command=f"scripts/scan_run.sh --engine {ws.ENGINE} --resume-run-id {run_id}")
@@ -684,12 +719,23 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
              + f" · 日志 {log.path}")
         return finish(EXIT_FAILED, result, stage=stage, reason=reason, stop_reason=stop)
 
+    def record_redline(run_id: str) -> None:
+        """场后真计量:失败的 run 研究也付过钱,同样要量;任何异常只记一行。"""
+        try:
+            result = steps.redline(run_id)
+        except Exception as exc:  # noqa: BLE001 - the readout never changes the outcome
+            result = {"verdict": "ERROR", "error": f"{type(exc).__name__}: {exc}"[:300]}
+        summary["redline"] = result
+        log.line(f"redline · {result.get('verdict')}"
+                 + (f" · {', '.join(result.get('findings') or [])}" if result.get("findings") else "")
+                 + (f" · {result.get('error')}" if result.get("error") else ""))
+
     log.line("start")
     if channel == "none":
         log.line(NO_CHANNEL_WARNING)
     try:
         return _flow(args, steps, log=log, summary=summary, state=state,
-                     finish=finish, tell=tell, abort=abort)
+                     finish=finish, tell=tell, abort=abort, record_redline=record_redline)
     except ScanRunInterrupted as exc:
         return abort(state["stage"], f"收到 {exc.name}(launchctl bootout / kickstart -k / "
                      "关机 / 关终端),已停 runner 与在飞 claude -p", "INTERRUPTED", "SIGNAL")
@@ -699,7 +745,7 @@ def run_once(args, steps: Steps, *, log: OpsLog) -> int:
 
 
 def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
-          finish, tell, abort) -> int:
+          finish, tell, abort, record_redline=lambda run_id: None) -> int:
     explicit = getattr(args, "date", None)
     resume_id = getattr(args, "resume_run_id", None)
     if resume_id:
@@ -745,6 +791,28 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
     held = live_manual_run()
     if held is not None:
         return held
+
+    # 断路器(token 防膨胀 M4):上一场 redline FAIL 且未确认 → 不开新场(恢复原 run 不受限)。
+    # 恢复一个被场中前导守卫停下的 run:同一个 run_id 的 --ack-redline 让守卫让路。
+    if resume_id and getattr(args, "ack_redline", None) == resume_id:
+        steps.ack_breaker(resume_id)
+        log.line(f"恢复前确认红线:--ack-redline {resume_id}")
+    if not resume_id:
+        state["stage"] = "redline_breaker"
+        breaker = steps.breaker()
+        ack = getattr(args, "ack_redline", None)
+        if breaker is not None and ack and ack == breaker.get("run_id"):
+            steps.ack_breaker(ack)
+            log.line(f"断路器已确认:--ack-redline {ack}")
+            breaker = None
+        if breaker is not None:
+            reasons = ", ".join(str(item.get("code")) for item in breaker.get("findings") or []) or "?"
+            log.line(f"上一场 {breaker.get('run_id')} redline FAIL({reasons}),断路器未确认,不开新场")
+            tell(f"扫描 {date} 未开",
+                 f"上一场 {breaker.get('run_id')} redline FAIL({reasons})· 看 {breaker.get('readout')} 后"
+                 f" scripts/scan_run.sh --engine {ws.ENGINE} --ack-redline {breaker.get('run_id')} · 日志 {log.path}")
+            return finish(EXIT_FAILED, "REFUSED_BUDGET", stage="redline_breaker",
+                          breaker={key: breaker.get(key) for key in ("run_id", "readout", "findings")})
 
     state["stage"] = "readiness"
     if not resume_id and not getattr(args, "skip_readiness", False) and not steps.wait_ready(date, deadline):
@@ -809,6 +877,7 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
     verified = all(verification.get(key) is True for key in VERIFY_KEYS)
     log.line(f"finished · canonical={canonical} · verify-report "
              + " ".join(f"{key}={verification.get(key)}" for key in VERIFY_KEYS))
+    record_redline(run_id)
     state["stage"] = "deliver"
     brief = steps.locate_brief(run_id, canonical)
     report_dir = str(brief.parent) if brief is not None else canonical
@@ -859,6 +928,8 @@ def main(argv: list[str] | None = None) -> int:
                                  description="无人值守一场全 A 扫描(headless;launchd 21:20)")
     ap.add_argument("--date", help="显式数据日(须为交易日;缺省 = 今天,非交易日静默退出)")
     ap.add_argument("--resume-run-id", help="恢复原 ACTIVE headless run;不重新 begin 或取数")
+    ap.add_argument("--ack-redline", metavar="RUN_ID",
+                    help="确认上一场 redline 断路器(看过 $RPT/_ops/redline/<RUN_ID>.json 之后)并放行本场")
     ap.add_argument("--deadline", default=readiness.DEADLINE, help="湖就绪等待截止 HH:MM")
     ap.add_argument("--skip-readiness", action="store_true", help="不等 stk_factor_pro(补跑用)")
     ap.add_argument("--claude-bin", help="claude CLI 路径(缺省 PATH / ~/.local/bin/claude;claude 场)")

@@ -28,6 +28,12 @@ DEFAULT_BUDGETS = {
                  "phase2": {"cost_reduction": 0.25, "p50": 65, "p90": 90}},
     # 相对预算带(`scan.run_drift.relative`):对近期已发布真实扫描中位数的倍数。
     "relative": {"window": 10, "min_runs": 3, "warn_ratio": 1.5, "alarm_ratio": 2.0},
+    # 每场预算线(`scan.redline` 场后判定 / `scan.token_bom` 改动时判定):claude 研究 API 等价美元,
+    # codex 5h 窗口点数。只许下调(config_standard R13);上调由人改这一行。
+    "declared": {"claude_run_usd": 41.0, "codex_run_window_points": 92.0},
+    # 场后信封(`scan.redline`):宿主零研究、前导 / 输出漂移倍数、棘轮余量、闲置角色判定场数。
+    "envelope": {"host_weighted_max": 100_000, "prefix_drift_warn": 1.2, "prefix_drift_fail": 2.0,
+                 "output_drift_warn": 2.0, "ratchet_margin": 1.15, "idle_runs": 5},
 }
 
 
@@ -45,6 +51,39 @@ def _relative_policy(raw: dict | None) -> dict:
         raise ValueError("budgets.relative 须满足 1 < warn_ratio <= alarm_ratio")
     return {"window": window, "min_runs": min_runs, "warn_ratio": float(warn),
             "alarm_ratio": float(alarm)}
+
+
+def _declared_policy(raw: dict | None) -> dict:
+    """`budgets.declared` → 每场预算线;非法即 ValueError。"""
+    merged = {**DEFAULT_BUDGETS["declared"], **(raw or {})}
+    out = {}
+    for key, value in merged.items():
+        number = _finite_number(value, allow_zero=False)
+        if key not in DEFAULT_BUDGETS["declared"] or number is None:
+            raise ValueError(f"budgets.declared.{key} 须为已登记的正数")
+        out[key] = number
+    return out
+
+
+def _envelope_policy(raw: dict | None) -> dict:
+    """`budgets.envelope` → 场后信封;倍数须 > 1 且 warn <= fail,计数须为正整数。"""
+    merged = {**DEFAULT_BUDGETS["envelope"], **(raw or {})}
+    if set(merged) != set(DEFAULT_BUDGETS["envelope"]):
+        raise ValueError(f"budgets.envelope 未登记的键:{sorted(set(merged) - set(DEFAULT_BUDGETS['envelope']))}")
+    out = {}
+    for key, value in merged.items():
+        number = _finite_number(value, allow_zero=False)
+        if number is None:
+            raise ValueError(f"budgets.envelope.{key} 须为正数")
+        out[key] = number
+    if any(out[key] <= 1 for key in ("prefix_drift_warn", "prefix_drift_fail", "output_drift_warn", "ratchet_margin")):
+        raise ValueError("budgets.envelope 的倍数须 > 1")
+    if out["prefix_drift_warn"] > out["prefix_drift_fail"]:
+        raise ValueError("budgets.envelope 须满足 prefix_drift_warn <= prefix_drift_fail")
+    if out["idle_runs"] != int(out["idle_runs"]):
+        raise ValueError("budgets.envelope.idle_runs 须为正整数")
+    out["idle_runs"] = int(out["idle_runs"])
+    return out
 
 
 def _finite_number(value, *, allow_zero: bool) -> float | None:
@@ -95,6 +134,8 @@ def normalize_budgets(raw: dict | None) -> dict:
             for ph in ("phase1", "phase2")
         },
         "relative": _relative_policy(raw.get("relative")),
+        "declared": _declared_policy(raw.get("declared")),
+        "envelope": _envelope_policy(raw.get("envelope")),
     }
 
 

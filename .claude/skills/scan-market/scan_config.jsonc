@@ -331,7 +331,7 @@
     }
   },
 
-  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy
+  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy · scan/budget._declared_policy · scan/redline.evaluate · scan/budget._envelope_policy
   "budgets": {
     "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
     "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED,不截断)
@@ -350,6 +350,18 @@
       "min_runs": 3,                   // 基线不足此数 = NO_BASELINE
       "warn_ratio": 1.5,               // 任一指标达此倍数 = ELEVATED
       "alarm_ratio": 2.0               // 任一指标达此倍数 = SPIKE
+    },
+    "declared": {                      // 每场预算线:超线 → 下一场开场断路;只许下调
+      "claude_run_usd": 41.0,          // claude 一场研究的 API 等价美元上限
+      "codex_run_window_points": 92    // codex 一场占 5h 窗口的百分点上限
+    },
+    "envelope": {                      // 场后信封(redline 判定)
+      "host_weighted_max": 100000,     // 宿主行加权输入上限(宿主不进研究回路)
+      "prefix_drift_warn": 1.2,        // 每角色前导中位对上一场的告警倍数
+      "prefix_drift_fail": 2.0,        // 每角色前导中位对上一场的断路倍数
+      "output_drift_warn": 2.0,        // 每角色输出中位对上一场的告警倍数(身份同变则断路)
+      "ratchet_margin": 1.15,          // 本场花费低于 线/此倍数 时建议把线降到 花费×此倍数
+      "idle_runs": 5                   // 连续几场零消费的角色列入待裁清单
     }
   },
 

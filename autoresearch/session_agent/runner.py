@@ -208,6 +208,7 @@ class Runner:
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], str] = _now,
         fanout_warmup_s: float = 0.0,
+        prefix_guard=None,
     ):
         if type(max_parallel) is not int or max_parallel < 1:
             raise ValueError("max_parallel must be a positive integer")
@@ -216,6 +217,9 @@ class Runner:
         # B8(2026-10-03):并行扇出预热。同一角色第一份派发之后,其余等它领先这么多秒再发 ——
         # 并发请求读不到彼此的 prompt 缓存,同时发 N 份就是 N 次写同一个前缀。0 = 关。
         self.fanout_warmup_s = float(fanout_warmup_s)
+        # token 防膨胀 M4(2026-10-10):每角色第一个完成线程的前导对上一场翻倍 → 停派(见 scan.redline)。
+        self.prefix_guard = prefix_guard
+        self._prefix_drift: dict | None = None
         self._monotonic = monotonic
         self._role_first_start: dict[str, float] = {}
         if not heartbeat_seconds > 0:
@@ -414,6 +418,16 @@ class Runner:
                 rounds += 1
                 progressed = self._harvest()
                 self._bind_late_evidence()
+                if self._prefix_drift is not None:
+                    # Same drain as a capacity pause: finish what is paid for, start nothing new.
+                    if not self._inflight:
+                        state = service.next(self.run_id, handle_loader=self.hooks.handle_loader)
+                        outcome = self._outcome(state, rounds, "PREFIX_DRIFT")
+                        break
+                    self._beat()
+                    if not progressed:
+                        self._sleep(self.poll_seconds)
+                    continue
                 capacity = self._capacity_pending()
                 if capacity:
                     # Drain already-paid work, but never fan out or automatically retry
@@ -477,6 +491,18 @@ class Runner:
             self._heartbeat = now
             self._write_status("RUNNING")
 
+    def _observe_prefix(self, task: dict, result) -> None:
+        if self.prefix_guard is None or self._prefix_drift is not None:
+            return
+        try:
+            drift = self.prefix_guard.observe(str(task.get("role") or ""), getattr(result, "transcript_path", None))
+        except Exception as exc:  # noqa: BLE001 - a guard fault must never fail the task
+            self._event("PREFIX_GUARD_FAILED", task_id=task["task_id"], message=str(exc))
+            return
+        if drift:
+            self._prefix_drift = drift
+            self._event("PREFIX_DRIFT", task_id=task["task_id"], **drift)
+
     def _outcome(self, state: dict | None, rounds: int, stop_reason: str, *,
                  finished: bool = False, finish: dict | None = None) -> dict:
         value = {
@@ -506,9 +532,14 @@ class Runner:
                                    "error_class": code})
         value["recoverable"] = (not finished and any(
             row["error_class"] == "USAGE_LIMIT" for row in recoveries)) or (
-                                stop_reason in {"USAGE_LIMIT", "FINISH_FAILED"}
+                                stop_reason in {"USAGE_LIMIT", "FINISH_FAILED", "PREFIX_DRIFT"}
                                 or (stop_reason == "BLOCKED" and bool(recoveries)))
         value["recovery_tasks"] = recoveries
+        if self._prefix_drift is not None:
+            value["prefix_drift"] = dict(self._prefix_drift)
+            value["errors"].append({"message": (
+                f"PREFIX_DRIFT {self._prefix_drift['role']} 前导 {self._prefix_drift['prefix']} = 上一场中位 "
+                f"×{self._prefix_drift['ratio']};查明后 --resume-run-id {self.run_id} --ack-redline {self.run_id}")})
         self._event("RUNNER_STOPPED", stop_reason=stop_reason, status=value["status"],
                     finished=finished)
         return json.loads(json.dumps(value, default=str))
@@ -855,6 +886,7 @@ class Runner:
             self._fail(flight, classify_error(result.error, result.error_class),
                        result.error or "executor reported failure", result)
             return
+        self._observe_prefix(task, result)
         outputs = []
         for artifact_id in task["output_artifact_ids"]:
             try:

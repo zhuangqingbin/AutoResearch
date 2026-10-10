@@ -5,6 +5,7 @@ The host loop itself is documented once, in ``docs/session-agent/README.md``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 #: ``run`` exit code when the runner stopped without finishing (BLOCKED / STALLED / …).
@@ -67,6 +68,14 @@ def run_command(args) -> tuple[dict, int]:
     handle = _handle(args.run_id)
     executor, timeouts = _build_executor(args, handle)
     options = {"timeouts": timeouts} if timeouts is not None else {}
+    if getattr(args, "executor", None) == "headless":
+        from autoresearch.scan import redline
+
+        try:
+            options["prefix_guard"] = redline.PrefixGuard.for_run(args.run_id, engine=handle.engine)
+        except Exception as exc:  # noqa: BLE001 - no baseline readable = no guard, never no run
+            print(json.dumps({"event": "PREFIX_GUARD_UNAVAILABLE", "message": str(exc)}, ensure_ascii=False),
+                  file=sys.stderr, flush=True)
     try:
         outcome = runner.run_loop(
             args.run_id,

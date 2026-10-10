@@ -649,3 +649,48 @@ def test_validation_repair_is_a_separate_named_retry_class():
     assert retry.VALIDATION_REPAIR == frozenset({"DOMAIN_VALIDATION"})
     assert not (retry.VALIDATION_REPAIR & retry.TASK_ATTEMPT)      # never merged, by doctrine
     assert "DOMAIN_VALIDATION" not in retry.INTEL_RESEARCH
+
+
+# ── 2026-10-10 token growth guard M4: the in-run prefix guard ─────────────────────────────────
+
+class _TranscriptExecutor(_FakeExecutor):
+    """Like the fake executor, plus a Claude-shaped transcript whose first call has ``prefix`` tokens."""
+
+    def __init__(self, folder: Path, prefix: int, **kwargs):
+        super().__init__(**kwargs)
+        self.folder, self.prefix = folder, prefix
+
+    def dispatch(self, request):
+        import dataclasses
+
+        result = super().dispatch(request)
+        path = self.folder / f"{request.task_id}-a{request.attempt}.jsonl"
+        path.write_text(json.dumps({"type": "assistant", "message": {"id": "m", "usage": {
+            "input_tokens": self.prefix, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}}) + "\n",
+            encoding="utf-8")
+        return dataclasses.replace(result, transcript_path=str(path))
+
+
+def _guarded_run(tmp_path, monkeypatch, prefix: int):
+    from autoresearch.scan.redline import PrefixGuard
+
+    tasks = [det("synthetic.root")] + [inf(f"synthetic.inference.{i}", deps=["synthetic.root"]) for i in range(3)]
+    run = begin_synthetic_run(tmp_path, monkeypatch, tasks)
+    ex = _TranscriptExecutor(tmp_path, prefix)
+    outcome = runner.run_loop(run.run_id, ex, max_parallel=1, poll_seconds=0.01, max_rounds=500,
+                              hooks=run.hooks(), prefix_guard=PrefixGuard({"stock.card": 1000.0}, 2.0))
+    return outcome, ex
+
+
+def test_a_doubled_first_thread_prefix_stops_new_dispatches_and_keeps_the_run_recoverable(tmp_path, monkeypatch):
+    outcome, ex = _guarded_run(tmp_path, monkeypatch, prefix=5000)
+    assert outcome["stop_reason"] == "PREFIX_DRIFT" and outcome["recoverable"] is True
+    assert outcome["prefix_drift"]["role"] == "stock.card" and outcome["prefix_drift"]["ratio"] == 5.0
+    assert len(ex.calls) == 1                         # one thread burned, not the whole run
+    assert any("--ack-redline" in str(item.get("message")) for item in outcome["errors"])
+
+
+def test_a_normal_prefix_lets_the_run_finish(tmp_path, monkeypatch):
+    outcome, ex = _guarded_run(tmp_path, monkeypatch, prefix=1500)
+    assert outcome["finished"] is True and len(ex.calls) == 3
+    assert "prefix_drift" not in outcome
