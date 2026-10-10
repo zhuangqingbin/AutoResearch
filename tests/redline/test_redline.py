@@ -260,3 +260,36 @@ def test_a_model_outside_the_tier_lock_fails(roots):
     _capsule(roots, RUN, rows)
     readout = redline.evaluate(redline.build(RUN, cfg=_cfg()), cfg=_cfg())
     assert [f["code"] for f in readout["findings"] if f["level"] == "FAIL"] == ["MODEL_NOT_LOCKED"]
+
+
+def test_an_unconsumed_role_warns_and_five_in_a_row_become_an_idle_role(roots, monkeypatch):
+    monkeypatch.setattr(redline, "consumption_graph",
+                        lambda run_id: {"scan.l4.card": ["scan.l4.finalize"], "scan.l4.intel": []})
+    cfg = _cfg()
+    for day in range(1, 5):
+        run_id = f"2026100{day}T130000000000Z"
+        _capsule(roots, run_id, _rows(roots / f"d{day}"), date=f"2026-10-0{day}")
+        redline.post_run(run_id, cfg=cfg)
+    _capsule(roots, RUN, _rows(roots / "t"))
+    readout = redline.evaluate(redline.build(RUN, cfg=cfg), cfg=cfg)
+    assert readout["roles"]["scan.l4.card"]["consumers"] == ["scan.l4.finalize"]
+    assert any(f["code"] == "UNCONSUMED" and f.get("role") == "scan.l4.intel" for f in readout["findings"])
+    assert readout["idle_roles"] == ["scan.l4.intel"]
+
+
+def test_no_readable_workspace_means_consumption_is_unmeasured_not_zero(roots):
+    _capsule(roots, RUN, _rows(roots / "t"))
+    readout = redline.evaluate(redline.build(RUN, cfg=_cfg()), cfg=_cfg())
+    assert readout["roles"]["scan.l4.card"]["consumers"] is None
+    assert not [f for f in readout["findings"] if f["code"] in {"UNCONSUMED", "IDLE_ROLE"}]
+
+
+def test_the_real_archived_run_has_a_consumer_for_every_research_role():
+    from autoresearch.scan import replay_gate
+
+    for run_id in replay_gate.candidate_runs():
+        graph = redline.consumption_graph(run_id)
+        if graph:
+            assert all(consumers for consumers in graph.values()), graph
+            return
+    pytest.skip("no archived scan run with a readable workspace")

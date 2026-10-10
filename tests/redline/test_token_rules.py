@@ -140,3 +140,18 @@ def test_raising_a_declared_line_above_git_head_is_red(tmp_path):
     [(rule, where, _)] = token_rules.lint_declared_ratchet(higher, config, repo_root=tmp_path)
     assert (rule, where) == ("R13", "budgets.declared.claude_run_usd")
     assert token_rules.lint_declared_ratchet(higher, tmp_path / "elsewhere.jsonc", repo_root=tmp_path) == []
+
+
+# ── R14 every role declares its decision consumer ────────────────────────────────
+
+def test_the_live_roles_all_declare_a_known_consumer(live_cfg):
+    assert token_rules.lint_role_consumers(live_cfg) == []
+
+
+def test_a_role_without_or_with_an_unknown_consumer_is_red(live_cfg):
+    cfg = json.loads(json.dumps(live_cfg))
+    cfg["agents"]["l4_intel"].pop("consumer")
+    cfg["agents"]["l4_card"]["consumer"] = "scan.l4.nowhere"
+    cfg["agents"]["gp_shell"]["consumer"] = "legacy:.claude/workflows/gone.js"
+    wheres = {where for _, where, _ in token_rules.lint_role_consumers(cfg)}
+    assert wheres == {"agents.l4_intel.consumer", "agents.l4_card.consumer", "agents.gp_shell.consumer"}

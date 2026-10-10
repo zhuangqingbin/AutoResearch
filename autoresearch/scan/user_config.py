@@ -203,9 +203,11 @@ def _validate_dual_agents(cfg: dict, agents: dict) -> None:
     for role, spec in agents.items():
         if not isinstance(spec, dict):
             raise ValueError(f"agents.{role} 必须是 object")
-        bad = sorted(set(spec) - {"tier"})
+        bad = sorted(set(spec) - {"tier", "consumer"})
         if bad or not isinstance(spec.get("tier"), str) or not spec["tier"].strip():
-            raise ValueError(f"agents.{role} 新形状只认非空 tier")
+            raise ValueError(f"agents.{role} 新形状只认非空 tier(可选 consumer)")
+        if "consumer" in spec and (not isinstance(spec["consumer"], str) or not spec["consumer"].strip()):
+            raise ValueError(f"agents.{role}.consumer 必须是非空字符串")
     for engine, profile in profiles.items():
         if not isinstance(profile, dict):
             raise ValueError(f"agent_engines.{engine} 必须是 object")

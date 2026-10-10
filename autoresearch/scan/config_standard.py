@@ -16,8 +16,8 @@
 - R7 缺省统一:消费代码里的缺省字面量(knob 第四参数 / .get 缺省 / JS ??)== 注册表 default。
 - R8 散落常量 ratchet:扫描范围内的模块级数值常量与公开函数的数值缺省必须登记在 CODE_CONSTANTS。
 - R9 文档不复述键值:四份 skill 文档里键名后不得直接跟数字。
-- R10–R13 token 防膨胀(2026-10-10,实现在 `scan.token_rules`):agent 文件字符预算 / 静态成本清单不超
-  `budgets.declared` / 档位锁(改 model·effort 须附等价读数)/ 预算线只降不升(对 git HEAD)。
+- R10–R14 token 防膨胀(2026-10-10,实现在 `scan.token_rules`):agent 文件字符预算 / 静态成本清单不超
+  `budgets.declared` / 档位锁(改 model·effort 须附等价读数)/ 预算线只降不升(对 git HEAD)/ 角色须声明消费者。
 
 CLI:`python -m autoresearch.scan.config_standard [--path P] [--rules R4,R5] [--fix-headers] [--dump-constants]`
 退出码:0 零违规 / 1 有违规。PostToolUse hook(`scripts/hooks/scan_config_standard.sh`)把 1 映射成 2 交回编辑者。
@@ -36,7 +36,7 @@ from autoresearch.contracts import scan_config as reg
 REPO = Path(__file__).resolve().parents[2]
 MAX_COMMENT_CHARS = 80
 MAX_FILE_HEADER_LINES = 8
-RULES = ("R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13")
+RULES = ("R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14")
 
 _DATE_RE = re.compile(r"20\d\d\s*[-年/.]\s*\d{1,2}")
 _HISTORY_RE = re.compile(r"沿革|终审|回滚杆|裁定|design|spec|§|⚖️|🚨|幽灵|补记|读数|实测|Wave\s*\d|批\s*\d|Task\s*\d", re.I)
@@ -571,7 +571,7 @@ def lint_all(path: Path | str = REPO / reg.CONFIG_PATH, *, repo_root: Path = REP
         out.extend(lint_constants(registry=registry, repo_root=repo_root))
     if "R9" in wanted:
         out.extend(lint_docs(registry=registry, repo_root=repo_root))
-    if wanted & {"R10", "R11", "R12", "R13"}:
+    if wanted & {"R10", "R11", "R12", "R13", "R14"}:
         # token 防膨胀(2026-10-10):agent 文件预算 / 静态成本清单 / 档位锁 / 预算线只降不升。
         from autoresearch.scan import token_rules
 

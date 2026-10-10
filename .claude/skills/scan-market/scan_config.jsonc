@@ -278,23 +278,23 @@
 
   // ── agents · agent 角色 → 档位(注册角色闭集,必须列全) ── 生效点 scan/user_config.validate_user_config · scan/user_config.resolve_agent_bundle
   "agents": {
-    "strategist":    { "tier": "critical" },      // 市场研判(macro-brief)
-    "sector_brief":  { "tier": "analytical" },    // 行业 brief 写手
-    "l3_rank":       { "tier": "critical" },      // L3 精排
-    "l3_repair":     { "tier": "repair" },        // L3 产物修复
-    "l4_intel":      { "tier": "critical" },      // 活体情报员
-    "l4_card":       { "tier": "critical" },      // 决策卡
-    "ens_review":    { "tier": "critical" },      // ≥OW / SELL 双复核
-    "dossier_init":  { "tier": "critical" },      // 档案首覆
-    "stock_full":    { "tier": "critical" },      // 单股 FULL 逻辑角色共用
-    "macro_full":    { "tier": "critical" },      // 宏观 FULL
-    "sector_full":   { "tier": "critical" },      // 行业 FULL
-    "company_intel": { "tier": "critical" },      // A 股公司情报
-    "us_intel":      { "tier": "critical" },      // 美股公司情报
-    "sector_intel":  { "tier": "critical" },      // 行业情报
-    "global_intel":  { "tier": "critical" },      // 全球宏观情报
-    "gp_shell":      { "tier": "relay" },         // 命令壳
-    "gp_shell_json": { "tier": "relay" }          // 命令壳(JSON 回报)
+    "strategist":    { "tier": "critical", "consumer": "scan.l3.prepare" },      // 市场研判(macro-brief)
+    "sector_brief":  { "tier": "analytical", "consumer": "scan.l3" },    // 行业 brief 写手
+    "l3_rank":       { "tier": "critical", "consumer": "scan.l3.lint" },      // L3 精排
+    "l3_repair":     { "tier": "repair", "consumer": "scan.l3.repair.apply" },        // L3 产物修复
+    "l4_intel":      { "tier": "critical", "consumer": "scan.l4.intel.status" },      // 活体情报员
+    "l4_card":       { "tier": "critical", "consumer": "scan.l4.finalize" },      // 决策卡
+    "ens_review":    { "tier": "critical", "consumer": "scan.review.decide" },      // ≥OW / SELL 双复核
+    "dossier_init":  { "tier": "critical", "consumer": "dossier.validate" },      // 档案首覆
+    "stock_full":    { "tier": "critical", "consumer": "stock.full.assemble" },      // 单股 FULL 逻辑角色共用
+    "macro_full":    { "tier": "critical", "consumer": "macro.full.assemble" },      // 宏观 FULL
+    "sector_full":   { "tier": "critical", "consumer": "sector.validate" },      // 行业 FULL
+    "company_intel": { "tier": "critical", "consumer": "stock.news" },      // A 股公司情报
+    "us_intel":      { "tier": "critical", "consumer": "stock.news" },      // 美股公司情报
+    "sector_intel":  { "tier": "critical", "consumer": "sector.research" },      // 行业情报
+    "global_intel":  { "tier": "critical", "consumer": "macro.research" },      // 全球宏观情报
+    "gp_shell":      { "tier": "relay", "consumer": "legacy:.claude/workflows/scan-market.js" },         // 命令壳
+    "gp_shell_json": { "tier": "relay", "consumer": "legacy:.claude/workflows/scan-market.js" }          // 命令壳(JSON 回报)
   },
 
   // ── agent_engines · 档位 → 各引擎 model / effort ── 生效点 scan/user_config.validate_user_config · scan/user_config._dual_role_specs

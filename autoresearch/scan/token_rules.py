@@ -8,6 +8,9 @@
   (仓内存在的等价读数文件)—— 档位只能带着证据改(10-03:别名静默换代,同 effort 输出 1.9 万 → 5.1 万)。
 - **R13 预算线只降不升**:``budgets.declared`` 任一条线高于 git HEAD 里的值 = 违规。agent 不能自己抬线;
   人改这一行并提交即可。
+- **R14 每个角色要有决策消费者**:``agents.<role>.consumer`` 必填,且必须是已登记的确定性操作
+  (``contracts.operation_replay``)、已登记的 session 角色,或 ``legacy:<存在的文件>``。花推理的角色先说清
+  谁读它的产物;场后 redline 再按冻结任务图数「产物真的被下游当输入了吗」。
 
 CLI:``python -m autoresearch.scan.token_rules lock --add-missing``(把锁里缺的键按现状补第一条)。
 """
@@ -22,7 +25,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 LOCK_PATH = REPO / "autoresearch" / "contracts" / "tier_lock.json"
 AGENTS_DIR = REPO / ".claude" / "agents"
-RULES = ("R10", "R11", "R12", "R13")
+RULES = ("R10", "R11", "R12", "R13", "R14")
 
 
 def _load_cfg(path: Path) -> dict | None:
@@ -171,6 +174,26 @@ def lint_declared_ratchet(cfg: dict, path: Path, *, repo_root: Path = REPO) -> l
     return out
 
 
+# ── R14 ──────────────────────────────────────────────────────────────────────────
+
+def lint_role_consumers(cfg: dict, *, repo_root: Path = REPO) -> list[tuple[str, str, str]]:
+    from autoresearch.contracts.operation_replay import OPERATION_REPLAY_CLASSIFICATION
+    from autoresearch.session_agent.executors.base import ROLE_DISPATCH
+
+    out = []
+    for role, spec in sorted((cfg.get("agents") or {}).items()):
+        consumer = str((spec or {}).get("consumer") or "").strip()
+        where = f"agents.{role}.consumer"
+        if not consumer:
+            out.append(("R14", where, "花推理的角色必须声明决策消费者(谁读它的产物):操作名 / session 角色 / legacy:<文件>"))
+        elif consumer.startswith("legacy:"):
+            if not (repo_root / consumer[len("legacy:"):]).is_file():
+                out.append(("R14", where, f"{consumer} 指向的文件不存在"))
+        elif consumer not in OPERATION_REPLAY_CLASSIFICATION and consumer not in ROLE_DISPATCH:
+            out.append(("R14", where, f"{consumer} 既不是已登记的确定性操作,也不是 session 角色"))
+    return out
+
+
 # ── 汇总 ─────────────────────────────────────────────────────────────────────────
 
 def lint(path: Path, *, repo_root: Path = REPO, wanted: set[str] | None = None) -> list[tuple[str, str, str]]:
@@ -187,6 +210,8 @@ def lint(path: Path, *, repo_root: Path = REPO, wanted: set[str] | None = None) 
         out.extend(lint_tier_lock(cfg, repo_root=repo_root))
     if "R13" in wanted:
         out.extend(lint_declared_ratchet(cfg, Path(path), repo_root=repo_root))
+    if "R14" in wanted:
+        out.extend(lint_role_consumers(cfg, repo_root=repo_root))
     return out
 
 

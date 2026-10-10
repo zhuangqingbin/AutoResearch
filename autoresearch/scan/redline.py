@@ -357,6 +357,9 @@ def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
     for slot in roles.values():
         slot.update(calls_max=max(slot["calls"], default=0), calls_median=_median(slot["calls"]),
                     output_median=_median(slot["outputs"]), prefix_median=_median(slot["prefixes"]))
+    consumption = consumption_graph(run_id)
+    for role, slot in roles.items():
+        slot["consumers"] = consumption.get(role) if consumption is not None else None
     totals = usage.get("totals") or {}
     readout.update(
         usage_status="MEASURED", roles=roles, host=host,
@@ -371,6 +374,35 @@ def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
                 if readout["engine"] == "codex" else {"status": "NOT_APPLICABLE"}),
     )
     return readout
+
+
+def consumption_graph(run_id: str) -> dict[str, list[str]] | None:
+    """冻结任务图里:每个推理角色已接受的产物被哪些下游任务(操作名 / 角色)声明为输入。
+
+    这是「生产者有没有接线」(FN-1 家族)的机械证据,不是决策影响:下游拿到 ≠ 改变了结论。
+    读不到工作区 = ``None``(没量到),不是「没人消费」。
+    """
+    try:
+        from autoresearch.session_agent import service, store
+        from autoresearch.trace.capsule import load_run
+
+        entries = store.read_entries(service._store_path(load_run(run_id)))
+    except Exception:  # noqa: BLE001 - an archived run without a readable workspace
+        return None
+    produced: dict[str, str] = {}
+    for entry in entries.values():
+        spec = entry.get("spec") or {}
+        if spec.get("kind") == "INFERENCE" and entry.get("state") == "SUCCEEDED":
+            for artifact in entry.get("accepted_artifacts") or spec.get("output_artifact_ids") or []:
+                produced[str(artifact)] = str(spec.get("role"))
+    graph: dict[str, set] = {role: set() for role in produced.values()}
+    for entry in entries.values():
+        spec = entry.get("spec") or {}
+        for artifact in spec.get("input_artifact_ids") or []:
+            role = produced.get(str(artifact))
+            if role is not None:
+                graph[role].add(str(spec.get("operation") or spec.get("role")))
+    return {role: sorted(consumers) for role, consumers in graph.items()}
 
 
 # ── 判定 ─────────────────────────────────────────────────────────────────────────
@@ -483,6 +515,15 @@ def evaluate(readout: dict, *, cfg: dict | None = None, previous: dict | None = 
     # 实际模型对档位锁(R12 的场后一半):锁外的模型 = 档位被静默换了;配置里的 fallback 只告警
     findings.extend(_lock_findings(readout, cfg))
 
+    # 消费者(R14 的场后一半):有已接受产物却没有任何下游任务把它当输入 = 生产者没接线
+    unconsumed = sorted(role for role, slot in roles.items() if slot.get("consumers") == [])
+    for role in unconsumed:
+        findings.append(_finding("WARN", "UNCONSUMED", f"{role} 的产物本场没有任何下游任务当输入", role=role))
+    idle = _idle_roles(readout, unconsumed, envelope["idle_runs"])
+    readout["idle_roles"] = idle
+    if idle:
+        findings.append(_finding("WARN", "IDLE_ROLE", f"连续 {envelope['idle_runs']} 场无人消费:{idle}(进待裁清单,不自动删)"))
+
     # 同日重跑(R6,只记)
     same_date = _same_date_runs(readout)
     if same_date:
@@ -528,6 +569,32 @@ def _lock_findings(readout: dict, cfg: dict | None) -> list[dict]:
         out.append(_finding(level, "MODEL_FALLBACK" if level == "WARN" else "MODEL_NOT_LOCKED",
                             f"{role} 实际模型 {sorted(seen)} ≠ 档位锁 {expected}", role=role))
     return out
+
+
+def _idle_roles(readout: dict, unconsumed: list[str], runs: int) -> list[str]:
+    """本场与此前 ``runs - 1`` 份量到的 readout 里都「无人消费」的角色。"""
+    if runs <= 1:
+        return list(unconsumed)
+    folder = readout_dir()
+    history = []
+    if folder.is_dir():
+        for path in folder.glob("*.json"):
+            if path.stem == readout.get("run_id"):
+                continue
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if value.get("engine") == readout.get("engine") and value.get("usage_status") == "MEASURED":
+                history.append(value)
+    history.sort(key=lambda value: str(value.get("run_id")))
+    recent = history[-(runs - 1):]
+    if len(recent) < runs - 1:
+        return []
+    idle = set(unconsumed)
+    for value in recent:
+        idle &= {role for role, slot in (value.get("roles") or {}).items() if slot.get("consumers") == []}
+    return sorted(idle)
 
 
 def _ratio(now, before) -> float | None:
