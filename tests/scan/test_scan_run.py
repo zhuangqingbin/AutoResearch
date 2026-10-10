@@ -875,7 +875,7 @@ def test_headless_request_matches_the_documented_scan_request_contract():
 
 # ── 2026-10-10 token growth guard: post-run redline readout + opening breaker (M3 / M4) ──────
 
-def _guarded(steps: _Steps, *, redline=None, breaker=None, acked=None):
+def _guarded(steps: _Steps, *, redline=None, breaker=None, acked=None, gate=None):
     import dataclasses
 
     acked = acked if acked is not None else []
@@ -890,8 +890,15 @@ def _guarded(steps: _Steps, *, redline=None, breaker=None, acked=None):
         steps.calls.append("ack")
         acked.append(run_id)
 
+    def replay_gate():
+        steps.calls.append("replay_gate")
+        if isinstance(gate, Exception):
+            raise gate
+        return gate or {"verdict": "PASS", "run_id": "20261009T130000000000Z", "checked": 26, "regressions": []}
+
     built = steps.as_steps()
-    return dataclasses.replace(built, redline=record, breaker=lambda: breaker, ack_breaker=ack)
+    return dataclasses.replace(built, redline=record, breaker=lambda: breaker, ack_breaker=ack,
+                               replay_gate=replay_gate)
 
 
 def _run_guarded(tmp_path, steps, guarded, **arg_changes) -> int:
@@ -963,3 +970,31 @@ def test_resume_with_ack_for_the_same_run_acknowledges_before_resuming(roots):
     guarded = dataclasses.replace(guarded, resume=lambda run_id: DATE)
     _run_guarded(roots, steps, guarded, resume_run_id=RUN_ID, ack_redline=RUN_ID)
     assert acked == [RUN_ID] and "begin" not in steps.calls
+
+
+_REGRESSED = {"verdict": "FAIL", "run_id": "20261009T130000000000Z", "checked": 26,
+              "regressions": [{"task_id": "l4.688578.a1.review2", "now": "REJECT", "reason": "精度契约"}]}
+
+
+def test_a_validator_regression_on_last_nights_accepted_cards_refuses_the_run(roots):
+    steps = _Steps(roots)
+    code = _run_guarded(roots, steps, _guarded(steps, gate=_REGRESSED))
+    assert code == scan_run.EXIT_FAILED and "wait_ready" not in steps.calls and "begin" not in steps.calls
+    assert steps.calls.index("replay_gate") < len(steps.calls)
+    summary = _summary(roots)
+    assert summary["result"] == "REFUSED_REPLAY" and summary["replay_gate"]["regressions"] == ["l4.688578.a1.review2"]
+    [(title, body)] = steps.notified
+    assert "--ack-redline 20261009T130000000000Z" in body and "l4.688578.a1.review2" in body
+
+
+def test_ack_for_the_replayed_run_lets_the_run_proceed(roots):
+    steps, acked = _Steps(roots), []
+    code = _run_guarded(roots, steps, _guarded(steps, gate=_REGRESSED, acked=acked),
+                        ack_redline="20261009T130000000000Z")
+    assert code == scan_run.EXIT_OK and acked == ["20261009T130000000000Z"] and "begin" in steps.calls
+
+
+def test_a_crashing_gate_is_logged_and_does_not_cost_the_night(roots):
+    steps = _Steps(roots)
+    assert _run_guarded(roots, steps, _guarded(steps, gate=RuntimeError("boom"))) == scan_run.EXIT_OK
+    assert _summary(roots)["replay_gate"]["verdict"] == "ERROR"

@@ -249,3 +249,14 @@ def test_prefix_guard_is_built_from_the_previous_readout_and_steps_aside_after_a
     assert guard.observe("scan.l4.card", big) is None                                # first thread only
     redline.acknowledge(RUN, reason="CLI 升级已核")
     assert redline.PrefixGuard.for_run(RUN, engine="claude", cfg=_cfg()) is None
+
+
+def test_a_model_outside_the_tier_lock_fails(roots):
+    _capsule(roots, RUN, _rows(roots / "t"))
+    readout = redline.evaluate(redline.build(RUN, cfg=_cfg()), cfg=_cfg())
+    assert not [f for f in readout["findings"] if f["code"] in {"MODEL_NOT_LOCKED", "MODEL_FALLBACK"}]
+    rows = _rows(roots / "t2")
+    rows[0]["model"] = "claude-opus-5-6"                     # an alias silently moved on
+    _capsule(roots, RUN, rows)
+    readout = redline.evaluate(redline.build(RUN, cfg=_cfg()), cfg=_cfg())
+    assert [f["code"] for f in readout["findings"] if f["level"] == "FAIL"] == ["MODEL_NOT_LOCKED"]

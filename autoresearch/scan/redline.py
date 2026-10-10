@@ -480,6 +480,9 @@ def evaluate(readout: dict, *, cfg: dict | None = None, previous: dict | None = 
                                          f"{role} 输出中位 ×{ratio:.2f}"
                                          + ("(同时宿主 / 模型身份变了)" if changed else ""), role=role))
 
+    # 实际模型对档位锁(R12 的场后一半):锁外的模型 = 档位被静默换了;配置里的 fallback 只告警
+    findings.extend(_lock_findings(readout, cfg))
+
     # 同日重跑(R6,只记)
     same_date = _same_date_runs(readout)
     if same_date:
@@ -494,6 +497,37 @@ def evaluate(readout: dict, *, cfg: dict | None = None, previous: dict | None = 
             suggestion = math.ceil(target * 10) / 10
     readout.update(findings=findings, verdict=verdict, line=line, ratchet_suggestion=suggestion)
     return readout
+
+
+def _lock_findings(readout: dict, cfg: dict | None) -> list[dict]:
+    from autoresearch.scan import token_rules
+    from autoresearch.session_agent.executors.base import ROLE_DISPATCH
+    from autoresearch.trace.pricing import canonical_model_id
+
+    engine = readout.get("engine")
+    lock = token_rules.read_lock().get("entries") or {}
+    out = []
+    for role, models in sorted(((readout.get("identity") or {}).get("models") or {}).items()):
+        config_role = ROLE_DISPATCH.get(role, (None, None))[1]
+        history = lock.get(f"{engine}:{config_role}") or []
+        expected = history[-1].get("model") if history else None
+        if not expected:
+            continue
+        seen = {canonical_model_id(model) for model in models}
+        if seen <= {canonical_model_id(expected)}:
+            continue
+        fallback = None
+        try:
+            from autoresearch.scan.user_config import _dual_role_specs
+
+            fallback = (_dual_role_specs(_cfg(cfg), engine, config_role)[1] or {}).get("model")
+        except Exception:  # noqa: BLE001 - no resolvable fallback = treat every stranger as drift
+            fallback = None
+        allowed = {canonical_model_id(expected)} | ({canonical_model_id(fallback)} if fallback else set())
+        level = "WARN" if seen <= allowed else "FAIL"
+        out.append(_finding(level, "MODEL_FALLBACK" if level == "WARN" else "MODEL_NOT_LOCKED",
+                            f"{role} 实际模型 {sorted(seen)} ≠ 档位锁 {expected}", role=role))
+    return out
 
 
 def _ratio(now, before) -> float | None:

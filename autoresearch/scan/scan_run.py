@@ -269,6 +269,10 @@ def _no_ack(run_id: str):
     return None
 
 
+def _no_replay_gate() -> dict:
+    return {"verdict": "SKIPPED"}
+
+
 def _resume_unavailable(run_id: str) -> str:
     raise RuntimeError("resume validation is unavailable")
 
@@ -350,6 +354,8 @@ class Steps:
     breaker: Callable[[], dict | None] = _no_breaker
     #: ``--ack-redline <run_id>``:确认断路器后放行。
     ack_breaker: Callable[[str], object] = _no_ack
+    #: 推理前零推理回放门(``scan.replay_gate.gate``):上一场已接受产物过当前校验器。
+    replay_gate: Callable[[], dict] = _no_replay_gate
 
 
 class ScanRunInterrupted(BaseException):
@@ -648,12 +654,18 @@ def default_steps(args, log: OpsLog | None) -> Steps:
 
         return redline.acknowledge(run_id, reason="scan_run --ack-redline")
 
+    def replay_gate_step() -> dict:
+        from autoresearch.scan import replay_gate
+
+        return replay_gate.gate()
+
     return Steps(resolve_date=resolve_date, live_runs=live_scan_runs, wait_ready=wait_ready,
                  begin=begin, run=run, verify=verify, locate_brief=locate_brief,
                  deliver=deliver, finalize_failed=finalize_failed, notify=notify,
                  sweep=_terminate_inflight_headless, now=datetime.now,
                  missed_date=missed_date, channel=channel, resume=resume,
-                 redline=redline_post, breaker=breaker, ack_breaker=ack_breaker)
+                 redline=redline_post, breaker=breaker, ack_breaker=ack_breaker,
+                 replay_gate=replay_gate_step)
 
 
 # ── orchestration ───────────────────────────────────────────────────────────────
@@ -813,6 +825,33 @@ def _flow(args, steps: Steps, *, log: OpsLog, summary: dict, state: dict,
                  f" scripts/scan_run.sh --engine {ws.ENGINE} --ack-redline {breaker.get('run_id')} · 日志 {log.path}")
             return finish(EXIT_FAILED, "REFUSED_BUDGET", stage="redline_breaker",
                           breaker={key: breaker.get(key) for key in ("run_id", "readout", "findings")})
+
+        # 推理前零推理回放(红线 R1):上一场已接受的研究产物过一遍当前校验器;回归 = 不花这场钱。
+        state["stage"] = "replay_gate"
+        try:
+            gate = steps.replay_gate()
+        except Exception as exc:  # noqa: BLE001 - a broken gate must not become a new way to lose a night
+            gate = {"verdict": "ERROR", "error": f"{type(exc).__name__}: {exc}"[:300]}
+        summary["replay_gate"] = {"verdict": gate.get("verdict"), "run_id": gate.get("run_id"),
+                                  "checked": gate.get("checked"),
+                                  "regressions": [row.get("task_id") for row in gate.get("regressions") or []]}
+        log.line(f"回放门 · {gate.get('verdict')} · run {gate.get('run_id')} · 重验 {gate.get('checked')}"
+                 + (f" · {gate.get('error')}" if gate.get("error") else ""))
+        if gate.get("verdict") == "FAIL":
+            replayed = gate.get("run_id")
+            if ack and ack == replayed:
+                try:
+                    steps.ack_breaker(replayed)
+                except Exception as exc:  # noqa: BLE001
+                    log.line(f"确认回放门失败:{type(exc).__name__}: {exc}")
+                log.line(f"回放门回归已确认:--ack-redline {replayed}")
+            else:
+                first = (gate.get("regressions") or [{}])[0]
+                tell(f"扫描 {date} 未开",
+                     f"回放门:当前代码拒绝了上一场 {replayed} 已接受的 {len(gate['regressions'])} 份产物"
+                     f"(如 {first.get('task_id')}:{first.get('reason')})· 修好或看过后"
+                     f" --ack-redline {replayed} · 日志 {log.path}")
+                return finish(EXIT_FAILED, "REFUSED_REPLAY", stage="replay_gate")
 
     state["stage"] = "readiness"
     if not resume_id and not getattr(args, "skip_readiness", False) and not steps.wait_ready(date, deadline):
