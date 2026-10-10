@@ -78,6 +78,17 @@ runner 以 `codex exec` 起每个推理任务(`executors/headless_codex.py`,开�
 - **人工会话**开扫:SKILL 步骤 0 的 `run_lock check || { echo …; exit 3; }` 被占即停;不止是建议 —— `capsule begin scan-market` 与 `session_agent begin`(scan 请求)在锁被占时**代码里拒绝**(退出 3,打印持锁 pid),确需并跑才显式加 `--ignore-scan-lock`。反方向:scan_run 开跑前与 begin 前(就绪等待之后)各查一次人工场(ACTIVE 且持有者活着或心跳 90 分钟内)。
 - **失败后**:按推送里的阶段查日志;修代码在另一个会话;补跑 `scripts/scan_run.sh --date <交易日> --skip-readiness`(新 run_id)。
 
+### token 红线三道闸(2026-10-10,规则真身 `docs/dev-redline.md`)
+
+- **开场断路器**:上一场 redline FAIL 未确认 → 摘要 `result=REFUSED_BUDGET`,不等湖、不 begin。先读
+  `$RPT/_ops/redline/<RUN_ID>.json` 的 `findings`,再 `scripts/scan_run.sh --engine <e> --ack-redline <RUN_ID>`。
+  改过 `budgets` 配置也算确认。恢复原 run(`--resume-run-id`)从不被拦。
+- **回放门**:当前代码的校验器拒绝了上一场已接受的产物 → `result=REFUSED_REPLAY`,摘要 `replay_gate.regressions`
+  列出任务。修好校验器,或确认是有意收紧后 `--ack-redline <被回放的 RUN_ID>`。回放门自己崩了只记一行,不拦。
+- **场中前导守卫**:某角色第一个完成线程的前导 ≥ 上一场中位 ×2 → runner 停派 `PREFIX_DRIFT`,摘要 `RECOVERABLE`。
+  查 CLI / 插件 / 记忆有没有往线程里加东西;确认后 `--resume-run-id <RUN_ID> --ack-redline <RUN_ID>`。
+- 每场结束(发布或封存 FAILED)摘要多一个 `redline` 字段;读数本身从不改退出码,也不挡送达。
+
 ## user_config 传参铁律
 
 `frame --json` 回显的 `user_config` 必须随 Workflow `args.config` 传入,L4 逐股 `args.cfg` 原样透传。**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**(配置真身是 `scan_config.jsonc`,**.jsonc 非 .json**;现 workflow 对空 config 直接 throw)。新 run 优先消费 `resolved_agents`;Claude 老 workflow 的内建表只服务离线/历史兜底,Codex project agent TOML 与 production profile 由测试锁定同值。
