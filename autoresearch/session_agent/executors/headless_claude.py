@@ -438,7 +438,12 @@ class HeadlessClaudeExecutor:
     def _failure(exit_code: int, doc: dict | None, stdout: str,
                  stderr: str) -> tuple[str | None, str | None]:
         """``(error, declared_class)``; the class is left to ``classify_error`` except for
-        transient API errors (overloaded / 5xx), declared CONNECTION = one retry."""
+        transient API errors (overloaded / 5xx), declared CONNECTION = one retry, and the turn
+        cap (``subtype=error_max_turns``, any exit code), declared TIMEOUT: the attempt ran out
+        of its runtime envelope like a wall-clock timeout — one retry, never a whole-run block."""
+        if (doc or {}).get("subtype") == "error_max_turns":
+            return (f"claude -p 轮数封顶(subtype=error_max_turns,session.max_turns): "
+                    f"{_excerpt((doc or {}).get('result')) or _excerpt(stderr)}"), "TIMEOUT"
         if exit_code != 0:
             detail = _excerpt((doc or {}).get("result")) or _excerpt(stderr) or _excerpt(stdout)
             error = f"claude -p 失败 exit={exit_code}: {detail}"

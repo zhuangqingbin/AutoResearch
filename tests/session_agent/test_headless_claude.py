@@ -111,7 +111,7 @@ def test_argv_carries_the_required_flags_and_never_skips_permissions(tmp_path):
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert argv[argv.index("--session-id") + 1] == result.session_ref
-    assert argv[argv.index("--max-turns") + 1] == str(hc.MAX_TURNS["scan.l4.card"])
+    assert argv[argv.index("--max-turns") + 1] == str(ex.max_turns["scan.l4.card"])   # config cap wins
     assert argv[argv.index("--effort") + 1] == "max"
     assert "--model" not in argv                       # model=None: frontmatter decides
     assert "--dangerously-skip-permissions" not in argv
@@ -294,16 +294,17 @@ def test_orphan_stop_records_unconfirmed_group(tmp_path, monkeypatch):
 def test_max_turns_explicit_request_wins_then_role_then_tier(tmp_path):
     ex = _executor(tmp_path, "claude")
     assert ex.max_turns_for(_request(tmp_path, max_turns=7)) == 7
-    assert ex.max_turns_for(_request(tmp_path)) == hc.MAX_TURNS["scan.l4.card"]
+    assert ex.max_turns_for(_request(tmp_path)) == ex.max_turns["scan.l4.card"]
     unknown_role = _request(tmp_path, role="stock.card", tier="analytical")
     assert ex.max_turns_for(unknown_role) == hc.TIER_MAX_TURNS["analytical"]
     assert ex.max_turns_for(_request(tmp_path, role="stock.card", tier=None)) == hc.DEFAULT_MAX_TURNS
 
 
 def test_max_turns_cover_the_longest_observed_host_runs():
-    """Caps sit above the longest real subagent runs (unique assistant messages, 30 days
-    before 2026-09-26: macro-brief 25, sector-brief 14, l3-rank 32, l4-intel 34,
-    l4-card 35): a cap below them would turn a normal card into error_max_turns → BLOCKED."""
+    """Code fallbacks (used only when scan_config has no ``session.max_turns`` entry) sit above
+    the longest runs of the 30 days before 2026-09-26, runaways included (macro-brief 25,
+    sector-brief 14, l3-rank 32, l4-intel 34, l4-card 35).  The configured caps are tighter;
+    see test_configured_turn_caps_cover_every_non_runaway_run."""
     observed = {"macro.brief": 25, "sector.brief": 14, "scan.l3": 32, "scan.l4.intel": 34,
                 "scan.l4.card": 35, "scan.l4.review": 35}
     for role, turns in observed.items():
@@ -805,3 +806,33 @@ def test_auto_memory_is_off_unless_the_session_config_turns_it_on(tmp_path, monk
     argv = (tmp_path / "bin" / "argv.txt").read_text(encoding="utf-8").splitlines()
     assert "--settings" not in argv
     assert hc.AUTO_MEMORY is False
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_turn_cap_is_a_timeout_class_failure_whatever_the_exit_code(tmp_path, exit_code):
+    # 2026-10-10 M5: caps now sit at history p95 x 1.5 instead of 60/80; a card that hits one
+    # is retried once like a wall-clock timeout instead of blocking the run as AGENT_ERROR.
+    body = f"""
+        echo "{{\\"is_error\\":true,\\"subtype\\":\\"error_max_turns\\",\\"session_id\\":\\"$sid\\",\\"result\\":\\"\\"}}"
+        exit {exit_code}
+        """
+    ex = _executor(tmp_path, _fake_claude(tmp_path, body))
+    result = ex.dispatch(_request(tmp_path))
+    assert result.ok is False and result.error_class == "TIMEOUT"
+    assert "error_max_turns" in result.error
+    assert classify_error(result.error, result.error_class) == "TIMEOUT"
+
+
+def test_configured_turn_caps_cover_every_non_runaway_run():
+    """2026-10-10 M5: cap = max(ceil(p95 x 1.5), longest run + 1, 10) over the 20 archived
+    Claude scan capsules up to 10-07, unique assistant messages per research thread.  The
+    09-14 / 09-15 runs are excluded: research agents read source code to self-verify (the
+    runaway the cap exists for; that is where l4-card 35 and l3-rank 32 came from).
+    Hitting a cap is a TIMEOUT-class failure (one retry), never a whole-run block."""
+    from autoresearch.session_agent.config import session_cfg
+
+    longest = {"scan.l4.card": 12, "scan.l4.review": 12, "scan.l4.intel": 34, "scan.l3": 8,
+               "sector.brief": 9, "macro.brief": 6, "scan.l3.repair": 2}
+    caps = session_cfg()["max_turns"]
+    for role, turns in longest.items():
+        assert turns < caps[role] <= hc.MAX_TURNS[role], (role, caps[role])

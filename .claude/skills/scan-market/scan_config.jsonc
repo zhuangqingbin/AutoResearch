@@ -474,7 +474,7 @@
       "fallback_s": 1800,              // 表外角色的超时
       "codex_open_s": 180              // codex headless 开线程(取 thread id 那一轮)的墙钟,不占角色预算
     },
-    "max_turns": {},                   // headless --max-turns 逐 role 覆盖(缺 = MAX_TURNS;仅 session_agent)
+    "max_turns": { "scan.l4.card": 14, "scan.l4.review": 14, "scan.l4.intel": 35, "scan.l3": 12, "sector.brief": 12, "macro.brief": 10, "scan.l3.repair": 10 },   // headless --max-turns 逐 role 封顶(仅 session_agent)
     "tier_max_turns": {},              // 表外角色按档位的轮数上限覆盖(缺 = TIER_MAX_TURNS;仅 session_agent)
     "default_max_turns": 60,           // 档位也没有时的轮数上限(仅 session_agent)
     "mailbox": {                       // mailbox 执行器(仅 session_agent)
