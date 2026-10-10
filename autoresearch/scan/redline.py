@@ -250,6 +250,22 @@ def _cfg(cfg: dict | None) -> dict:
     return load_user_config()
 
 
+def _frozen_cfg(capsule: Path | None) -> dict | None:
+    """capsule 里冻结的那份 scan_config(不做白名单校验:旧场可能含已退役的键)。"""
+    if capsule is None:
+        return None
+    path = capsule / "identity" / "prompts" / "skills" / "scan-market" / "scan_config.jsonc"
+    if not path.is_file():
+        return None
+    try:
+        from autoresearch.scan.user_config import _read_jsonc
+
+        value = _read_jsonc(path)
+    except Exception:  # noqa: BLE001 - an unreadable snapshot falls back to the live file
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def budgets_policy(cfg: dict | None = None) -> dict:
     from autoresearch.scan.budget import normalize_budgets
 
@@ -303,7 +319,9 @@ def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
         "analysis_date": meta.get("analysis_date"), "business_status": meta.get("business_status"),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "capsule": str(capsule) if capsule is not None else None,
-        "config": config_snapshot(cfg),
+        # 本场冻结的配置(capsule 身份快照)优先:读数可能在改配置之后才补,活配置会把旧场错记成新档位。
+        "config": config_snapshot(cfg if cfg is not None else _frozen_cfg(capsule)),
+        "config_source": "explicit" if cfg is not None else ("capsule" if _frozen_cfg(capsule) is not None else "live"),
         # 本场冻结的 agent 文件(capsule 身份快照)优先;没有快照才读现场文件。
         "agent_chars": agent_chars(capsule / "identity" / "prompts" / "agents")
         if capsule is not None and (capsule / "identity" / "prompts" / "agents").is_dir() else agent_chars(),

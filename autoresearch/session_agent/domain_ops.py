@@ -2186,11 +2186,17 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None, claim_sources=
     owner_path = Path(current.workspace) / "session/tasks.json"
     if intel_artifact_id is None and owner_path.is_file():
         from autoresearch.session_agent import store
-        task = store.read_entry(owner_path, f"l4.{code6}.a{attempt}.intel_status")["spec"]
-        candidates = [aid for aid in task["input_artifact_ids"] if aid.endswith(".intel")]
-        if len(candidates) != 1:
-            raise ValueError("intel status requires exactly one declared raw intel input")
-        intel_artifact_id = candidates[0]
+        try:
+            task = store.read_entry(owner_path, f"l4.{code6}.a{attempt}.intel_status")["spec"]
+        except KeyError:
+            # A store without this ticket's status task (a run whose graph predates per-ticket
+            # status tasks, or a fixture): keep the pre-10-09 bound-intel path below.
+            task = None
+        if task is not None:
+            candidates = [aid for aid in task["input_artifact_ids"] if aid.endswith(".intel")]
+            if len(candidates) != 1:
+                raise ValueError("intel status requires exactly one declared raw intel input")
+            intel_artifact_id = candidates[0]
     if intel_artifact_id is not None:
         # A validation retry may read an earlier accepted raw artifact. Its own
         # guard still runs and only its guarded output belongs to the new attempt.

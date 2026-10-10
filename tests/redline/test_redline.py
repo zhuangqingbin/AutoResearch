@@ -292,3 +292,15 @@ def test_the_real_archived_run_has_a_consumer_for_every_research_role():
             assert all(consumers for consumers in graph.values()), graph
             return
     pytest.skip("no archived scan run with a readable workspace")
+
+
+def test_the_snapshot_prefers_the_capsules_frozen_config(roots):
+    capsule = _capsule(roots, RUN, _rows(roots / "t"))
+    frozen = capsule / "identity" / "prompts" / "skills" / "scan-market" / "scan_config.jsonc"
+    frozen.parent.mkdir(parents=True)
+    frozen.write_text('{ "l4": { "max_cards": 7 }, "session": { "max_turns": { "scan.l4.card": 9 } } }  // frozen\n',
+                      encoding="utf-8")
+    readout = redline.build(RUN)
+    assert readout["config_source"] == "capsule"
+    assert readout["config"]["max_cards"] == 7 and readout["config"]["max_turns"]["scan.l4.card"] == 9
+    assert redline.build(RUN, cfg=_cfg())["config_source"] == "explicit"
