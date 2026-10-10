@@ -437,9 +437,12 @@ KEYS: tuple[Key, ...] = (
     Key("budgets", "relative", kind=KIND_GROUP, type="dict", default=None,
         children=("window", "min_runs", "warn_ratio", "alarm_ratio"),
         consumers=("autoresearch.scan.budget:_relative_policy",)),
+    Key("budgets", "agent_chars", kind=KIND_DATA, type="int_dict", default=None,
+        consumers=("autoresearch.scan.token_rules:lint_agent_chars",)),
     Key("budgets", "declared", kind=KIND_GROUP, type="dict", default=None,
         children=("claude_run_usd", "codex_run_window_points"),
-        consumers=("autoresearch.scan.budget:_declared_policy", "autoresearch.scan.redline:evaluate")),
+        consumers=("autoresearch.scan.budget:_declared_policy", "autoresearch.scan.redline:evaluate",
+                   "autoresearch.scan.token_bom:estimate")),
     Key("budgets", "envelope", kind=KIND_GROUP, type="dict", default=None,
         children=("host_weighted_max", "prefix_drift_warn", "prefix_drift_fail", "output_drift_warn",
                   "ratchet_margin", "idle_runs"),
@@ -732,6 +735,11 @@ GUARDED_PATHS: tuple[str, ...] = (
     ".claude/skills/scan-market/",
     "autoresearch/contracts/scan_config.py",
     "autoresearch/scan/user_config.py",
+    # token 防膨胀(2026-10-10):agent 文件是每个研究线程每次调用的前导;锁与校准种子是 R11/R12 的输入。
+    ".claude/agents/",
+    ".codex/agents/",
+    "autoresearch/contracts/tier_lock.json",
+    "autoresearch/contracts/token_bom_seeds.json",
 )
 
 

@@ -331,7 +331,7 @@
     }
   },
 
-  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy · scan/budget._declared_policy · scan/redline.evaluate · scan/budget._envelope_policy
+  // ── budgets · 预算告警与并发帽(不拥有截断权) ── 生效点 scan/budget.normalize_budgets · scan/l4_tasks.main · session_agent/mailbox_cli.resolve_max_parallel · session_agent/domain_ops.scan_l4_prepare · scan/budget.evaluate_history · scan/budget._relative_policy · scan/token_rules.lint_agent_chars · scan/budget._declared_policy · scan/redline.evaluate · scan/token_bom.estimate · scan/budget._envelope_policy
   "budgets": {
     "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
     "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED,不截断)
@@ -351,6 +351,7 @@
       "warn_ratio": 1.5,               // 任一指标达此倍数 = ELEVATED
       "alarm_ratio": 2.0               // 任一指标达此倍数 = SPIKE
     },
+    "agent_chars": { "company-intel": 6000, "dossier-init": 2700, "global-intel": 4800, "l3-rank": 4800, "l3-repair": 500, "l4-card": 11300, "l4-intel": 5700, "macro-brief": 2700, "macro-full": 2200, "sector-brief": 2700, "sector-full": 1000, "sector-intel": 5000, "stock-full": 3600, "us-intel": 5200 },   // .claude/agents/*.md 每文件字符上限(新 agent 须登记)
     "declared": {                      // 每场预算线:超线 → 下一场开场断路;只许下调
       "claude_run_usd": 41.0,          // claude 一场研究的 API 等价美元上限
       "codex_run_window_points": 92    // codex 一场占 5h 窗口的百分点上限

@@ -275,9 +275,10 @@ def config_snapshot(cfg: dict | None = None) -> dict:
     }
 
 
-def agent_chars(root: Path | None = None) -> dict[str, int]:
-    folder = (root or Path(__file__).resolve().parents[2]) / ".claude" / "agents"
-    return {path.stem: len(path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*.md"))}
+def agent_chars(folder: Path | None = None) -> dict[str, int]:
+    """agent 文件字符数(两个引擎的研究角色读的都是 ``.claude/agents/*.md``:claude 当系统提示,codex 经 broker)。"""
+    folder = folder or Path(__file__).resolve().parents[2] / ".claude" / "agents"
+    return {path.stem: len(path.read_text(encoding="utf-8")) for path in sorted(Path(folder).glob("*.md"))}
 
 
 # ── 读数 ─────────────────────────────────────────────────────────────────────────
@@ -299,7 +300,10 @@ def build(run_id: str, *, capsule: Path | None = None, cfg: dict | None = None,
         "analysis_date": meta.get("analysis_date"), "business_status": meta.get("business_status"),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "capsule": str(capsule) if capsule is not None else None,
-        "config": config_snapshot(cfg), "agent_chars": agent_chars(),
+        "config": config_snapshot(cfg),
+        # 本场冻结的 agent 文件(capsule 身份快照)优先;没有快照才读现场文件。
+        "agent_chars": agent_chars(capsule / "identity" / "prompts" / "agents")
+        if capsule is not None and (capsule / "identity" / "prompts" / "agents").is_dir() else agent_chars(),
     }
     usage_path = capsule / "usage" / "_token_usage.json" if capsule is not None else None
     if usage_path is None or not usage_path.is_file():

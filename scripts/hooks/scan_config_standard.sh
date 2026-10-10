@@ -8,6 +8,7 @@
 payload=$(cat) || exit 0
 case $payload in
   *'.claude/skills/scan-market/'*|*'autoresearch/contracts/scan_config.py'*|*'autoresearch/scan/user_config.py'*) ;;
+  *'.claude/agents/'*|*'.codex/agents/'*|*'autoresearch/contracts/tier_lock.json'*|*'autoresearch/contracts/token_bom_seeds.json'*) ;;
   *) exit 0 ;;
 esac
 root=${CLAUDE_PROJECT_DIR:-$(pwd)}

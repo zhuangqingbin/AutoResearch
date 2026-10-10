@@ -1,0 +1,390 @@
+{
+ "schema_version": 1,
+ "note": "档位锁(token 防膨胀 R12,2026-10-10 起):每个 <engine>:<role> 与 agent:<文件> 的 model/effort 历史。配置必须等于最后一条;第一条之后每条必须带 equivalence_ref(仓内存在的等价读数,见 docs/session-agent/research-quality-workflow.md 的 stage_effort_v1)。新角色用 `python -m autoresearch.scan.token_rules lock --add-missing` 补第一条。",
+ "entries": {
+  "agent:company-intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:dossier-init": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:global-intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:l3-rank": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:l3-repair": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "medium",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:l4-card": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:l4-intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:macro-brief": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:macro-full": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:sector-brief": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:sector-full": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:sector-intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:stock-full": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "agent:us-intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:company_intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:dossier_init": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:ens_review": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:global_intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:gp_shell": [
+   {
+    "model": "sonnet",
+    "effort": "low",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:gp_shell_json": [
+   {
+    "model": "sonnet",
+    "effort": "low",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:l3_rank": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:l3_repair": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "medium",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:l4_card": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:l4_intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:macro_full": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:sector_brief": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:sector_full": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:sector_intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:stock_full": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:strategist": [
+   {
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "claude:us_intel": [
+   {
+    "model": "claude-sonnet-5-5",
+    "effort": "max",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:company_intel": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:dossier_init": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:ens_review": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:global_intel": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:gp_shell": [
+   {
+    "model": "gpt-5.6-luna",
+    "effort": "low",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:gp_shell_json": [
+   {
+    "model": "gpt-5.6-luna",
+    "effort": "low",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:l3_rank": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:l3_repair": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:l4_card": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:l4_intel": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:macro_full": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:sector_brief": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:sector_full": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:sector_intel": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:stock_full": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:strategist": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ],
+  "codex:us_intel": [
+   {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "since": "2026-10-10",
+    "equivalence_ref": null
+   }
+  ]
+ }
+}
