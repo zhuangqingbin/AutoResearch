@@ -16,6 +16,7 @@
 
 - 第一条 developer 消息里 17.3k 字符是 skills 目录(四个项目技能 + superpowers 的描述),研究角色从不调用 skill。
 - 10-08 第 1 场 31 线程、233 次模型调用,每次调用都带这份前导;改后每次调用少约 22k 字符。
+- **token 实测**(同日一次真实 `codex exec` 开线程,生产同款覆盖):首调输入 16,924 token,10-08 同角色为 22,884 → 每次调用 **−5,960 token(−26%)**。按字符比例估的是 −14k,实际只有它的四成:被删的目录与 AGENTS.md token 密度低于剩下的内容。窗口占比的降幅仍要等下一场真跑。
 - 改后用执行器真实的 `open_overrides()` 再渲染一次:5 条、14,062 字符,与上表「两者」一致。
 - 配置键叫 `codex_skills_catalog_budget` 而不是照抄 Codex 的 `max_context_tokens`:法证层把含 `token` 的键名一律当密钥(`identity._SECRET_KEY_RE`),RunContract 含它 `begin` 就拒。
 - `-c` 的整数必须裸写(`"0"` 会被 Codex 以 `invalid type: string "0", expected usize` 拒掉),`toml_value` 已按类型分流。
